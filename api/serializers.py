@@ -1,0 +1,147 @@
+# -*- coding: utf-8 -*-
+from rest_framework import serializers
+
+from ..models import Country, CountrySubarea, Place, PlaceSubarea, Street
+
+
+LOCATION_BASE_SERIALIZER_FIELDS = (
+    'url', 'id', 'name', 'slug'
+)
+LOCATION_BORDER_BASE_SERIALIZER_FIELDS = (
+    'center', 'area'
+)
+LOCATION_MULTILINE_BASE_SERIALIZER_FIELDS = (
+    'center', 'length'
+)
+LOCATION_BORDER_BASE_RETRIEVE_SERIALIZER_FIELDS = (
+    'border',
+)
+LOCATION_MULTILINE_BASE_RETRIEVE_SERIALIZER_FIELDS = (
+    'lines',
+)
+LOCATION_OSM_BASE_SERIALIZER_FIELDS = (
+    'node_osm_id', 'way_osm_id', 'relation_osm_id'
+)
+LOCATION_OSM_BORDER_BASE_SERIALIZER_FIELDS = LOCATION_BASE_SERIALIZER_FIELDS + \
+    LOCATION_BORDER_BASE_SERIALIZER_FIELDS + LOCATION_OSM_BASE_SERIALIZER_FIELDS
+LOCATION_OSM_MULTILINE_BASE_SERIALIZER_FIELDS = LOCATION_BASE_SERIALIZER_FIELDS + \
+    LOCATION_MULTILINE_BASE_SERIALIZER_FIELDS + LOCATION_OSM_BASE_SERIALIZER_FIELDS
+LOCATION_OSM_BORDER_BASE_RETRIEVE_SERIALIZER_FIELDS = LOCATION_OSM_BORDER_BASE_SERIALIZER_FIELDS + \
+    LOCATION_BORDER_BASE_RETRIEVE_SERIALIZER_FIELDS
+LOCATION_OSM_MULTILINE_BASE_RETRIEVE_SERIALIZER_FIELDS = LOCATION_OSM_MULTILINE_BASE_SERIALIZER_FIELDS + \
+    LOCATION_MULTILINE_BASE_RETRIEVE_SERIALIZER_FIELDS
+
+
+class CountryBaseSerializer(serializers.HyperlinkedModelSerializer):
+    url = serializers.HyperlinkedIdentityField(
+        view_name='country-detail',
+        lookup_field='slug'
+    )
+    places = serializers.HyperlinkedIdentityField(view_name='country-places', lookup_field='slug')
+    subareas = serializers.HyperlinkedIdentityField(view_name='country-subareas', lookup_field='slug')
+    streets = serializers.HyperlinkedIdentityField(view_name='country-streets', lookup_field='slug')
+
+    class Meta:
+        model = Country
+        fields = LOCATION_BASE_SERIALIZER_FIELDS + LOCATION_BORDER_BASE_SERIALIZER_FIELDS + \
+            ('iso2', 'iso3', 'un', 'population', 'places', 'subareas', 'streets')
+
+
+class CountryDefaultSerializer(CountryBaseSerializer):
+    class Meta(CountryBaseSerializer.Meta):
+        pass
+
+
+class CountryRetrieveSerializer(CountryBaseSerializer):
+    class Meta(CountryBaseSerializer.Meta):
+        fields = CountryBaseSerializer.Meta.fields + LOCATION_BORDER_BASE_RETRIEVE_SERIALIZER_FIELDS
+
+
+class CountrySubareaBaseSerializer(serializers.HyperlinkedModelSerializer):
+    url = serializers.HyperlinkedIdentityField(
+        view_name='countrysubarea-detail',
+        lookup_field='slug'
+    )
+    places = serializers.HyperlinkedIdentityField(view_name='countrysubarea-places', lookup_field='slug')
+    streets = serializers.HyperlinkedIdentityField(view_name='countrysubarea-streets', lookup_field='slug')
+
+    class Meta:
+        model = CountrySubarea
+        fields = LOCATION_OSM_BORDER_BASE_SERIALIZER_FIELDS + ('places', 'streets')
+
+
+class CountrySubareaDefaultSerializer(CountrySubareaBaseSerializer):
+    class Meta(CountrySubareaBaseSerializer.Meta):
+        pass
+
+
+class CountrySubareaRetrieveSerializer(CountrySubareaBaseSerializer):
+    class Meta(CountrySubareaBaseSerializer.Meta):
+        fields = LOCATION_OSM_BORDER_BASE_RETRIEVE_SERIALIZER_FIELDS
+
+
+class PlaceBaseSerializer(serializers.HyperlinkedModelSerializer):
+    url = serializers.HyperlinkedIdentityField(
+        view_name='place-detail',
+        lookup_field='slug'
+    )
+    subareas = serializers.HyperlinkedIdentityField(view_name='place-subareas', lookup_field='slug')
+    streets = serializers.HyperlinkedIdentityField(view_name='place-streets', lookup_field='slug')
+
+    class Meta:
+        model = Place
+        fields = LOCATION_BASE_SERIALIZER_FIELDS + LOCATION_BORDER_BASE_SERIALIZER_FIELDS + \
+            ('subareas', 'streets')
+
+
+class PlaceDefaultSerializer(PlaceBaseSerializer):
+    class Meta(PlaceBaseSerializer.Meta):
+        pass
+
+
+class PlaceRetrieveSerializer(PlaceBaseSerializer):
+    class Meta(PlaceBaseSerializer.Meta):
+        fields = LOCATION_OSM_BORDER_BASE_RETRIEVE_SERIALIZER_FIELDS + \
+            ('subareas', 'streets')
+
+
+class PlaceSubareaBaseSerializer(serializers.HyperlinkedModelSerializer):
+    streets = serializers.HyperlinkedIdentityField(view_name='placesubarea-streets', lookup_field='slug')
+
+    class Meta:
+        model = PlaceSubarea
+        fields = LOCATION_BASE_SERIALIZER_FIELDS + LOCATION_BORDER_BASE_SERIALIZER_FIELDS + \
+            ('streets',)
+
+
+class PlaceSubareaDefaultSerializer(PlaceSubareaBaseSerializer):
+    class Meta(PlaceSubareaBaseSerializer.Meta):
+        pass
+
+
+class PlaceSubareaRetrieveSerializer(PlaceSubareaBaseSerializer):
+    class Meta(PlaceSubareaBaseSerializer.Meta):
+        fields = LOCATION_OSM_BORDER_BASE_RETRIEVE_SERIALIZER_FIELDS + \
+            ('streets',)
+
+
+class StreetBaseSerializer(serializers.HyperlinkedModelSerializer):
+    url = serializers.HyperlinkedIdentityField(
+        view_name='street-detail',
+        lookup_field='slug'
+    )
+
+    class Meta:
+        model = Street
+        fields = LOCATION_BASE_SERIALIZER_FIELDS + LOCATION_OSM_MULTILINE_BASE_SERIALIZER_FIELDS
+
+
+class StreetDefaultSerializer(StreetBaseSerializer):
+    class Meta(StreetBaseSerializer.Meta):
+        pass
+
+
+class StreetRetrieveSerializer(StreetBaseSerializer):
+    class Meta(StreetBaseSerializer.Meta):
+        fields = LOCATION_OSM_MULTILINE_BASE_RETRIEVE_SERIALIZER_FIELDS
+

@@ -19,7 +19,8 @@ class LocationBase(gis_models.Model):
         abstract = True
 
     def _set_slug(self):
-        self.slug = slugify(unidecode(self.name))
+        if not self.slug:
+            self.slug = slugify(unidecode(self.name))
 
     def save(self, *args, **kwargs):
         self._set_slug()
@@ -57,21 +58,16 @@ class LocationOSMBase(gis_models.Model):
 
 class LocationBorderBase(LocationBase):
     center = gis_models.PointField(default=None, null=True, blank=True)
-    area = gis_models.DecimalField(max_digits=15, decimal_places=6, default=0, blank=True)
+    area = models.FloatField(default=0, blank=True, db_index=True)
     border = gis_models.MultiPolygonField(default=None, null=True, blank=True)
 
     objects = gis_models.Manager()
-
-    def _set_area(self):
-        if self.border:
-            self.area = self.border.area
 
     def _set_center(self):
         if self.border:
             self.center = self.border.centroid
 
     def save(self, *args, **kwargs):
-        self._set_area()
         self._set_center()
         super(LocationBorderBase, self).save(*args, **kwargs)
 
@@ -89,6 +85,7 @@ class LocationOSMBorderBase(LocationBorderBase, LocationOSMBase):
 
 class LocationMultilineBase(LocationBase):
     center = gis_models.PointField(default=None, null=True, blank=True)
+    length = models.FloatField(default=0, blank=True, db_index=True)
     lines = gis_models.MultiLineStringField(default=None, null=True, blank=True)
 
     objects = gis_models.Manager()
