@@ -1,7 +1,10 @@
+import itertools
+
 from django.db import models
 
 from .base import LocationBase, LocationBorderBase, LocationOSMBorderBase, LocationOSMMultilineBase, \
     LocationMergableBase
+from .fields import DenormArrayField
 
 
 class Country(LocationBorderBase):
@@ -35,6 +38,10 @@ class CountrySubarea(LocationMergableBase, LocationOSMBorderBase):
     Model for all subareas of country, greater than towns/villages/places.
     """
 
+    denorm_fields = ('country', 'countrysubarea')
+    country = DenormArrayField(max_length=255)
+    countrysubarea = DenormArrayField(max_length=255)
+
     class Meta:
         ordering = ['-area', 'relation_osm_id']
 
@@ -57,6 +64,13 @@ class Place(LocationOSMBorderBase):
     """
     Model for all towns/villages/places
     """
+    denorm_fields = ('country', 'countrysubarea', 'place')
+    country = DenormArrayField(max_length=255)
+    countrysubarea = DenormArrayField(max_length=255)
+    place = DenormArrayField(max_length=255)
+
+    # has_duplicated_name = models.BooleanField(default=False)
+    # near_place = DenormArrayField(max_length=255)
 
     class Meta:
         ordering = ['-area', 'relation_osm_id', 'node_osm_id']
@@ -75,6 +89,12 @@ class PlaceSubarea(LocationMergableBase, LocationOSMBorderBase):
     Model for all subareas of towns/villages/places, greater than street eg. districts
     """
 
+    denorm_fields = ('country', 'countrysubarea', 'place', 'placesubarea')
+    country = DenormArrayField(max_length=255)
+    countrysubarea = DenormArrayField(max_length=255)
+    place = DenormArrayField(max_length=255)
+    placesubarea = DenormArrayField(max_length=255)
+
     class Meta:
         ordering = ['-area', 'relation_osm_id']
 
@@ -84,5 +104,12 @@ class PlaceSubarea(LocationMergableBase, LocationOSMBorderBase):
 
 
 class Street(LocationMergableBase, LocationOSMMultilineBase):
+
+    denorm_fields = ('country', 'countrysubarea', 'place', 'placesubarea')
+    country = DenormArrayField(max_length=255)
+    countrysubarea = DenormArrayField(max_length=255)
+    place = DenormArrayField(max_length=255)
+    placesubarea = DenormArrayField(max_length=255)
+
     class Meta:
         ordering = ['-length', 'relation_osm_id', 'way_osm_id']

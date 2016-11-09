@@ -110,7 +110,7 @@ class Command(BaseCommand):
 
             # populate countries
             if Country.objects.count() == 0:
-                call_command('locations_import_countries')
+                call_command('loaddata', 'locations_country.json')
 
             # for each country from arguments ...
             for country in options['country']:

@@ -5,12 +5,15 @@ from datetime import datetime
 from django.conf import settings
 from django.contrib.gis.geos import MultiLineString, LineString, Polygon, MultiPolygon
 from django.contrib.gis.geos.geometry import GEOSGeometry
-from django.db import transaction, reset_queries
-from django.db.models import Count
+from django.contrib.postgres.aggregates.general import ArrayAgg
+from django.db import transaction, reset_queries, connection
+from django.db.models import Count, Min
 from django.utils.functional import cached_property
 from imposm.parser import OSMParser
 from shapely.ops import polygonize
-from .. import Country, CountrySubarea, Place, PlaceSubarea, Street
+from tqdm import tqdm
+
+from .. import Country, CountrySubarea, Place, PlaceSubarea, Street, MergeMultiline
 from ..caches.base import MemoryCache
 
 
@@ -82,7 +85,6 @@ class BaseImporter(object):
 
         self.mark_as_parsed_and_cached()
 
-    @transaction.atomic
     def do_import(self):
         if not self._is_parsed_and_cached:
             self.parse_and_create_cache()
@@ -93,19 +95,22 @@ class BaseImporter(object):
 
         start = datetime.now()
         print("Importing Relations %s ..." % start)
-        self._import_relations()
+        with transaction.atomic():
+            self._import_relations()
         end = datetime.now()
         print("Importing Relations ended: %s, took: %s!\n" % (end, end - start))
 
         start = datetime.now()
         print("Importing Ways %s ..." % start)
-        self._import_ways()
+        with transaction.atomic():
+            self._import_ways()
         end = datetime.now()
         print("Importing Ways ended: %s, took: %s!\n" % (end, end - start))
 
         start = datetime.now()
         print("Importing Coords and Nodes %s ..." % start)
-        self._import_nodes()
+        with transaction.atomic():
+            self._import_nodes()
         end = datetime.now()
         print("Importing Coords and Nodes ended: %s, took: %s!\n" % (end, end - start))
 
@@ -116,8 +121,8 @@ class BaseImporter(object):
         """
         Use this method to unmerge locations (eg. before updating from new country OSM file)
         """
-        for model_class in self.location_models_mergable:
-            model_class.objects_all.all().update(is_merged=False)
+        for model_class in tqdm(self.location_models_mergable, desc='Doing unmerge...', leave=False):
+            model_class.objects_all.all().mark_as_not_merged()
 
     def do_merge(self):
         """
@@ -252,6 +257,13 @@ class BaseImporter(object):
             return MultiLineString(lines)
         else:
             return None
+
+    @classmethod
+    def _get_admin_centre_node_id_from_members(cls, members):
+        for member in members:
+            if member[1] == 'node' and member[2] == 'admin_centre':
+                return member[0]
+        return None
 
     def _get_merged_multiline_from_members(self, members):
         multiline = self._get_multiline_from_members(members)
@@ -422,35 +434,49 @@ class BaseImporter(object):
         return city.subareas.values('name').annotate(Count('name')).filter(name__count__gt=1).values_list(
             'name',
             flat=True
+        ).order_by()
+
+    @classmethod
+    def _merge_place_subareas(cls, place):
+        duplicated_subarea_names = tqdm(
+            cls._get_duplicated_citysubarea_names(place),
+            desc=u'Doing merge of PlaceSubareas for {}...'.format(place),
+            leave=False
         )
+        for duplicated_subarea_name in duplicated_subarea_names:
+            with transaction.atomic():
+                duplicated_subareas = place.subareas.filter(name=duplicated_subarea_name).order_by('id').iterator()
+                merge_base = duplicated_subareas.next()
+                tqdm.write(u"{}, PlaceSubarea {} is duplicated - merging!".format(place, duplicated_subarea_name))
+                for duplicated_subarea in duplicated_subareas:
+                    merge_base.border += duplicated_subarea.border
+                    duplicated_subarea.mark_as_merged()
+                merge_base.border = cls.merge_multipolygon(merge_base.border)
+                merge_base.save()
 
     @classmethod
-    def _merge_city_subareas(cls, city):
-        for duplicated_subarea_name in cls._get_duplicated_citysubarea_names(city):
-            print(u'{}, merging: {} subarea.'.format(city, duplicated_subarea_name))
-            duplicated_subareas = city.subareas.filter(name=duplicated_subarea_name).order_by('id')
-            merge_base = duplicated_subareas.first()
-            for duplicated_subarea in duplicated_subareas[1:]:
-                merge_base.border += duplicated_subarea.border
-                duplicated_subarea.mark_as_merged()
-            merge_base.border = cls.merge_multipolygon(merge_base.border)
-            merge_base.save()
+    def _get_duplicated_street_tuples(cls, place):
+        return place.streets.values(
+            'name'
+        ).annotate(
+            id_min=Min('id'),
+            name_count=Count('name'),
+            ids_array=ArrayAgg('id'),
+            merged_lines=MergeMultiline('lines')
+        ).filter(name_count__gt=1).values_list('name', 'id_min', 'ids_array', 'merged_lines').order_by()
 
     @classmethod
-    def _get_duplicated_street_names(cls, city):
-        return city.streets.values('name').annotate(Count('name')).filter(name__count__gt=1).values_list(
-            'name',
-            flat=True
+    def _merge_streets(cls, place):
+        streets_to_merge = tqdm(
+            list(cls._get_duplicated_street_tuples(place)),
+            desc=u'Doing merge of Streets for {}...'.format(place),
+            leave=False
         )
-
-    @classmethod
-    def _merge_streets(cls, city):
-        for duplicated_street_name in cls._get_duplicated_street_names(city):
-            print(u'{}, merging: {} street.'.format(city, duplicated_street_name))
-            duplicated_streets = city.streets.filter(name=duplicated_street_name).order_by('id')
-            merge_base = duplicated_streets.first()
-            for duplicated_street in duplicated_streets[1:]:
-                merge_base.lines += duplicated_street.lines
-                duplicated_street.mark_as_merged()
-            merge_base.lines = cls.merge_multiline(merge_base.lines)
-            merge_base.save()
+        for name, id_min, ids_array, merged_lines in streets_to_merge:
+            tqdm.write(u"{}, Street {} is duplicated - merging!".format(place, name))
+            ids_array.remove(id_min)
+            with transaction.atomic():
+                # mark as merged
+                Street.objects_all.filter(id__in=ids_array).mark_as_merged()
+                # save one item with lines merged
+                Street.objects_all.filter(id=id_min).update(lines=merged_lines)

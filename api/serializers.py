@@ -26,10 +26,6 @@ LOCATION_OSM_BORDER_BASE_SERIALIZER_FIELDS = LOCATION_BASE_SERIALIZER_FIELDS + \
     LOCATION_BORDER_BASE_SERIALIZER_FIELDS + LOCATION_OSM_BASE_SERIALIZER_FIELDS
 LOCATION_OSM_MULTILINE_BASE_SERIALIZER_FIELDS = LOCATION_BASE_SERIALIZER_FIELDS + \
     LOCATION_MULTILINE_BASE_SERIALIZER_FIELDS + LOCATION_OSM_BASE_SERIALIZER_FIELDS
-LOCATION_OSM_BORDER_BASE_RETRIEVE_SERIALIZER_FIELDS = LOCATION_OSM_BORDER_BASE_SERIALIZER_FIELDS + \
-    LOCATION_BORDER_BASE_RETRIEVE_SERIALIZER_FIELDS
-LOCATION_OSM_MULTILINE_BASE_RETRIEVE_SERIALIZER_FIELDS = LOCATION_OSM_MULTILINE_BASE_SERIALIZER_FIELDS + \
-    LOCATION_MULTILINE_BASE_RETRIEVE_SERIALIZER_FIELDS
 
 
 class CountryBaseSerializer(serializers.HyperlinkedModelSerializer):
@@ -62,12 +58,35 @@ class CountrySubareaBaseSerializer(serializers.HyperlinkedModelSerializer):
         view_name='countrysubarea-detail',
         lookup_field='slug'
     )
+    near_countrysubareas = serializers.HyperlinkedIdentityField(
+        view_name='countrysubarea-near-countrysubareas',
+        lookup_field='slug'
+    )
+    near_places = serializers.HyperlinkedIdentityField(
+        view_name='countrysubarea-near-places',
+        lookup_field='slug'
+    )
+    near_placesubareas = serializers.HyperlinkedIdentityField(
+        view_name='countrysubarea-near-placesubareas',
+        lookup_field='slug'
+    )
+    near_streets = serializers.HyperlinkedIdentityField(
+        view_name='countrysubarea-near-streets',
+        lookup_field='slug'
+    )
     places = serializers.HyperlinkedIdentityField(view_name='countrysubarea-places', lookup_field='slug')
     streets = serializers.HyperlinkedIdentityField(view_name='countrysubarea-streets', lookup_field='slug')
 
     class Meta:
         model = CountrySubarea
-        fields = LOCATION_OSM_BORDER_BASE_SERIALIZER_FIELDS + ('places', 'streets')
+        fields = LOCATION_OSM_BORDER_BASE_SERIALIZER_FIELDS + CountrySubarea.denorm_fields + (
+            'near_countrysubareas',
+            'near_places',
+            'near_placesubareas',
+            'near_streets',
+            'places',
+            'streets',
+        )
 
 
 class CountrySubareaDefaultSerializer(CountrySubareaBaseSerializer):
@@ -77,7 +96,7 @@ class CountrySubareaDefaultSerializer(CountrySubareaBaseSerializer):
 
 class CountrySubareaRetrieveSerializer(CountrySubareaBaseSerializer):
     class Meta(CountrySubareaBaseSerializer.Meta):
-        fields = LOCATION_OSM_BORDER_BASE_RETRIEVE_SERIALIZER_FIELDS
+        fields = CountrySubareaBaseSerializer.Meta.fields + LOCATION_BORDER_BASE_RETRIEVE_SERIALIZER_FIELDS
 
 
 class PlaceBaseSerializer(serializers.HyperlinkedModelSerializer):
@@ -85,13 +104,30 @@ class PlaceBaseSerializer(serializers.HyperlinkedModelSerializer):
         view_name='place-detail',
         lookup_field='slug'
     )
+    near_places = serializers.HyperlinkedIdentityField(
+        view_name='place-near-places',
+        lookup_field='slug'
+    )
+    near_placesubareas = serializers.HyperlinkedIdentityField(
+        view_name='place-near-placesubareas',
+        lookup_field='slug'
+    )
+    near_streets = serializers.HyperlinkedIdentityField(
+        view_name='place-near-streets',
+        lookup_field='slug'
+    )
     subareas = serializers.HyperlinkedIdentityField(view_name='place-subareas', lookup_field='slug')
     streets = serializers.HyperlinkedIdentityField(view_name='place-streets', lookup_field='slug')
 
     class Meta:
         model = Place
-        fields = LOCATION_BASE_SERIALIZER_FIELDS + LOCATION_BORDER_BASE_SERIALIZER_FIELDS + \
-            ('subareas', 'streets')
+        fields = LOCATION_OSM_BORDER_BASE_SERIALIZER_FIELDS + Place.denorm_fields + (
+            'near_places',
+            'near_placesubareas',
+            'near_streets',
+            'subareas',
+            'streets'
+        )
 
 
 class PlaceDefaultSerializer(PlaceBaseSerializer):
@@ -101,16 +137,22 @@ class PlaceDefaultSerializer(PlaceBaseSerializer):
 
 class PlaceRetrieveSerializer(PlaceBaseSerializer):
     class Meta(PlaceBaseSerializer.Meta):
-        fields = LOCATION_OSM_BORDER_BASE_RETRIEVE_SERIALIZER_FIELDS + \
-            ('subareas', 'streets')
+        fields = PlaceBaseSerializer.Meta.fields + LOCATION_BORDER_BASE_RETRIEVE_SERIALIZER_FIELDS
 
 
 class PlaceSubareaBaseSerializer(serializers.HyperlinkedModelSerializer):
-    streets = serializers.HyperlinkedIdentityField(view_name='placesubarea-streets', lookup_field='slug')
+    url = serializers.HyperlinkedIdentityField(
+        view_name='placesubarea-detail',
+        lookup_field='slug'
+    )
+    streets = serializers.HyperlinkedIdentityField(
+        view_name='placesubarea-streets',
+        lookup_field='slug'
+    )
 
     class Meta:
         model = PlaceSubarea
-        fields = LOCATION_BASE_SERIALIZER_FIELDS + LOCATION_BORDER_BASE_SERIALIZER_FIELDS + \
+        fields = LOCATION_OSM_BORDER_BASE_SERIALIZER_FIELDS + PlaceSubarea.denorm_fields + \
             ('streets',)
 
 
@@ -121,8 +163,7 @@ class PlaceSubareaDefaultSerializer(PlaceSubareaBaseSerializer):
 
 class PlaceSubareaRetrieveSerializer(PlaceSubareaBaseSerializer):
     class Meta(PlaceSubareaBaseSerializer.Meta):
-        fields = LOCATION_OSM_BORDER_BASE_RETRIEVE_SERIALIZER_FIELDS + \
-            ('streets',)
+        fields = PlaceSubareaBaseSerializer.Meta.fields + LOCATION_BORDER_BASE_RETRIEVE_SERIALIZER_FIELDS
 
 
 class StreetBaseSerializer(serializers.HyperlinkedModelSerializer):
@@ -133,7 +174,7 @@ class StreetBaseSerializer(serializers.HyperlinkedModelSerializer):
 
     class Meta:
         model = Street
-        fields = LOCATION_BASE_SERIALIZER_FIELDS + LOCATION_OSM_MULTILINE_BASE_SERIALIZER_FIELDS
+        fields = LOCATION_OSM_MULTILINE_BASE_SERIALIZER_FIELDS + Street.denorm_fields
 
 
 class StreetDefaultSerializer(StreetBaseSerializer):
@@ -143,5 +184,4 @@ class StreetDefaultSerializer(StreetBaseSerializer):
 
 class StreetRetrieveSerializer(StreetBaseSerializer):
     class Meta(StreetBaseSerializer.Meta):
-        fields = LOCATION_OSM_MULTILINE_BASE_RETRIEVE_SERIALIZER_FIELDS
-
+        fields = StreetBaseSerializer.Meta.fields + LOCATION_MULTILINE_BASE_RETRIEVE_SERIALIZER_FIELDS
