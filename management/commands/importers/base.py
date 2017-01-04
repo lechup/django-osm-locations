@@ -329,7 +329,6 @@ class BaseImporter(object):
             - tags: {'name': 'Whatever'}
             - members: [(123, 'way', 'outer'), (234, 'node', 'inner') ...]
         """
-        # print 'starting relations_callback %d...' % len(relations)
         for osm_id, tags, members in relations:
             if self._is_relation_to_cache(osm_id, tags, members):
                 self._cache_relation(osm_id, tags, members)

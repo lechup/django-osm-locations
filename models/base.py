@@ -87,8 +87,8 @@ class LocationBorderBase(LocationBase):
             self.gborder = self.border
 
     @cached_property
-    def near_border(self):
-        return self.border.envelope.buffer(10 * self.NEAR_BORDER_STEP)
+    def border_bbox(self):
+        return self.border.envelope
 
     @cached_property
     def models(self):
@@ -100,36 +100,21 @@ class LocationBorderBase(LocationBase):
             'street': Street,
         }
 
-    def nearest(self):
-        """
-        Return nearest location object instance for current location object that have border defined. Used for
-        generating Place.near_place.
-        :return: Place instance or None
-        """
-        nearest = None
-        for i in range(0, 10):
-            nearest = self.__class__.objects.exclude(border=None).exclude(pk=self.pk).filter(
-                border__intersects=self.border.buffer((i + 1) * self.NEAR_BORDER_STEP)
-            ).first()
-            if nearest is not None:
-                break
-        return nearest
-
     @property
     def near_countrysubareas(self):
-        return self.models['countrysubarea'].objects.exclude(pk=self.pk).filter(center__within=self.near_border)
+        return self.models['countrysubarea'].objects.exclude(pk=self.pk).filter(center__within=self.border_bbox)
 
     @property
     def near_places(self):
-        return self.models['place'].objects.exclude(pk=self.pk).filter(center__within=self.near_border)
+        return self.models['place'].objects.exclude(pk=self.pk).filter(center__within=self.border_bbox)
 
     @property
     def near_placesubareas(self):
-        return self.models['placesubarea'].objects.filter(center__within=self.near_border)
+        return self.models['placesubarea'].objects.filter(center__within=self.border_bbox)
 
     @property
     def near_streets(self):
-        return self.models['street'].objects.filter(center__within=self.near_border)
+        return self.models['street'].objects.filter(center__within=self.border_bbox)
 
     def save(self, *args, **kwargs):
         self._set_gborder()
