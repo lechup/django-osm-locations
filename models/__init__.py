@@ -20,17 +20,19 @@ class Country(LocationBorderBase):
 
     @property
     def subareas(self):
-        return CountrySubarea.objects.filter(border__intersects=self.border)
+        return CountrySubarea.objects.filter(center__within=self.bbox_polygon)
 
     @property
     def places(self):
-        return Place.objects.filter(
-            models.Q(border__intersects=self.border) | models.Q(center__intersects=self.border)
-        )
+        return Place.objects.filter(center__within=self.bbox_polygon)
+
+    @property
+    def placesubareas(self):
+        return PlaceSubarea.objects.filter(center__within=self.bbox_polygon)
 
     @property
     def streets(self):
-        return Street.objects.filter(lines__intersects=self.border)
+        return Street.objects.filter(center__within=self.bbox_polygon)
 
 
 class CountrySubarea(LocationMergableBase, LocationOSMBorderBase):
@@ -47,17 +49,15 @@ class CountrySubarea(LocationMergableBase, LocationOSMBorderBase):
 
     @property
     def subareas(self):
-        return PlaceSubarea.objects.filter(border__intersects=self.border)
+        return PlaceSubarea.objects.filter(center__within=self.bbox)
 
     @property
     def places(self):
-        return Place.objects.filter(
-            models.Q(border__intersects=self.border) | models.Q(center__intersects=self.border)
-        )
+        return Place.objects.filter(center__within=self.bbox)
 
     @property
     def streets(self):
-        return Street.objects.filter(lines__intersects=self.border)
+        return Street.objects.filter(center__within=self.bbox)
 
 
 class Place(LocationOSMBorderBase):
@@ -77,11 +77,11 @@ class Place(LocationOSMBorderBase):
 
     @property
     def subareas(self):
-        return PlaceSubarea.objects.filter(border__intersects=self.border)
+        return PlaceSubarea.objects.filter(center__within=self.bbox)
 
     @property
     def streets(self):
-        return Street.objects.filter(lines__intersects=self.border)
+        return Street.objects.filter(center__within=self.bbox)
 
 
 class PlaceSubarea(LocationMergableBase, LocationOSMBorderBase):

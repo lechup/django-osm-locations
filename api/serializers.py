@@ -5,7 +5,7 @@ from ..models import Country, CountrySubarea, Place, PlaceSubarea, Street
 
 
 LOCATION_BASE_SERIALIZER_FIELDS = (
-    'url', 'id', 'name', 'slug'
+    'url', 'id', 'name', 'slug', 'bbox'
 )
 LOCATION_BORDER_BASE_SERIALIZER_FIELDS = (
     'center', 'area'
@@ -34,13 +34,14 @@ class CountryBaseSerializer(serializers.HyperlinkedModelSerializer):
         lookup_field='slug'
     )
     places = serializers.HyperlinkedIdentityField(view_name='country-places', lookup_field='slug')
+    placesubareas = serializers.HyperlinkedIdentityField(view_name='country-placesubareas', lookup_field='slug')
     subareas = serializers.HyperlinkedIdentityField(view_name='country-subareas', lookup_field='slug')
     streets = serializers.HyperlinkedIdentityField(view_name='country-streets', lookup_field='slug')
 
     class Meta:
         model = Country
         fields = LOCATION_BASE_SERIALIZER_FIELDS + LOCATION_BORDER_BASE_SERIALIZER_FIELDS + \
-            ('iso2', 'iso3', 'un', 'population', 'places', 'subareas', 'streets')
+            ('iso2', 'iso3', 'un', 'population', 'places', 'placesubareas', 'subareas', 'streets')
 
 
 class CountryDefaultSerializer(CountryBaseSerializer):

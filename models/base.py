@@ -1,4 +1,6 @@
 from django.contrib.gis.db import models as gis_models
+from django.contrib.gis.geos import Polygon
+from django.contrib.postgres.fields.array import ArrayField
 from django.db import models
 from django.utils.functional import cached_property
 from django.utils.text import slugify
@@ -13,6 +15,13 @@ class LocationBase(gis_models.Model):
     """
     name = models.CharField(max_length=255)
     slug = models.SlugField(max_length=255, editable=False)
+    bbox = ArrayField(
+        models.FloatField(),
+        size=4,
+        default=list,
+        help_text='Bouding box - array of 4 floats, first 2 are coordinates of SoutWest point, second 2 are '
+                  'cordinates of NortEast point.'
+    )
 
     objects = gis_models.Manager()
 
@@ -22,6 +31,54 @@ class LocationBase(gis_models.Model):
     @cached_property
     def slugify(self):
         return slugify(unidecode(self.name))
+
+    @classmethod
+    def get_polygon_from_bbox(cls, bbox):
+        if len(bbox) == 4:
+            bbox_polygon_points = [
+                (bbox[0], bbox[1]),
+                (bbox[2], bbox[1]),
+                (bbox[2], bbox[3]),
+                (bbox[0], bbox[3]),
+                (bbox[0], bbox[1])
+            ]
+            return Polygon(bbox_polygon_points)
+        else:
+            return Polygon()
+
+    @cached_property
+    def bbox_polygon(self):
+        """
+        Return bouding box as a django.contrib.gis.geos.Polygon.
+        """
+
+        return self.__class__.get_polygon_from_bbox(self.bbox)
+
+    @cached_property
+    def near_bbox(self):
+        """
+        Return bounding box that is expanded by 50km each way.
+        :return: list of 4 floats, [:2] SW point, [3:] NE point or empty list
+        """
+
+        delta = 0.41875  # around 50km
+        if len(self.bbox) == 4:
+            return [
+                self.bbox[0] - delta,
+                self.bbox[1] - delta,
+                self.bbox[2] + delta,
+                self.bbox[3] + delta,
+            ]
+        else:
+            return []
+
+    @cached_property
+    def near_bbox_polygon(self):
+        """
+        Return near bouding box as a django.contrib.gis.geos.Polygon.
+        """
+
+        return self.__class__.get_polygon_from_bbox(self.near_bbox)
 
     def _set_slug(self):
         if not self.slug:
@@ -62,8 +119,6 @@ class LocationOSMBase(gis_models.Model):
 
 
 class LocationBorderBase(LocationBase):
-    NEAR_BORDER_STEP = 0.01
-
     center = gis_models.PointField(default=None, null=True, blank=True)
     area = models.FloatField(default=0, blank=True, db_index=True)
     border = gis_models.MultiPolygonField(default=None, null=True, blank=True)
@@ -86,9 +141,31 @@ class LocationBorderBase(LocationBase):
         if self.border:
             self.gborder = self.border
 
-    @cached_property
-    def border_bbox(self):
-        return self.border.envelope
+    @property
+    def center_bbox(self):
+        """
+        Return bounding box calculated as 1km from self.center each way.
+        :return: list of 4 floats, [:2] SW point, [3:] NE point or empty list
+        """
+
+        delta = 0.009  # around one km in coordinates
+        if self.center:
+            return [
+                self.center[0] - delta,
+                self.center[1] - delta,
+                self.center[0] + delta,
+                self.center[1] + delta,
+            ]
+        else:
+            return []
+
+    def _set_bbox(self):
+        # use border to count bounding_box
+        if self.border:
+            self.bbox = list(self.border.extent)
+        # use center to count bouding_box
+        elif self.center:
+            self.bbox = self.center_bbox
 
     @cached_property
     def models(self):
@@ -102,24 +179,25 @@ class LocationBorderBase(LocationBase):
 
     @property
     def near_countrysubareas(self):
-        return self.models['countrysubarea'].objects.exclude(pk=self.pk).filter(center__within=self.border_bbox)
+        return self.models['countrysubarea'].objects.exclude(pk=self.pk).filter(center__within=self.bbox_polygon)
 
     @property
     def near_places(self):
-        return self.models['place'].objects.exclude(pk=self.pk).filter(center__within=self.border_bbox)
+        return self.models['place'].objects.exclude(pk=self.pk).filter(center__within=self.bbox_polygon)
 
     @property
     def near_placesubareas(self):
-        return self.models['placesubarea'].objects.filter(center__within=self.border_bbox)
+        return self.models['placesubarea'].objects.filter(center__within=self.bbox_polygon)
 
     @property
     def near_streets(self):
-        return self.models['street'].objects.filter(center__within=self.border_bbox)
+        return self.models['street'].objects.filter(center__within=self.bbox_polygon)
 
     def save(self, *args, **kwargs):
         self._set_gborder()
         self._set_center()
         self._set_area()
+        self._set_bbox()
         super(LocationBorderBase, self).save(*args, **kwargs)
 
     class Meta:
@@ -144,7 +222,12 @@ class LocationMultilineBase(LocationBase):
     class Meta:
         abstract = True
 
+    def _set_bbox(self):
+        if self.lines:
+            self.bbox = list(self.lines.extent)
+
     def save(self, *args, **kwargs):
+        self._set_bbox()
         super(LocationMultilineBase, self).save(*args, **kwargs)
 
 

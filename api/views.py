@@ -60,6 +60,11 @@ class CountryViewSet(BaseBorderLocationViewSet):
         return self.get_datail_paginated_queryset_response(PlaceDefaultSerializer, request, 'places', slug)
 
     @detail_route()
+    def placesubareas(self, request, slug):
+        return self.get_datail_paginated_queryset_response(
+            PlaceSubareaDefaultSerializer, request, 'placesubareas', slug)
+
+    @detail_route()
     def streets(self, request, slug):
         return self.get_datail_paginated_queryset_response(StreetDefaultSerializer, request, 'streets', slug)
 
