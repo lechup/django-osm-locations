@@ -37,15 +37,15 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         border_model_classes = [Country, CountrySubarea, Place, PlaceSubarea]
         for border_model_class in border_model_classes:
-            print("{} - calculating areas...".format(border_model_class.__name__))
+            print(u"{} - calculating areas...".format(border_model_class.__name__).encode('utf-8'))
             with transaction.atomic():
                 self.set_area(border_model_class)
 
         lines_model_classes = [Street]
         for lines_model_class in lines_model_classes:
-            print("{} - calculating lengths...".format(lines_model_class.__name__))
+            print(u"{} - calculating lengths...".format(lines_model_class.__name__).encode('utf-8'))
             with transaction.atomic():
                 self.set_length(lines_model_class)
-            print("{} - calculating centers...".format(lines_model_class.__name__))
+            print(u"{} - calculating centers...".format(lines_model_class.__name__).encode('utf-8'))
             with transaction.atomic():
                 self.set_center_for_lines(lines_model_class)

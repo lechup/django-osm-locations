@@ -59,9 +59,9 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         area_model_classes = [Country, CountrySubarea, Place, PlaceSubarea, Street]
         for area_model_class in area_model_classes:
-            print(u"{} - calculating default slugs...".format(area_model_class.__name__))
+            print("{} - calculating default slugs...".format(area_model_class.__name__))
             with transaction.atomic():
                 self.set_default_slugs(area_model_class)
-            print(u"{} - calculating unique slugs...".format(area_model_class.__name__))
+            print("{} - calculating unique slugs...".format(area_model_class.__name__))
             with transaction.atomic():
                 self.set_unique_slugs(area_model_class)

@@ -75,7 +75,8 @@ class Command(BaseCommand):
     @transaction.atomic
     def clean_denorm_fields_after_update(cls):
         """
-        Remove dummy empty element {'', ''}, we are adding during cls.clean_denorm_fields_before_update() from all denorm fields.
+        Remove dummy empty element {'', ''}, we are adding during cls.clean_denorm_fields_before_update() from all
+        denorm fields.
         """
         for model_class_to_clean in cls.MODEL_CLASSES_TO_CLEAN:
             print("{} - cleaning denorm fields after update...".format(model_class_to_clean.__name__))
@@ -104,7 +105,7 @@ class Command(BaseCommand):
                 leave=False,
                 desc=u'Updating {}'.format(
                     obj.name
-                )
+                ).encode('utf-8')
             )
             for denormalized_model_class in denormalized_model_classes:
                 field_name = model_class_to_update.__name__.lower()
