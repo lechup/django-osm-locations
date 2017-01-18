@@ -49,15 +49,15 @@ class CountrySubarea(LocationMergableBase, LocationOSMBorderBase):
 
     @property
     def subareas(self):
-        return PlaceSubarea.objects.filter(center__within=self.bbox)
+        return PlaceSubarea.objects.filter(center__within=self.bbox_polygon)
 
     @property
     def places(self):
-        return Place.objects.filter(center__within=self.bbox)
+        return Place.objects.filter(center__within=self.bbox_polygon)
 
     @property
     def streets(self):
-        return Street.objects.filter(center__within=self.bbox)
+        return Street.objects.filter(center__within=self.bbox_polygon)
 
 
 class Place(LocationOSMBorderBase):
@@ -69,19 +69,16 @@ class Place(LocationOSMBorderBase):
     countrysubarea = DenormArrayField(max_length=255)
     place = DenormArrayField(max_length=255)
 
-    # has_duplicated_name = models.BooleanField(default=False)
-    # near_place = DenormArrayField(max_length=255)
-
     class Meta:
         ordering = ['-area', 'relation_osm_id', 'node_osm_id']
 
     @property
     def subareas(self):
-        return PlaceSubarea.objects.filter(center__within=self.bbox)
+        return PlaceSubarea.objects.filter(center__within=self.bbox_polygon)
 
     @property
     def streets(self):
-        return Street.objects.filter(center__within=self.bbox)
+        return Street.objects.filter(center__within=self.bbox_polygon)
 
 
 class PlaceSubarea(LocationMergableBase, LocationOSMBorderBase):
@@ -100,7 +97,7 @@ class PlaceSubarea(LocationMergableBase, LocationOSMBorderBase):
 
     @property
     def streets(self):
-        return Street.objects.filter(lines__intersects=self.border)
+        return Street.objects.filter(center__within=self.bbox_polygon)
 
 
 class Street(LocationMergableBase, LocationOSMMultilineBase):

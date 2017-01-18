@@ -179,19 +179,19 @@ class LocationBorderBase(LocationBase):
 
     @property
     def near_countrysubareas(self):
-        return self.models['countrysubarea'].objects.exclude(pk=self.pk).filter(center__within=self.bbox_polygon)
+        return self.models['countrysubarea'].objects.exclude(pk=self.pk).filter(center__within=self.near_bbox_polygon)
 
     @property
     def near_places(self):
-        return self.models['place'].objects.exclude(pk=self.pk).filter(center__within=self.bbox_polygon)
+        return self.models['place'].objects.exclude(pk=self.pk).filter(center__within=self.near_bbox_polygon)
 
     @property
     def near_placesubareas(self):
-        return self.models['placesubarea'].objects.filter(center__within=self.bbox_polygon)
+        return self.models['placesubarea'].objects.filter(center__within=self.near_bbox_polygon)
 
     @property
     def near_streets(self):
-        return self.models['street'].objects.filter(center__within=self.bbox_polygon)
+        return self.models['street'].objects.filter(center__within=self.near_bbox_polygon)
 
     def save(self, *args, **kwargs):
         self._set_gborder()
