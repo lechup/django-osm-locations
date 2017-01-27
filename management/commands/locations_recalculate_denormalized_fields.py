@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from django.core.management.base import BaseCommand
 from django.db import transaction, connection
+from django.utils.text import slugify
 from tqdm import tqdm
 
 from .. import Country, CountrySubarea, Place, PlaceSubarea, Street
@@ -103,9 +104,11 @@ class Command(BaseCommand):
             denormalized_model_classes = tqdm(
                 cls.DENORMALIZED_MODEL_CLASSES_TO_UPDATE_DICT[model_name],
                 leave=False,
-                desc=u'Updating {}'.format(
-                    obj.name
-                ).encode('utf-8')
+                desc=slugify(
+                    u'Updating {}'.format(
+                        obj.name
+                    )
+                )
             )
             for denormalized_model_class in denormalized_model_classes:
                 field_name = model_class_to_update.__name__.lower()
