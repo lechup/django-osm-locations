@@ -1,3 +1,6 @@
+from __future__ import unicode_literals
+
+from django.utils.encoding import python_2_unicode_compatible
 from django.contrib.gis.db import models as gis_models
 from django.contrib.gis.geos import Polygon
 from django.contrib.postgres.fields.array import ArrayField
@@ -9,6 +12,7 @@ from unidecode import unidecode
 from .managers import MergableDefaultManager, MergableAllManager
 
 
+@python_2_unicode_compatible
 class LocationBase(gis_models.Model):
     """
     Abstract model used for other location models.
@@ -22,8 +26,6 @@ class LocationBase(gis_models.Model):
         help_text='Bouding box - array of 4 floats, first 2 are coordinates of SoutWest point, second 2 are '
                   'cordinates of NortEast point.'
     )
-
-    objects = gis_models.Manager()
 
     class Meta:
         abstract = True
@@ -88,14 +90,15 @@ class LocationBase(gis_models.Model):
         self._set_slug()
         super(LocationBase, self).save(*args, **kwargs)
 
-    def __unicode__(self):
-        return u'{}: {} ({})'.format(
+    def __str__(self):
+        return '{}: {} ({})'.format(
             self.__class__.__name__,
             self.name,
             self.id,
         )
 
 
+@python_2_unicode_compatible
 class LocationOSMBase(gis_models.Model):
     node_osm_id = models.BigIntegerField(default=None, null=True)
     way_osm_id = models.BigIntegerField(default=None, null=True)
@@ -104,8 +107,8 @@ class LocationOSMBase(gis_models.Model):
     class Meta:
         abstract = True
 
-    def __unicode__(self):
-        return u'{}: {}, {} (Node OSMID: {}, Way OSMID: {}, Relation OSMID: {})'.format(
+    def __str__(self):
+        return '{}: {}, {} (Node OSMID: {}, Way OSMID: {}, Relation OSMID: {})'.format(
             self.__class__.__name__,
             self.name,
             self.id,
@@ -126,8 +129,6 @@ class LocationBorderBase(LocationBase):
     # on geography types, details:
     # https://docs.djangoproject.com/en/1.10/ref/contrib/gis/model-api/#geography-type
     gborder = gis_models.MultiPolygonField(default=None, null=True, blank=True, geography=True)
-
-    objects = gis_models.Manager()
 
     def _set_center(self):
         if self.border and not self.center:
@@ -216,8 +217,6 @@ class LocationMultilineBase(LocationBase):
     center = gis_models.PointField(default=None, null=True, blank=True)
     length = models.FloatField(default=0, blank=True, db_index=True)
     lines = gis_models.MultiLineStringField(default=None, null=True, blank=True)
-
-    objects = gis_models.Manager()
 
     class Meta:
         abstract = True

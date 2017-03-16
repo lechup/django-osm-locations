@@ -1,4 +1,4 @@
-import itertools
+from __future__ import unicode_literals
 
 from django.db import models
 
@@ -14,7 +14,7 @@ class Country(LocationBorderBase):
     population = models.IntegerField(default=None, null=True, blank=True)
 
     class Meta:
-        verbose_name_plural = u'countries'
+        verbose_name_plural = 'countries'
         unique_together = ('iso2', 'iso3', 'un')
         ordering = ['-area']
 
