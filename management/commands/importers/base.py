@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from __future__ import unicode_literals
 from collections import defaultdict
 from datetime import datetime
 
@@ -343,7 +344,7 @@ class BaseImporter(object):
 
     def _cache_ways(self, ways):
         """
-            Callback for parsing Ways and storing in redis cache.
+            Callback for parsing Ways and storing in cache.
             Ways are saved as ({tags}, [refs])
         """
         for osm_id, tags, refs in ways:
@@ -362,7 +363,7 @@ class BaseImporter(object):
 
     def _cache_nodes(self, nodes):
         """
-            Callback for parsing Coords (Nodes without tags) and storing in redis cache.
+            Callback for parsing Coords (Nodes without tags) and storing in cache.
             Coords are saved as (x, y)
         """
         for osm_id, tags, coords in nodes:
@@ -377,7 +378,7 @@ class BaseImporter(object):
 
     def _save_coords_in_cache(self, coords):
         """
-            Callback for parsing Coords (Nodes without tags) and storing in redis cache.
+            Callback for parsing Coords (Nodes without tags) and storing in cache.
             Coords are saved as (x, y)
         """
         for osm_id, x, y in coords:
@@ -439,14 +440,14 @@ class BaseImporter(object):
     def _merge_place_subareas(cls, place):
         duplicated_subarea_names = tqdm(
             cls._get_duplicated_citysubarea_names(place),
-            desc=u'Doing merge of PlaceSubareas for {}...'.format(place),
+            desc='Doing merge of PlaceSubareas for {}...'.format(place),
             leave=False
         )
         for duplicated_subarea_name in duplicated_subarea_names:
             with transaction.atomic():
                 duplicated_subareas = place.subareas.filter(name=duplicated_subarea_name).order_by('id').iterator()
                 merge_base = duplicated_subareas.next()
-                tqdm.write(u"{}, PlaceSubarea {} is duplicated - merging!".format(place, duplicated_subarea_name))
+                tqdm.write('{}, PlaceSubarea {} is duplicated - merging!' .format(place, duplicated_subarea_name))
                 for duplicated_subarea in duplicated_subareas:
                     merge_base.border += duplicated_subarea.border
                     duplicated_subarea.mark_as_merged()
@@ -468,11 +469,11 @@ class BaseImporter(object):
     def _merge_streets(cls, place):
         streets_to_merge = tqdm(
             list(cls._get_duplicated_street_tuples(place)),
-            desc=u'Doing merge of Streets for {}...'.format(place),
+            desc='Doing merge of Streets for {}...'.format(place),
             leave=False
         )
         for name, id_min, ids_array, merged_lines in streets_to_merge:
-            tqdm.write(u"{}, Street {} is duplicated - merging!".format(place, name))
+            tqdm.write('{}, Street {} is duplicated - merging!'.format(place, name))
             ids_array.remove(id_min)
             with transaction.atomic():
                 # mark as merged

@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from __future__ import unicode_literals
 from django.contrib.gis.geos import Point, MultiPolygon
 
 from tqdm import tqdm
@@ -26,7 +27,7 @@ class PolandImporter(BaseImporter):
         country_subareas = self.country.subareas.exclude(border=None).iterator()
         country_subarea_count = self.country.subareas.exclude(border=None).count()
         for country_subarea in tqdm(
-                country_subareas, total=country_subarea_count, desc=u'Doing merge of CountrySubareas...', leave=False):
+                country_subareas, total=country_subarea_count, desc='Doing merge of CountrySubareas...', leave=False):
             self._merge_country_subareas(country_subarea)
 
         # remove duplicates from locations below places eg:
@@ -34,7 +35,7 @@ class PolandImporter(BaseImporter):
         places = self.country.places.exclude(border=None).iterator()
         places_count = self.country.places.exclude(border=None).count()
         for place in tqdm(places, total=places_count,
-                desc=u'Doing merge of Places...', leave=False):
+                desc='Doing merge of Places...', leave=False):
             self._merge_place_subareas(place)
             self._merge_streets(place)
 
@@ -42,7 +43,7 @@ class PolandImporter(BaseImporter):
     def _merge_country_subareas(cls, country_subarea):
         is_country_subarea_place = Place.objects.filter(border=country_subarea.border).exists()
         if is_country_subarea_place:
-            tqdm.write(u"{}, is also a Place - merged!".format(country_subarea))
+            tqdm.write('{}, is also a Place - merged!'.format(country_subarea))
             country_subarea.mark_as_merged()
 
     def update_country_border(self):

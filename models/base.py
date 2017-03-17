@@ -1,3 +1,6 @@
+from __future__ import unicode_literals
+
+from django.utils.encoding import python_2_unicode_compatible
 from django.contrib.gis.db import models as gis_models
 from django.contrib.gis.geos import Polygon
 from django.contrib.postgres.fields.array import ArrayField
@@ -10,6 +13,7 @@ from unidecode import unidecode
 from .managers import MergableDefaultManager, MergableAllManager
 
 
+@python_2_unicode_compatible
 class LocationBase(gis_models.Model):
     """
     Abstract model used for other location models.
@@ -23,7 +27,10 @@ class LocationBase(gis_models.Model):
         help_text='Bouding box - array of 4 floats, first 2 are coordinates of SoutWest point, second 2 are '
                   'cordinates of NortEast point.'
     )
+<<<<<<< HEAD
     search_vector = SearchVectorField(default=None, null=True)
+=======
+>>>>>>> a751b891133bd6e31d1569c0860085be3bfc0a2a
 
     class Meta:
         abstract = True
@@ -88,14 +95,15 @@ class LocationBase(gis_models.Model):
         self._set_slug()
         super(LocationBase, self).save(*args, **kwargs)
 
-    def __unicode__(self):
-        return u'{}: {} ({})'.format(
+    def __str__(self):
+        return '{}: {} ({})'.format(
             self.__class__.__name__,
             self.name,
             self.id,
         )
 
 
+@python_2_unicode_compatible
 class LocationOSMBase(gis_models.Model):
     node_osm_id = models.BigIntegerField(default=None, null=True, db_index=True)
     way_osm_id = models.BigIntegerField(default=None, null=True, db_index=True)
@@ -104,8 +112,8 @@ class LocationOSMBase(gis_models.Model):
     class Meta:
         abstract = True
 
-    def __unicode__(self):
-        return u'{}: {}, {} (Node OSMID: {}, Way OSMID: {}, Relation OSMID: {})'.format(
+    def __str__(self):
+        return '{}: {}, {} (Node OSMID: {}, Way OSMID: {}, Relation OSMID: {})'.format(
             self.__class__.__name__,
             self.name,
             self.id,

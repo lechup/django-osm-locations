@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from __future__ import unicode_literals
 from django.core.management.base import BaseCommand
 from django.db import transaction, connection
 from django.db.models import F, Value
@@ -47,7 +48,7 @@ class Command(BaseCommand):
                 'function': 'ST_Within'
             }
 
-        sql = u"""
+        sql = """
             UPDATE "locations_{model_name}" SET {field_name} =
             array_cat({field_name}, {array_value}) WHERE
               {ST_Function}({ST_Field}, ST_GeomFromEWKB('\\x{border_ewkb}'))
@@ -64,7 +65,7 @@ class Command(BaseCommand):
 
     @classmethod
     def get_sql_array_value(cls, obj):
-        return u"""ARRAY['{}', '{}']::varchar[]""".format(obj.name.replace(u"'", u"''"), obj.slug)
+        return """ARRAY['{}', '{}']::varchar[]""".format(obj.name.replace("'", "''"), obj.slug)
 
     @classmethod
     def get_sql_for_clean_denorm_fields(cls, model_name, field_name):
@@ -109,7 +110,7 @@ class Command(BaseCommand):
                 cls.DENORMALIZED_MODEL_CLASSES_TO_UPDATE_DICT[model_name],
                 leave=False,
                 desc=slugify(
-                    u'Updating {}'.format(
+                    'Updating {}'.format(
                         obj.name
                     )
                 )
