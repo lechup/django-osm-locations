@@ -1,8 +1,4 @@
-<<<<<<< HEAD
-=======
 from __future__ import unicode_literals
-
->>>>>>> a751b891133bd6e31d1569c0860085be3bfc0a2a
 from django.db import models
 
 from .base import LocationBorderBase, LocationOSMBorderBase, LocationOSMMultilineBase, \

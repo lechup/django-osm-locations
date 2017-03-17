@@ -27,10 +27,7 @@ class LocationBase(gis_models.Model):
         help_text='Bouding box - array of 4 floats, first 2 are coordinates of SoutWest point, second 2 are '
                   'cordinates of NortEast point.'
     )
-<<<<<<< HEAD
     search_vector = SearchVectorField(default=None, null=True)
-=======
->>>>>>> a751b891133bd6e31d1569c0860085be3bfc0a2a
 
     class Meta:
         abstract = True
