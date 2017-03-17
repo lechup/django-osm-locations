@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 from django.core.management.base import BaseCommand
 from django.db import transaction, connection
+from django.db.models import F, Value
+from django.db.models.expressions import RawSQL
+from django.db.models.functions import Concat
 from django.utils.text import slugify
 from tqdm import tqdm
 
@@ -13,6 +16,7 @@ class Command(BaseCommand):
     DENORMALIZED_MODEL_CLASSES = [Country, CountrySubarea, Place, PlaceSubarea, Street]
     MODEL_CLASSES_TO_UPDATE = DENORMALIZED_MODEL_CLASSES[:4]
     MODEL_CLASSES_TO_CLEAN = DENORMALIZED_MODEL_CLASSES[1:]
+    MODEL_CASSES_TO_SEARCH_UPDATE = DENORMALIZED_MODEL_CLASSES
     DENORMALIZED_MODEL_CLASSES_TO_UPDATE_DICT = {
         'Country': DENORMALIZED_MODEL_CLASSES[1:],
         'CountrySubarea': DENORMALIZED_MODEL_CLASSES[1:],
@@ -153,6 +157,43 @@ class Command(BaseCommand):
             print("{} - updating denorm fields...".format(model_class_to_update.__name__))
             cls.update_denorm_fields_for_model_class(model_class_to_update)
 
+    @classmethod
+    def get_sql_for_search_vector(cls, model_class):
+        search_concat_args = []
+        if hasattr(model_class, 'denorm_fields'):
+            for denorm_field in model_class.denorm_fields:
+                search_concat_args.append(
+                    """replace(
+                        slugify(
+                            array_to_string(
+                                {denorm_field}[1:array_length({denorm_field}, 1)][1],
+                                ' '
+                            )
+                        ),
+                        '-',
+                        ' '
+                    )""".format(**{
+                        'denorm_field': denorm_field
+                    })
+                )
+                search_concat_args.append("' '")
+        search_concat_args.append("replace(slugify(name), '-', ' ')")
+        return """
+            UPDATE "locations_{model_name}" SET search_vector = to_tsvector('english', concat({search_concat_args}));
+        """.format(**{
+            'model_name': model_class.__name__.lower(),
+            'search_concat_args': ", ".join(search_concat_args)
+        })
+
+    @classmethod
+    @transaction.atomic
+    def update_search_vector_field(cls):
+        for denormalized_model_class in cls.DENORMALIZED_MODEL_CLASSES:
+            print("{} - updating search vector field...".format(denormalized_model_class.__name__))
+            sql = cls.get_sql_for_search_vector(denormalized_model_class)
+            with connection.cursor() as cursor:
+                cursor.execute(sql)
+
     def handle(self, *args, **options):
         # clear
         self.clean_denorm_fields_before_update()
@@ -160,3 +201,5 @@ class Command(BaseCommand):
         self.update_denorm_fields()
         # clean
         self.clean_denorm_fields_after_update()
+        # update search vector
+        self.update_search_vector_field()

@@ -18,7 +18,7 @@ class Migration(migrations.Migration):
                 BEGIN
                   RETURN lower(translate(str,
                     'äëïöüáéíóúâêîûôåãõàèìòùřšěčůńýśćłęążźĄŃÝŚĆŁĘÄËÏÖÜÁÉÍÓÚÂÊÎÛÔÅÃÕÀÈÌÒÙŘŠĚČŮŻŹß ²ø®:;(),./\"’`''',
-                    'aeiouaeiouaeiouaaoaeioursecunyscleazzANYSCLEAEIOUAEIOUAEIOUAAOAEIOURSECUZzs-2dR'
+                    'aeiouaeiouaeiouaaoaeioursecunyscleazzANYSCLEAEIOUAEIOUAEIOUAAOAEIOURSECUZzs-2oR'
                     -- missing chars will be removed
                   ));
                 END

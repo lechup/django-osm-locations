@@ -1,8 +1,6 @@
-import itertools
-
 from django.db import models
 
-from .base import LocationBase, LocationBorderBase, LocationOSMBorderBase, LocationOSMMultilineBase, \
+from .base import LocationBorderBase, LocationOSMBorderBase, LocationOSMMultilineBase, \
     LocationMergableBase
 from .fields import DenormArrayField
 

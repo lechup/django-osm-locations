@@ -1,6 +1,7 @@
 from django.contrib.gis.db import models as gis_models
 from django.contrib.gis.geos import Polygon
 from django.contrib.postgres.fields.array import ArrayField
+from django.contrib.postgres.search import SearchVectorField
 from django.db import models
 from django.utils.functional import cached_property
 from django.utils.text import slugify
@@ -22,8 +23,7 @@ class LocationBase(gis_models.Model):
         help_text='Bouding box - array of 4 floats, first 2 are coordinates of SoutWest point, second 2 are '
                   'cordinates of NortEast point.'
     )
-
-    objects = gis_models.Manager()
+    search_vector = SearchVectorField(default=None, null=True)
 
     class Meta:
         abstract = True
@@ -97,9 +97,9 @@ class LocationBase(gis_models.Model):
 
 
 class LocationOSMBase(gis_models.Model):
-    node_osm_id = models.BigIntegerField(default=None, null=True)
-    way_osm_id = models.BigIntegerField(default=None, null=True)
-    relation_osm_id = models.BigIntegerField(default=None, null=True)
+    node_osm_id = models.BigIntegerField(default=None, null=True, db_index=True)
+    way_osm_id = models.BigIntegerField(default=None, null=True, db_index=True)
+    relation_osm_id = models.BigIntegerField(default=None, null=True, db_index=True)
 
     class Meta:
         abstract = True
@@ -126,8 +126,6 @@ class LocationBorderBase(LocationBase):
     # on geography types, details:
     # https://docs.djangoproject.com/en/1.10/ref/contrib/gis/model-api/#geography-type
     gborder = gis_models.MultiPolygonField(default=None, null=True, blank=True, geography=True)
-
-    objects = gis_models.Manager()
 
     def _set_center(self):
         if self.border and not self.center:
@@ -216,8 +214,6 @@ class LocationMultilineBase(LocationBase):
     center = gis_models.PointField(default=None, null=True, blank=True)
     length = models.FloatField(default=0, blank=True, db_index=True)
     lines = gis_models.MultiLineStringField(default=None, null=True, blank=True)
-
-    objects = gis_models.Manager()
 
     class Meta:
         abstract = True

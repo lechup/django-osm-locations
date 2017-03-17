@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
 from django.core.exceptions import ObjectDoesNotExist
 from django.http.response import Http404
-from rest_framework import viewsets, filters
+from rest_framework import viewsets
 from rest_framework.decorators import detail_route
 from rest_framework.response import Response
 
+from .filters import (
+    SearchFilterCountry, SearchFilterCountrySubarea, SearchFilterPlace, SearchFilterPlaceSubarea, SearchFilterStreet
+)
 from .serializers import (CountryDefaultSerializer, CountryRetrieveSerializer, CountrySubareaDefaultSerializer,
                           CountrySubareaRetrieveSerializer, PlaceDefaultSerializer, PlaceRetrieveSerializer,
                           PlaceSubareaDefaultSerializer, PlaceSubareaRetrieveSerializer, StreetDefaultSerializer,
@@ -14,8 +17,6 @@ from ..models import Country, CountrySubarea, Place, PlaceSubarea, Street
 
 class BaseLocationViewSet(viewsets.ReadOnlyModelViewSet):
     retrieve_serialize_class = None
-    filter_backends = (filters.SearchFilter,)
-    search_fields = ('name',)
     lookup_field = 'slug'
     ordering_fields = ('name',)
 
@@ -47,6 +48,7 @@ class BaseBorderLocationViewSet(BaseLocationViewSet):
 
 
 class CountryViewSet(BaseBorderLocationViewSet):
+    filter_class = SearchFilterCountry
     queryset = Country.objects.all()
     serializer_class = CountryDefaultSerializer
     retrieve_serialize_class = CountryRetrieveSerializer
@@ -70,6 +72,7 @@ class CountryViewSet(BaseBorderLocationViewSet):
 
 
 class CountrySubareaViewSet(BaseBorderLocationViewSet):
+    filter_class = SearchFilterCountrySubarea
     queryset = CountrySubarea.objects.all()
     serializer_class = CountrySubareaDefaultSerializer
     retrieve_serialize_class = CountrySubareaRetrieveSerializer
@@ -104,6 +107,7 @@ class CountrySubareaViewSet(BaseBorderLocationViewSet):
 
 
 class PlaceViewSet(BaseBorderLocationViewSet):
+    filter_class = SearchFilterPlace
     queryset = Place.objects.all()
     serializer_class = PlaceDefaultSerializer
     retrieve_serialize_class = PlaceRetrieveSerializer
@@ -135,6 +139,7 @@ class PlaceViewSet(BaseBorderLocationViewSet):
 
 
 class PlaceSubareaViewSet(BaseBorderLocationViewSet):
+    filter_class = SearchFilterPlaceSubarea
     queryset = PlaceSubarea.objects.all()
     serializer_class = PlaceSubareaDefaultSerializer
     retrieve_serialize_class = PlaceSubareaRetrieveSerializer
@@ -145,6 +150,7 @@ class PlaceSubareaViewSet(BaseBorderLocationViewSet):
 
 
 class StreetViewSet(BaseBorderLocationViewSet):
+    filter_class = SearchFilterStreet
     queryset = Street.objects.all()
     serializer_class = StreetDefaultSerializer
     retrieve_serialize_class = StreetRetrieveSerializer
