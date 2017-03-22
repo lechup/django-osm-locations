@@ -36,7 +36,7 @@ def get_search_queryset(queryset, name, value):
             if search_query is None:
                 search_query = SearchQueryToTsquery(search_vector)
             else:
-                search_query = search_query & SearchQueryToTsquery(search_vector)
+                search_query &= SearchQueryToTsquery(search_vector)
     return queryset.filter(
         search_vector=search_query
     )
@@ -45,27 +45,30 @@ def get_search_queryset(queryset, name, value):
 class SearchFilterBase(django_filters.FilterSet):
     search = django_filters.CharFilter(name='search', method=get_search_queryset)
 
+    class Meta:
+        fields = ['search']
+
 
 class SearchFilterCountry(SearchFilterBase):
-    class Meta:
+    class Meta(SearchFilterBase.Meta):
         model = Country
 
 
 class SearchFilterCountrySubarea(SearchFilterBase):
-    class Meta:
+    class Meta(SearchFilterBase.Meta):
         model = CountrySubarea
 
 
 class SearchFilterPlace(SearchFilterBase):
-    class Meta:
+    class Meta(SearchFilterBase.Meta):
         model = Place
 
 
 class SearchFilterPlaceSubarea(SearchFilterBase):
-    class Meta:
+    class Meta(SearchFilterBase.Meta):
         model = PlaceSubarea
 
 
 class SearchFilterStreet(SearchFilterBase):
-    class Meta:
+    class Meta(SearchFilterBase.Meta):
         model = Street
