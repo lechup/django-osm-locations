@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import unicode_literals
 
-from django.template.defaultfilters import slugify
+from django.template.defaultfilters import slugify as django_slugify
 
 
 CHAR_MAP = {
@@ -85,6 +85,6 @@ def slugify(string, do_slugify=True, overwrite_char_map=None):
 
     # apply django default slugify
     if do_slugify:
-        string = slugify(string)
+        string = django_slugify(string)
 
     return string
