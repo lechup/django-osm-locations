@@ -1,21 +1,20 @@
 # -*- coding: utf-8 -*-
 from __future__ import unicode_literals
-from django.contrib.gis.geos import Point, MultiPolygon
 
+from django.contrib.gis.geos import Point, MultiPolygon
 from tqdm import tqdm
 
 from .base import BaseImporter
 from .. import CountrySubarea, Place, PlaceSubarea, Street
-from ..caches.base import MemoryCache
 
 
 class PolandImporter(BaseImporter):
-    def __init__(self, country_slug, file_path, verbose=0, cache_class=MemoryCache, cache_args=None, cache_kwargs=None):
-        super(PolandImporter, self).__init__(country_slug, file_path, verbose, cache_class, cache_args, cache_kwargs)
+    def __init__(self, country_slug, file_path, *args, **kwargs):
+        super(PolandImporter, self).__init__(country_slug, file_path, *args, **kwargs)
         # place can be imported from relation - it's center is node that later is imported
         # we use that cache to cache nodes_ids of relation centers, so that we won't have duplicates
         # see: https://www.openstreetmap.org/relation/3267973
-        self.already_imported_place_node_ids = cache_class(*self.cache_args, **self.cache_kwargs)
+        self.already_imported_place_node_ids = set()
 
     def do_import(self):
         super(PolandImporter, self).do_import()
@@ -57,7 +56,7 @@ class PolandImporter(BaseImporter):
         return any([
             self.__is_relation_street(osm_id, tags, members),
             self.__is_relation_place(osm_id, tags, members),
-            self.__is_relation_citysubarea(osm_id, tags, members),
+            self.__is_relation_placesubarea(osm_id, tags, members),
             self.__is_relation_countrysubarea(osm_id, tags, members),
         ])
 
@@ -100,7 +99,7 @@ class PolandImporter(BaseImporter):
         return False
 
     @classmethod
-    def __is_relation_citysubarea(cls, osm_id, tags, members):
+    def __is_relation_placesubarea(cls, osm_id, tags, members):
         if 'admin_level' in tags and tags['admin_level'] in ['9', '10', '11'] and 'name' in tags and \
            'boundary' in tags and tags['boundary'] == 'administrative':
             return True
@@ -152,7 +151,7 @@ class PolandImporter(BaseImporter):
                     admin_centre_node = self.nodes_cache.get(admin_centre_node_id)
                     _, coords = admin_centre_node
                     create_or_update_dict['center'] = Point(coords)
-                    self.already_imported_place_node_ids.set(admin_centre_node_id, True)
+                    self.already_imported_place_node_ids.add(admin_centre_node_id)
                 self.create_or_update(Place, create_or_update_dict)
             return True
         return False
@@ -171,7 +170,7 @@ class PolandImporter(BaseImporter):
         return False
 
     def _import_place_from_node(self, osm_id, tags, coords):
-        if not self.already_imported_place_node_ids.exists(osm_id) and self.__is_node_place(osm_id, tags, coords):
+        if osm_id not in self.already_imported_place_node_ids and self.__is_node_place(osm_id, tags, coords):
             print(tags['name'], osm_id)
             self.create_or_update(Place, {
                 'node_osm_id': osm_id,
@@ -182,7 +181,7 @@ class PolandImporter(BaseImporter):
         return False
 
     def _import_placesubarea_from_relation(self, osm_id, tags, members):
-        if self.__is_relation_citysubarea(osm_id, tags, members) and self._are_all_members_cached(members):
+        if self.__is_relation_placesubarea(osm_id, tags, members) and self._are_all_members_cached(members):
             border = self._get_multipolygon_from_members(members)
             admin_centre_node_id = self._get_admin_centre_node_id_from_members(members)
             if border:

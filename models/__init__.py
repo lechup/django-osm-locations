@@ -79,6 +79,10 @@ class Place(LocationOSMBorderBase):
     def streets(self):
         return Street.objects.filter(center__within=self.bbox_polygon)
 
+    @property
+    def streets_within_border(self):
+        return Street.objects.filter(center__within=self.border)
+
 
 class PlaceSubarea(LocationMergableBase, LocationOSMBorderBase):
     """

@@ -7,7 +7,7 @@ from django.conf import settings
 from django.contrib.gis.geos import MultiLineString, LineString, Polygon, MultiPolygon
 from django.contrib.gis.geos.geometry import GEOSGeometry
 from django.contrib.postgres.aggregates.general import ArrayAgg
-from django.db import transaction, reset_queries, connection
+from django.db import transaction, reset_queries
 from django.db.models import Count, Min
 from django.utils.functional import cached_property
 from imposm.parser import OSMParser
@@ -15,7 +15,17 @@ from shapely.ops import polygonize
 from tqdm import tqdm
 
 from .. import Country, CountrySubarea, Place, PlaceSubarea, Street, MergeMultiline
-from ..caches.base import MemoryCache
+from ..caches.base import MemoryCache, MemcachedCache, DiskCache, FileCache
+
+
+if getattr(settings, 'LOCATIONS_MEMCACHED_CACHE', False):
+    CACHE_CLASS = MemcachedCache
+elif getattr(settings, 'LOCATIONS_DISK_CACHE', False):
+    CACHE_CLASS = DiskCache
+elif getattr(settings, 'LOCATIONS_FILE_CACHE', False):
+    CACHE_CLASS = FileCache
+else:
+    CACHE_CLASS = MemoryCache
 
 
 class BaseImporter(object):
@@ -24,7 +34,7 @@ class BaseImporter(object):
     location_models_not_mergable = [Place]
     location_models = location_models_mergable + location_models_not_mergable
 
-    def __init__(self, country_slug, file_path, verbose=0, cache_class=MemoryCache, cache_args=None, cache_kwargs=None):
+    def __init__(self, country_slug, file_path, verbose=0):
         self.country = Country.objects.get(slug=country_slug)
 
         self.file_path = file_path
@@ -32,14 +42,9 @@ class BaseImporter(object):
 
         self._is_parsed_and_cached = False
 
-        if cache_args is None:
-            self.cache_args = []
-        if cache_kwargs is None:
-            self.cache_kwargs = {}
-
-        self.nodes_cache = cache_class(*self.cache_args, **self.cache_kwargs)
-        self.ways_cache = cache_class(*self.cache_args, **self.cache_kwargs)
-        self.relations_cache = cache_class(*self.cache_args, **self.cache_kwargs)
+        self.nodes_cache = CACHE_CLASS()
+        self.ways_cache = CACHE_CLASS()
+        self.relations_cache = CACHE_CLASS()
 
     def mark_as_parsed_and_cached(self):
         self._is_parsed_and_cached = True
@@ -333,6 +338,7 @@ class BaseImporter(object):
         for osm_id, tags, members in relations:
             if self._is_relation_to_cache(osm_id, tags, members):
                 self._cache_relation(osm_id, tags, members)
+        self.relations_cache.commit()
 
     def _cache_relation(self, osm_id, tags, members):
         self.relations_cache.set(osm_id, (tags, members))
@@ -355,6 +361,7 @@ class BaseImporter(object):
             else:
                 if self._is_way_to_cache(osm_id, tags, refs):
                     self._cache_way(osm_id, tags, refs)
+        self.ways_cache.commit()
 
     def _cache_way(self, osm_id, tags, refs):
         self.ways_cache.set(osm_id, (tags, refs))
@@ -372,6 +379,7 @@ class BaseImporter(object):
             else:
                 if self._is_node_to_cache(osm_id, tags, coords):
                     self._cache_node(osm_id, tags, coords)
+        self.nodes_cache.commit()
 
     def _cache_node(self, osm_id, tags, coords):
         self.nodes_cache.set(osm_id, (tags, coords))
@@ -456,7 +464,7 @@ class BaseImporter(object):
 
     @classmethod
     def _get_duplicated_street_tuples(cls, place):
-        return place.streets.values(
+        return place.streets_within_border.values(
             'name'
         ).annotate(
             id_min=Min('id'),
