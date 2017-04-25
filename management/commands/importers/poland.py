@@ -16,10 +16,6 @@ class PolandImporter(BaseImporter):
         # see: https://www.openstreetmap.org/relation/3267973
         self.already_imported_place_node_ids = set()
 
-    def do_import(self):
-        super(PolandImporter, self).do_import()
-        self.update_country_border()
-
     def do_merge(self):
         # remove duplicates from country subareas
         # miasto Warszawa / gmina miejska Warszawa / miasto stołeczne Warszawa
@@ -38,19 +34,19 @@ class PolandImporter(BaseImporter):
             self._merge_place_subareas(place)
             self._merge_streets(place)
 
+    def do_update_country_border(self):
+        country_border = MultiPolygon([])
+        for country_subarea in CountrySubarea.objects.filter(name__icontains='województwo'):
+            country_border = self.merge_multipolygon(country_border + country_subarea.border)
+        self.country.border = country_border
+        self.country.save()
+
     @classmethod
     def _merge_country_subareas(cls, country_subarea):
         is_country_subarea_place = Place.objects.filter(border=country_subarea.border).exists()
         if is_country_subarea_place:
             tqdm.write('{}, is also a Place - merged!'.format(country_subarea))
             country_subarea.mark_as_merged()
-
-    def update_country_border(self):
-        country_border = MultiPolygon([])
-        for country_subarea in CountrySubarea.objects.filter(name__icontains='województwo'):
-            country_border = self.merge_multipolygon(country_border + country_subarea.border)
-        self.country.border = country_border
-        self.country.save()
 
     def _is_relation_to_cache(self, osm_id, tags, members):
         return any([

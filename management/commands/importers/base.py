@@ -120,6 +120,9 @@ class BaseImporter(object):
         end = datetime.now()
         print("Importing Coords and Nodes ended: %s, took: %s!\n" % (end, end - start))
 
+        print("Update'ing %s country border....\n" % (self.__class__.__name__,))
+        self.do_update_country_border()
+
         end = datetime.now()
         print("Importing ended: %s, took: %s." % (end, end - start_all))
 
@@ -135,6 +138,9 @@ class BaseImporter(object):
         Use this method in child class to merge locations (eg. multiple entries of same street or city subarea)
         """
         pass
+
+    def do_update_country_border(self):
+        raise NotImplementedError
 
     @cached_property
     def location_osm_ids_from_db_cache(self):

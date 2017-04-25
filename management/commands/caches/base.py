@@ -59,6 +59,10 @@ class MemoryCache(CacheBase):
 
 
 class MemcachedCache(CacheBase):
+    """
+    Reasonable time, takes less memory than in Python, result in some
+    unhandled state (to much usage of swap + zombie process)
+    """
     _cache_counter = count(0)
 
     def __init__(self, *args, **kwargs):
@@ -106,6 +110,10 @@ class MemcachedCache(CacheBase):
 
 
 class DiskCache(CacheBase):
+    """
+    Use reasonable amount of HDD 1GB osm.pbf -> 1,1GB on HDD, uses SQLite under the hood, takes too much time
+    1GB osm.pbf -> 2 minutes for Relations, 40 minutes for Ways, 14,5 hours for Nodes and Coords
+    """
     _cache_counter = count(0)
 
     def __init__(self, *args, **kwargs):
@@ -155,6 +163,9 @@ class DiskCache(CacheBase):
 
 
 class FileCache(CacheBase):
+    """
+    Cosumes to much space, 1GB osm.pbf -> over 50GB on HDD
+    """
     _cache_counter = count(0)
 
     def __init__(self, *args, **kwargs):
@@ -208,3 +219,6 @@ class FileCache(CacheBase):
         key = self.__class__.key_to_bytes(key)
         return key in self.filecache
 
+
+# as test showed only MemoryCache is usable in sane amount of time, we can still try to giva a shot:
+# https://github.com/yinqiwen/ardb + leveldb
