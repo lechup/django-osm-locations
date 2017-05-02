@@ -15,10 +15,14 @@ class Command(BaseCommand):
     data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'data'))
     osm_repository = 'http://download.geofabrik.de/'
     osm_repository_file_name = '%(country)s-latest.osm.pbf'
-    osm_repository_mapping = {
-        'albania': 'europe/',
+    osm_repository_country_to_geofabric_path_mapping = {
         'poland': 'europe/',
+        'germany': 'europe/',
         'isle-of-man': 'europe/',
+    }
+    osm_repository_country_to_slug_mapping = {
+        'poland': 'polska',
+        'germany': 'deutschland',
     }
     osm_repository_url = '%s%%(country_path)s%%(file_name)s' % (osm_repository,)
 
@@ -37,7 +41,6 @@ class Command(BaseCommand):
             '-u',
             '--update',
             action='store_true',
-            default=False,
             help='Update OSM location structure from default %s or defined by --repo . Default = False.' %
                  self.osm_repository
         )
@@ -45,14 +48,12 @@ class Command(BaseCommand):
             '-i',
             '--import-only',
             action='store_true',
-            default=False,
             help='Make import only, do not run merge. We do import and merge by default. See --merge-only.'
         )
         parser.add_argument(
             '-m',
             '--merge-only',
             action='store_true',
-            default=False,
             help='Make merge only, do not run import. We do import and merge by default. See --import-only.'
         )
         parser.add_argument(
@@ -73,7 +74,7 @@ class Command(BaseCommand):
 
     def _get_osm_url(self, country):
         return self.osm_repository_url % {
-            'country_path': self.osm_repository_mapping[country],
+            'country_path': self.osm_repository_country_to_geofabric_path_mapping[country],
             'file_name': self._get_osm_file_name(country)
         }
 
@@ -99,6 +100,12 @@ class Command(BaseCommand):
         print("Download successful!")
         return True
 
+    @classmethod
+    def is_country_defined(cls, country):
+        is_country_gofabric_mapping = country in cls.osm_repository_country_to_geofabric_path_mapping
+        is_country_slug_mapping = country in cls.osm_repository_country_to_slug_mapping
+        return is_country_gofabric_mapping and is_country_slug_mapping
+
     def handle(self, *args, **options):
         self.osm_repository = options['repo']
 
@@ -113,21 +120,25 @@ class Command(BaseCommand):
                 call_command('loaddata', 'locations_country.json')
 
             # for each country from arguments ...
-            for country in options['country']:
-                country = country.lower()
+            for osm_repository_country in options['country']:
+                osm_repository_country = osm_repository_country.lower()
                 # check if we have mapping for it
-                if country not in self.osm_repository_mapping:
-                    print("'%s' is not known country..." % country)
+                if not self.is_country_defined(osm_repository_country):
+                    print("'%s' is not known country - skipping import..." % osm_repository_country)
                     continue
 
                 # download country data if --update, -u or data does not exists
-                if not os.path.exists(self._get_osm_file_path(country)) or options['update']:
-                    self._download_osm_file(country)
+                if not os.path.exists(self._get_osm_file_path(osm_repository_country)) or options['update']:
+                    self._download_osm_file(osm_repository_country)
 
                 # dynamic import of specific country importer
-                importer_module = importlib.import_module(self._get_module_name(country), self._get_package_name())
-                importer_class = getattr(importer_module, self._get_class_name(country))
-                importer = importer_class(country, self._get_osm_file_path(country))
+                importer_module = importlib.import_module(
+                    self._get_module_name(osm_repository_country),
+                    self._get_package_name()
+                )
+                importer_class = getattr(importer_module, self._get_class_name(osm_repository_country))
+                country_slug = self.osm_repository_country_to_slug_mapping[osm_repository_country]
+                importer = importer_class(country_slug, self._get_osm_file_path(osm_repository_country))
 
                 if (not options['merge_only'] and not options['import_only']) or options['import_only']:
                     importer.do_unmerge()
