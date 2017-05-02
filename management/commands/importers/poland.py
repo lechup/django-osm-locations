@@ -10,7 +10,7 @@ from .. import CountrySubarea, Place, PlaceSubarea, Street
 
 class PolandImporter(BaseImporter):
     def __init__(self, country_slug, file_path, *args, **kwargs):
-        super(PolandImporter, self).__init__(country_slug, file_path, *args, **kwargs)
+        super(self.__class__, self).__init__(country_slug, file_path, *args, **kwargs)
         # place can be imported from relation - it's center is node that later is imported
         # we use that cache to cache nodes_ids of relation centers, so that we won't have duplicates
         # see: https://www.openstreetmap.org/relation/3267973
