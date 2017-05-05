@@ -40,60 +40,12 @@ class BaseImporter(object):
         self.file_path = file_path
         self.verbose = verbose
 
-        self._is_parsed_and_cached = False
-
         self.nodes_cache = CACHE_CLASS()
         self.ways_cache = CACHE_CLASS()
         self.relations_cache = CACHE_CLASS()
 
-    def mark_as_parsed_and_cached(self):
-        self._is_parsed_and_cached = True
-
-    def parse_and_create_cache(self):
-        """
-        parse osm data file and store it in cache by using imposm.parser callbacks
-        http://imposm.org/docs/imposm.parser/latest/concepts.html
-        we store parsed data in 3 caches (relations_cache, nodes_cache, ways_cache)
-        we need to make 3 passes to get whole hierarchy: relations -> ways -> nodes
-        """
-
-        start_all = datetime.now()
-        print("Parsing for %s started %s.\n" % (self.country, start_all))
-
-        # fist pass, cache relations
-        start = datetime.now()
-        print("Creating cache for Relations %s ..." % start)
-        p = OSMParser(concurrency=2, relations_callback=self._cache_relations,
-                      relations_tag_filter=self._tag_filter)
-        p.parse(self.file_path)
-        end = datetime.now()
-        print("Relations cache ended: %s, took: %s!\n" % (end, end - start))
-
-        # second pass, cache ways
-        start = datetime.now()
-        print("Creating cache for Ways %s ..." % start)
-        p = OSMParser(concurrency=2, ways_callback=self._cache_ways, ways_tag_filter=self._tag_filter)
-        p.parse(self.file_path)
-        end = datetime.now()
-        print("Ways cache ended: %s, took: %s!\n" % (end, end - start))
-
-        # third pass, cache nodes / coords
-        start = datetime.now()
-        print("Creating cache for Coords and Nodes %s ..." % start)
-        p = OSMParser(concurrency=2, coords_callback=self._save_coords_in_cache,
-                      nodes_callback=self._cache_nodes)
-        p.parse(self.file_path)
-        end = datetime.now()
-        print("Coords and Nodes cache ended: %s, took: %s!\n" % (end, end - start))
-
-        end = datetime.now()
-        print("Parsing ended: %s, took: %s!\n" % (end, end - start_all))
-
-        self.mark_as_parsed_and_cached()
-
     def do_import(self):
-        if not self._is_parsed_and_cached:
-            self.parse_and_create_cache()
+        self._parse_and_cache()
 
         # save cache to db
         start_all = datetime.now()
@@ -120,7 +72,6 @@ class BaseImporter(object):
         end = datetime.now()
         print("Importing Coords and Nodes ended: %s, took: %s!\n" % (end, end - start))
 
-        print("Update'ing %s country border....\n" % (self.__class__.__name__,))
         self.do_update_country_border()
 
         end = datetime.now()
@@ -140,7 +91,13 @@ class BaseImporter(object):
         pass
 
     def do_update_country_border(self):
-        raise NotImplementedError
+        print("Update'ing %s country border....\n" % (self.__class__.__name__,))
+        country_border = MultiPolygon([])
+        country_subarea_count = CountrySubarea.objects.count()
+        for country_subarea in tqdm(CountrySubarea.objects.all().iterator(), total=country_subarea_count):
+            country_border += country_subarea.border
+        self.country.border = self._merge_multipolygon(country_border)
+        self.country.save()
 
     @cached_property
     def location_osm_ids_from_db_cache(self):
@@ -197,6 +154,63 @@ class BaseImporter(object):
         # to avoid memory consumption...
         if settings.DEBUG:
             reset_queries()
+
+    def _parse_and_cache(self):
+        """
+        parse osm data file and store it in cache by using imposm.parser callbacks
+        http://imposm.org/docs/imposm.parser/latest/concepts.html
+        we store parsed data in 3 caches (relations_cache, ways_cache, nodes_cache)
+        we need to make 3 passes to get whole hierarchy: relations -> ways -> nodes/coords
+        """
+
+        start_all = datetime.now()
+        print("Parsing for %s started %s.\n" % (self.country, start_all))
+
+        self._parse_and_cache_relations()
+        self._parse_and_cache_ways()
+        self._parse_and_cache_nodes_and_cords()
+
+        end = datetime.now()
+        print("Parsing ended: %s, took: %s!\n" % (end, end - start_all))
+
+    def _parse_and_cache_relations(self):
+        start = datetime.now()
+        print("Creating cache for Relations %s ..." % start)
+        p = OSMParser(
+            concurrency=2,
+            relations_callback=self._cache_relations,
+            relations_tag_filter=self._tag_filter
+        )
+        p.parse(self.file_path)
+        del p
+        end = datetime.now()
+        print("Relations cache ended: %s, took: %s!\n" % (end, end - start))
+
+    def _parse_and_cache_ways(self):
+        start = datetime.now()
+        print("Creating cache for Ways %s ..." % start)
+        p = OSMParser(
+            concurrency=2,
+            ways_callback=self._cache_ways,
+            ways_tag_filter=self._tag_filter
+        )
+        p.parse(self.file_path)
+        del p
+        end = datetime.now()
+        print("Ways cache ended: %s, took: %s!\n" % (end, end - start))
+
+    def _parse_and_cache_nodes_and_cords(self):
+        start = datetime.now()
+        print("Creating cache for Coords and Nodes %s ..." % start)
+        p = OSMParser(
+            concurrency=2,
+            coords_callback=self._save_coords_in_cache,
+            nodes_callback=self._cache_nodes
+        )
+        p.parse(self.file_path)
+        del p
+        end = datetime.now()
+        print("Coords and Nodes cache ended: %s, took: %s!\n" % (end, end - start))
 
     def _are_all_members_cached(self, members):
         """
@@ -262,7 +276,7 @@ class BaseImporter(object):
             if member[1] == 'way':
                 lines.append(
                     LineString(
-                        self.get_coords_from_way_refs(self.ways_cache.get(member[0])[1])
+                        self._get_coords_from_way_refs(self.ways_cache.get(member[0])[1])
                     )
                 )
         if lines:
@@ -282,7 +296,7 @@ class BaseImporter(object):
         return self.__class__.merge_multiline(multiline)
 
     def _get_multiline_from_refs(self, refs):
-        coords = self.get_coords_from_way_refs(refs)
+        coords = self._get_coords_from_way_refs(refs)
         if coords:
             return MultiLineString(
                 LineString(coords)
@@ -290,18 +304,35 @@ class BaseImporter(object):
         else:
             return None
 
-    def get_coords_from_way_refs(self, refs):
+    def _get_coords_from_way_refs(self, refs):
         coords = []
         for ref in refs:
             coords.append(self.nodes_cache.get(ref)[1])
         return coords
 
-    @staticmethod
-    def is_way_closed(refs):
+    @classmethod
+    def _is_way_closed(cls, refs):
         return refs[0] == refs[-1]
 
     @classmethod
-    def merge_multipolygon(cls, multipolygon):
+    def _is_valid_street_name(cls, name):
+        """
+        Check whether street name is not only road number like 'L 151' or 'A 2', ignore such streets.
+        :return: boolean
+        """
+        chars_to_strip = [' ', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0']
+        for char_to_strip in chars_to_strip:
+            name = name.replace(char_to_strip, '')
+
+        # we assume that we need at least 3 non numeric signs to create valid
+        # street name
+        if len(name) > 2:
+            return True
+        else:
+            return False
+
+    @classmethod
+    def _merge_multipolygon(cls, multipolygon):
         """
         Always return MutliPolygon even if merging results in one Polygon.
         """
@@ -309,6 +340,19 @@ class BaseImporter(object):
         if type(multipolygon) == Polygon:
             multipolygon = MultiPolygon(multipolygon)
         return multipolygon
+
+    @classmethod
+    def _is_relation_street(cls, osm_id, tags, members):
+        if 'type' in tags and tags['type'] == 'associatedStreet' and 'name' in tags \
+                and cls._is_valid_street_name(tags['name']):
+            return True
+        return False
+
+    @classmethod
+    def _is_way_street(cls, osm_id, tags, refs):
+        if len(refs) > 2 and 'highway' in tags and 'name' in tags and cls._is_valid_street_name(tags['name']):
+            return True
+        return False
 
     @classmethod
     def _get_multipolygon_from_multiline(cls, multiline):
@@ -330,7 +374,7 @@ class BaseImporter(object):
 
             if polygons:
                 multipolygon = MultiPolygon(polygons)
-                return cls.merge_multipolygon(multipolygon)
+                return cls._merge_multipolygon(multipolygon)
 
         return None
 
@@ -425,13 +469,23 @@ class BaseImporter(object):
         raise NotImplementedError
 
     def _is_relation_to_cache(self, osm_id, tags, members):
-        raise NotImplementedError
+        return any([
+            self._is_relation_street(osm_id, tags, members),
+            self._is_relation_place(osm_id, tags, members),
+            self._is_relation_placesubarea(osm_id, tags, members),
+            self._is_relation_countrysubarea(osm_id, tags, members),
+        ])
 
     def _is_way_to_cache(self, osm_id, tags, refs):
-        raise NotImplementedError
+        return any([
+            self._is_way_street(osm_id, tags, refs),
+            self._is_way_place(osm_id, tags, refs),
+        ])
 
     def _is_node_to_cache(self, osm_id, tags, coords):
-        raise NotImplementedError
+        return any([
+            self._is_node_place(osm_id, tags, coords)
+        ])
 
     @classmethod
     def _tag_filter(cls, tags):
@@ -465,7 +519,7 @@ class BaseImporter(object):
                 for duplicated_subarea in duplicated_subareas:
                     merge_base.border += duplicated_subarea.border
                     duplicated_subarea.mark_as_merged()
-                merge_base.border = cls.merge_multipolygon(merge_base.border)
+                merge_base.border = cls._merge_multipolygon(merge_base.border)
                 merge_base.save()
 
     @classmethod

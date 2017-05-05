@@ -127,8 +127,12 @@ class Command(BaseCommand):
                     print("'%s' is not known country - skipping import..." % osm_repository_country)
                     continue
 
+                is_osm_file_downloaded = os.path.exists(
+                    self._get_osm_file_path(osm_repository_country)
+                )
+
                 # download country data if --update, -u or data does not exists
-                if not os.path.exists(self._get_osm_file_path(osm_repository_country)) or options['update']:
+                if not is_osm_file_downloaded or options['update']:
                     self._download_osm_file(osm_repository_country)
 
                 # dynamic import of specific country importer

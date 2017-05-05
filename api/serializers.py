@@ -59,32 +59,12 @@ class CountrySubareaBaseSerializer(serializers.HyperlinkedModelSerializer):
         view_name='countrysubarea-detail',
         lookup_field='slug'
     )
-    near_countrysubareas = serializers.HyperlinkedIdentityField(
-        view_name='countrysubarea-near-countrysubareas',
-        lookup_field='slug'
-    )
-    near_places = serializers.HyperlinkedIdentityField(
-        view_name='countrysubarea-near-places',
-        lookup_field='slug'
-    )
-    near_placesubareas = serializers.HyperlinkedIdentityField(
-        view_name='countrysubarea-near-placesubareas',
-        lookup_field='slug'
-    )
-    near_streets = serializers.HyperlinkedIdentityField(
-        view_name='countrysubarea-near-streets',
-        lookup_field='slug'
-    )
     places = serializers.HyperlinkedIdentityField(view_name='countrysubarea-places', lookup_field='slug')
     streets = serializers.HyperlinkedIdentityField(view_name='countrysubarea-streets', lookup_field='slug')
 
     class Meta:
         model = CountrySubarea
         fields = LOCATION_OSM_BORDER_BASE_SERIALIZER_FIELDS + CountrySubarea.denorm_fields + (
-            'near_countrysubareas',
-            'near_places',
-            'near_placesubareas',
-            'near_streets',
             'places',
             'streets',
         )
@@ -105,27 +85,12 @@ class PlaceBaseSerializer(serializers.HyperlinkedModelSerializer):
         view_name='place-detail',
         lookup_field='slug'
     )
-    near_places = serializers.HyperlinkedIdentityField(
-        view_name='place-near-places',
-        lookup_field='slug'
-    )
-    near_placesubareas = serializers.HyperlinkedIdentityField(
-        view_name='place-near-placesubareas',
-        lookup_field='slug'
-    )
-    near_streets = serializers.HyperlinkedIdentityField(
-        view_name='place-near-streets',
-        lookup_field='slug'
-    )
     subareas = serializers.HyperlinkedIdentityField(view_name='place-subareas', lookup_field='slug')
     streets = serializers.HyperlinkedIdentityField(view_name='place-streets', lookup_field='slug')
 
     class Meta:
         model = Place
         fields = LOCATION_OSM_BORDER_BASE_SERIALIZER_FIELDS + Place.denorm_fields + (
-            'near_places',
-            'near_placesubareas',
-            'near_streets',
             'subareas',
             'streets'
         )

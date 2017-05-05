@@ -27,6 +27,7 @@ class LocationBase(gis_models.Model):
         help_text='Bouding box - array of 4 floats, first 2 are coordinates of SoutWest point, second 2 are '
                   'cordinates of NortEast point.'
     )
+    center = gis_models.PointField(default=None, null=True, blank=True)
     search_vector = SearchVectorField(default=None, null=True)
 
     class Meta:
@@ -58,38 +59,54 @@ class LocationBase(gis_models.Model):
 
         return self.__class__.get_polygon_from_bbox(self.bbox)
 
-    @cached_property
-    def near_bbox(self):
+    def near_bbox(self, delta=0.009):
         """
-        Return bounding box that is expanded by 50km each way.
+        Return bounding box calculated as delta from self.center each way,
+        delta = 0.009 is ~1km in coordinates values.
+
         :return: list of 4 floats, [:2] SW point, [3:] NE point or empty list
         """
-
-        delta = 0.41875  # around 50km
-        if len(self.bbox) == 4:
+        if self.center:
             return [
-                self.bbox[0] - delta,
-                self.bbox[1] - delta,
-                self.bbox[2] + delta,
-                self.bbox[3] + delta,
+                self.center[0] - delta,
+                self.center[1] - delta,
+                self.center[0] + delta,
+                self.center[1] + delta,
             ]
         else:
             return []
 
+    @property
+    def center_bbox(self):
+        return self.near_bbox()
+
     @cached_property
-    def near_bbox_polygon(self):
+    def center_bbox_polygon(self):
         """
-        Return near bouding box as a django.contrib.gis.geos.Polygon.
+        Return center bouding box as a django.contrib.gis.geos.Polygon.
         """
 
-        return self.__class__.get_polygon_from_bbox(self.near_bbox)
+        return self.__class__.get_polygon_from_bbox(self.center_bbox)
 
-    def _set_slug(self):
+    def _presave_slug(self, *args, **kwargs):
         if not self.slug:
             self.slug = self.slugify
 
+    def _presave(self, *args, **kwargs):
+        """
+        run all _presave_X methods of current class
+        that calculates fields based on other fields
+        """
+        save_methods = [
+            save_method for save_method in dir(self) if '_presave_' in save_method and callable(
+                getattr(self, save_method)
+            )
+        ]
+        for save_method in save_methods:
+            getattr(self, save_method)(*args, **kwargs)
+
     def save(self, *args, **kwargs):
-        self._set_slug()
+        self._presave(*args, **kwargs)
         super(LocationBase, self).save(*args, **kwargs)
 
     def __str__(self):
@@ -119,12 +136,8 @@ class LocationOSMBase(gis_models.Model):
             self.relation_osm_id,
         )
 
-    def save(self, *args, **kwargs):
-        super(LocationOSMBase, self).save(*args, **kwargs)
-
 
 class LocationBorderBase(LocationBase):
-    center = gis_models.PointField(default=None, null=True, blank=True)
     area = models.FloatField(default=0, blank=True, db_index=True)
     border = gis_models.MultiPolygonField(default=None, null=True, blank=True)
     # duplicated column for border with geography type enabled, some functions works better
@@ -132,76 +145,25 @@ class LocationBorderBase(LocationBase):
     # https://docs.djangoproject.com/en/1.10/ref/contrib/gis/model-api/#geography-type
     gborder = gis_models.MultiPolygonField(default=None, null=True, blank=True, geography=True)
 
-    def _set_center(self):
+    def _presave_center(self, *args, **kwargs):
         if self.border and not self.center:
             self.center = self.border.point_on_surface
 
-    def _set_area(self):
+    def _presave_area(self, *args, **kwargs):
         if self.gborder and not self.area:
             self.area = self.gborder.area
 
-    def _set_gborder(self):
+    def _presave_gborder(self, *args, **kwargs):
         if self.border:
             self.gborder = self.border
 
-    @property
-    def center_bbox(self):
-        """
-        Return bounding box calculated as 1km from self.center each way.
-        :return: list of 4 floats, [:2] SW point, [3:] NE point or empty list
-        """
-
-        delta = 0.009  # around one km in coordinates
-        if self.center:
-            return [
-                self.center[0] - delta,
-                self.center[1] - delta,
-                self.center[0] + delta,
-                self.center[1] + delta,
-            ]
-        else:
-            return []
-
-    def _set_bbox(self):
+    def _presave_bbox(self, *args, **kwargs):
         # use border to count bounding_box
         if self.border:
             self.bbox = list(self.border.extent)
         # use center to count bouding_box
         elif self.center:
             self.bbox = self.center_bbox
-
-    @cached_property
-    def models(self):
-        from . import CountrySubarea, Place, PlaceSubarea, Street
-        return {
-            'countrysubarea': CountrySubarea,
-            'place': Place,
-            'placesubarea': PlaceSubarea,
-            'street': Street,
-        }
-
-    @property
-    def near_countrysubareas(self):
-        return self.models['countrysubarea'].objects.exclude(pk=self.pk).filter(center__within=self.near_bbox_polygon)
-
-    @property
-    def near_places(self):
-        return self.models['place'].objects.exclude(pk=self.pk).filter(center__within=self.near_bbox_polygon)
-
-    @property
-    def near_placesubareas(self):
-        return self.models['placesubarea'].objects.filter(center__within=self.near_bbox_polygon)
-
-    @property
-    def near_streets(self):
-        return self.models['street'].objects.filter(center__within=self.near_bbox_polygon)
-
-    def save(self, *args, **kwargs):
-        self._set_gborder()
-        self._set_center()
-        self._set_area()
-        self._set_bbox()
-        super(LocationBorderBase, self).save(*args, **kwargs)
 
     class Meta:
         abstract = True
@@ -211,33 +173,30 @@ class LocationOSMBorderBase(LocationBorderBase, LocationOSMBase):
     class Meta:
         abstract = True
 
-    def save(self, *args, **kwargs):
-        super(LocationOSMBorderBase, self).save(*args, **kwargs)
-
 
 class LocationMultilineBase(LocationBase):
-    center = gis_models.PointField(default=None, null=True, blank=True)
     length = models.FloatField(default=0, blank=True, db_index=True)
     lines = gis_models.MultiLineStringField(default=None, null=True, blank=True)
 
     class Meta:
         abstract = True
 
-    def _set_bbox(self):
+    def _presave_length(self, *args, **kwargs):
+        if self.lines and not self.length:
+            self.length = self.lines.length
+
+    def _presave_center(self, *args, **kwargs):
+        if self.lines and not self.center:
+            self.center = self.lines.point_on_surface
+
+    def _presave_bbox(self, *args, **kwargs):
         if self.lines:
             self.bbox = list(self.lines.extent)
-
-    def save(self, *args, **kwargs):
-        self._set_bbox()
-        super(LocationMultilineBase, self).save(*args, **kwargs)
 
 
 class LocationOSMMultilineBase(LocationMultilineBase, LocationOSMBase):
     class Meta:
         abstract = True
-
-    def save(self, *args, **kwargs):
-        super(LocationOSMMultilineBase, self).save(*args, **kwargs)
 
 
 class LocationMergableBase(gis_models.Model):
@@ -260,6 +219,3 @@ class LocationMergableBase(gis_models.Model):
     def mark_as_not_merged(self):
         self.is_merged = False
         self.save(update_fields=['is_merged'])
-
-    def save(self, *args, **kwargs):
-        super(LocationMergableBase, self).save(*args, **kwargs)

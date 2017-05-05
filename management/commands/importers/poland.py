@@ -37,7 +37,7 @@ class PolandImporter(BaseImporter):
     def do_update_country_border(self):
         country_border = MultiPolygon([])
         for country_subarea in CountrySubarea.objects.filter(name__icontains='województwo'):
-            country_border = self.merge_multipolygon(country_border + country_subarea.border)
+            country_border = self._merge_multipolygon(country_border + country_subarea.border)
         self.country.border = country_border
         self.country.save()
 
@@ -48,73 +48,42 @@ class PolandImporter(BaseImporter):
             tqdm.write('{}, is also a Place - merged!'.format(country_subarea))
             country_subarea.mark_as_merged()
 
-    def _is_relation_to_cache(self, osm_id, tags, members):
-        return any([
-            self.__is_relation_street(osm_id, tags, members),
-            self.__is_relation_place(osm_id, tags, members),
-            self.__is_relation_placesubarea(osm_id, tags, members),
-            self.__is_relation_countrysubarea(osm_id, tags, members),
-        ])
-
-    def _is_way_to_cache(self, osm_id, tags, refs):
-        return any([
-            self.__is_way_street(osm_id, tags, refs),
-            self.__is_way_place(osm_id, tags, refs),
-        ])
-
-    def _is_node_to_cache(self, osm_id, tags, coords):
-        return any([
-            self.__is_node_place(osm_id, tags, coords)
-        ])
-
     @classmethod
-    def __is_relation_countrysubarea(cls, osm_id, tags, members):
+    def _is_relation_countrysubarea(cls, osm_id, tags, members):
         if 'admin_level' in tags and tags['admin_level'] in ['4', '6', '7'] and 'name' in tags and \
            'boundary' in tags and tags['boundary'] == 'administrative':
             return True
         return False
 
     @classmethod
-    def __is_relation_place(cls, osm_id, tags, members):
+    def _is_relation_place(cls, osm_id, tags, members):
         if 'admin_level' in tags and tags['admin_level'] in ['8'] and 'name' in tags and \
            'boundary' in tags and tags['boundary'] == 'administrative':
             return True
         return False
 
     @classmethod
-    def __is_way_place(cls, osm_id, tags, refs):
-        if len(refs) > 2 and cls.is_way_closed(refs) and 'place' in tags and\
+    def _is_way_place(cls, osm_id, tags, refs):
+        if len(refs) > 2 and cls._is_way_closed(refs) and 'place' in tags and\
                 tags['place'] in set(('city', 'village', 'hamlet', 'town')) and 'name' in tags:
             return True
         return False
 
     @classmethod
-    def __is_node_place(cls, osm_id, tags, coords):
+    def _is_node_place(cls, osm_id, tags, coords):
         if 'place' in tags and tags['place'] in set(('city', 'village', 'hamlet', 'town')) and 'name' in tags:
             return True
         return False
 
     @classmethod
-    def __is_relation_placesubarea(cls, osm_id, tags, members):
+    def _is_relation_placesubarea(cls, osm_id, tags, members):
         if 'admin_level' in tags and tags['admin_level'] in ['9', '10', '11'] and 'name' in tags and \
            'boundary' in tags and tags['boundary'] == 'administrative':
             return True
         return False
 
-    @classmethod
-    def __is_relation_street(cls, osm_id, tags, members):
-        if 'type' in tags and tags['type'] == 'associatedStreet' and 'name' in tags:
-            return True
-        return False
-
-    @classmethod
-    def __is_way_street(cls, osm_id, tags, refs):
-        if len(refs) > 2 and 'highway' in tags and 'name' in tags:
-            return True
-        return False
-
     def _import_countrysubarea_from_relation(self, osm_id, tags, members):
-        if self.__is_relation_countrysubarea(osm_id, tags, members) and self._are_all_members_cached(members):
+        if self._is_relation_countrysubarea(osm_id, tags, members) and self._are_all_members_cached(members):
             border = self._get_multipolygon_from_members(members)
             admin_centre_node_id = self._get_admin_centre_node_id_from_members(members)
             if border:
@@ -133,7 +102,7 @@ class PolandImporter(BaseImporter):
         return False
 
     def _import_place_from_relation(self, osm_id, tags, members):
-        if self.__is_relation_place(osm_id, tags, members) and self._are_all_members_cached(members):
+        if self._is_relation_place(osm_id, tags, members) and self._are_all_members_cached(members):
             border = self._get_multipolygon_from_members(members)
             admin_centre_node_id = self._get_admin_centre_node_id_from_members(members)
             if border:
@@ -153,7 +122,7 @@ class PolandImporter(BaseImporter):
         return False
 
     def _import_place_from_way(self, osm_id, tags, refs):
-        if self.__is_way_place(osm_id, tags, refs) and self._are_all_refs_cached(refs):
+        if self._is_way_place(osm_id, tags, refs) and self._are_all_refs_cached(refs):
             border = self._get_multipolygon_from_refs(refs)
             if border:
                 print(tags['name'], osm_id)
@@ -166,7 +135,7 @@ class PolandImporter(BaseImporter):
         return False
 
     def _import_place_from_node(self, osm_id, tags, coords):
-        if osm_id not in self.already_imported_place_node_ids and self.__is_node_place(osm_id, tags, coords):
+        if osm_id not in self.already_imported_place_node_ids and self._is_node_place(osm_id, tags, coords):
             print(tags['name'], osm_id)
             self.create_or_update(Place, {
                 'node_osm_id': osm_id,
@@ -177,7 +146,7 @@ class PolandImporter(BaseImporter):
         return False
 
     def _import_placesubarea_from_relation(self, osm_id, tags, members):
-        if self.__is_relation_placesubarea(osm_id, tags, members) and self._are_all_members_cached(members):
+        if self._is_relation_placesubarea(osm_id, tags, members) and self._are_all_members_cached(members):
             border = self._get_multipolygon_from_members(members)
             admin_centre_node_id = self._get_admin_centre_node_id_from_members(members)
             if border:
@@ -198,7 +167,7 @@ class PolandImporter(BaseImporter):
         return False
 
     def _import_street_from_relation(self, osm_id, tags, members):
-        if self.__is_relation_street(osm_id, tags, members) and self._are_all_members_cached(members):
+        if self._is_relation_street(osm_id, tags, members) and self._are_all_members_cached(members):
             print(tags['name'], osm_id)
             self.create_or_update(Street, {
                 'relation_osm_id': osm_id,
@@ -209,7 +178,7 @@ class PolandImporter(BaseImporter):
         return False
 
     def _import_street_from_way(self, osm_id, tags, refs):
-        if self.__is_way_street(osm_id, tags, refs) and self._are_all_refs_cached(refs):
+        if self._is_way_street(osm_id, tags, refs) and self._are_all_refs_cached(refs):
             print(tags['name'], osm_id)
             self.create_or_update(Street, {
                 'way_osm_id': osm_id,

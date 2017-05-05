@@ -78,26 +78,6 @@ class CountrySubareaViewSet(BaseBorderLocationViewSet):
     retrieve_serialize_class = CountrySubareaRetrieveSerializer
 
     @detail_route()
-    def near_countrysubareas(self, request, slug):
-        return self.get_datail_paginated_queryset_response(
-            CountrySubareaDefaultSerializer, request, 'near_countrysubareas', slug)
-
-    @detail_route()
-    def near_places(self, request, slug):
-        return self.get_datail_paginated_queryset_response(
-            PlaceDefaultSerializer, request, 'near_places', slug)
-
-    @detail_route()
-    def near_placesubareas(self, request, slug):
-        return self.get_datail_paginated_queryset_response(
-            PlaceSubareaDefaultSerializer, request, 'near_placesubareas', slug)
-
-    @detail_route()
-    def near_streets(self, request, slug):
-        return self.get_datail_paginated_queryset_response(
-            StreetDefaultSerializer, request, 'near_streets', slug)
-
-    @detail_route()
     def places(self, request, slug):
         return self.get_datail_paginated_queryset_response(PlaceDefaultSerializer, request, 'places', slug)
 
@@ -111,21 +91,6 @@ class PlaceViewSet(BaseBorderLocationViewSet):
     queryset = Place.objects.all()
     serializer_class = PlaceDefaultSerializer
     retrieve_serialize_class = PlaceRetrieveSerializer
-
-    @detail_route()
-    def near_places(self, request, slug):
-        return self.get_datail_paginated_queryset_response(
-            PlaceDefaultSerializer, request, 'near_places', slug)
-
-    @detail_route()
-    def near_placesubareas(self, request, slug):
-        return self.get_datail_paginated_queryset_response(
-            PlaceSubareaDefaultSerializer, request, 'near_placesubareas', slug)
-
-    @detail_route()
-    def near_streets(self, request, slug):
-        return self.get_datail_paginated_queryset_response(
-            StreetDefaultSerializer, request, 'near_streets', slug)
 
     @detail_route()
     def subareas(self, request, slug):
