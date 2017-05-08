@@ -204,7 +204,7 @@ class BaseImporter(object):
         print("Creating cache for Coords and Nodes %s ..." % start)
         p = OSMParser(
             concurrency=2,
-            coords_callback=self._save_coords_in_cache,
+            coords_callback=self._cache_coords,
             nodes_callback=self._cache_nodes
         )
         p.parse(self.file_path)
@@ -424,9 +424,11 @@ class BaseImporter(object):
             Coords are saved as (x, y)
         """
         for osm_id, tags, coords in nodes:
+            # save nodes needed by relations or ways
             if osm_id in self.nodes_cache.precache:
                 self._cache_node(osm_id, tags, coords)
             else:
+                # save nodes which describe part of locations
                 if self._is_node_to_cache(osm_id, tags, coords):
                     self._cache_node(osm_id, tags, coords)
         self.nodes_cache.commit()
@@ -434,12 +436,13 @@ class BaseImporter(object):
     def _cache_node(self, osm_id, tags, coords):
         self.nodes_cache.set(osm_id, (tags, coords))
 
-    def _save_coords_in_cache(self, coords):
+    def _cache_coords(self, coords):
         """
             Callback for parsing Coords (Nodes without tags) and storing in cache.
-            Coords are saved as (x, y)
+            Coords are saved as (x, y) with empty tags in nodes cache.
         """
         for osm_id, x, y in coords:
+            # save coords needed by relations or ways
             if osm_id in self.nodes_cache.precache:
                 self.nodes_cache.set(osm_id, ({}, (x, y)))
 
@@ -489,13 +492,14 @@ class BaseImporter(object):
 
     @classmethod
     def _tag_filter(cls, tags):
-        for key in tags.keys():
-            if key not in cls.whitelist_tags:
-                del tags[key]
-        if 'name' in tags and len(tags) == 1:
-            # tags with only a name have no information
-            # how to handle this element
-            del tags['name']
+        pass
+        # for key in tags.keys():
+        #     if key not in cls.whitelist_tags:
+        #         del tags[key]
+        # if 'name' in tags and len(tags) == 1:
+        #     # tags with only a name have no information
+        #     # how to handle this element
+        #     del tags['name']
 
     @classmethod
     def _get_duplicated_citysubarea_names(cls, city):
