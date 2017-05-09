@@ -29,7 +29,6 @@ else:
 
 
 class BaseImporter(object):
-    whitelist_tags = set(('name', 'admin_level', 'boundary', 'place', 'highway'))
     location_models_mergable = [CountrySubarea, PlaceSubarea, Street]
     location_models_not_mergable = [Place]
     location_models = location_models_mergable + location_models_not_mergable
@@ -168,7 +167,8 @@ class BaseImporter(object):
 
         self._parse_and_cache_relations()
         self._parse_and_cache_ways()
-        self._parse_and_cache_nodes_and_cords()
+        self._parse_and_cache_coords()
+        self._parse_and_cache_nodes()
 
         end = datetime.now()
         print("Parsing ended: %s, took: %s!\n" % (end, end - start_all))
@@ -178,8 +178,7 @@ class BaseImporter(object):
         print("Creating cache for Relations %s ..." % start)
         p = OSMParser(
             concurrency=2,
-            relations_callback=self._cache_relations,
-            relations_tag_filter=self._tag_filter
+            relations_callback=self._cache_relations
         )
         p.parse(self.file_path)
         del p
@@ -191,26 +190,36 @@ class BaseImporter(object):
         print("Creating cache for Ways %s ..." % start)
         p = OSMParser(
             concurrency=2,
-            ways_callback=self._cache_ways,
-            ways_tag_filter=self._tag_filter
+            ways_callback=self._cache_ways
         )
         p.parse(self.file_path)
         del p
         end = datetime.now()
         print("Ways cache ended: %s, took: %s!\n" % (end, end - start))
 
-    def _parse_and_cache_nodes_and_cords(self):
+    def _parse_and_cache_coords(self):
         start = datetime.now()
-        print("Creating cache for Coords and Nodes %s ..." % start)
+        print("Creating cache for Coords %s ..." % start)
         p = OSMParser(
             concurrency=2,
             coords_callback=self._cache_coords,
+        )
+        p.parse(self.file_path)
+        del p
+        end = datetime.now()
+        print("Coords cache ended: %s, took: %s!\n" % (end, end - start))
+
+    def _parse_and_cache_nodes(self):
+        start = datetime.now()
+        print("Creating cache for Nodes %s ..." % start)
+        p = OSMParser(
+            concurrency=2,
             nodes_callback=self._cache_nodes
         )
         p.parse(self.file_path)
         del p
         end = datetime.now()
-        print("Coords and Nodes cache ended: %s, took: %s!\n" % (end, end - start))
+        print("Nodes cache ended: %s, took: %s!\n" % (end, end - start))
 
     def _are_all_members_cached(self, members):
         """
@@ -404,13 +413,9 @@ class BaseImporter(object):
             Ways are saved as ({tags}, [refs])
         """
         for osm_id, tags, refs in ways:
-            # save ways needed by relations
-            if osm_id in self.ways_cache.precache:
+            # save ways needed by relations or save ways which describe part of locations
+            if osm_id in self.ways_cache.precache or self._is_way_to_cache(osm_id, tags, refs):
                 self._cache_way(osm_id, tags, refs)
-            # save ways which describe part of locations
-            else:
-                if self._is_way_to_cache(osm_id, tags, refs):
-                    self._cache_way(osm_id, tags, refs)
         self.ways_cache.commit()
 
     def _cache_way(self, osm_id, tags, refs):
@@ -424,12 +429,9 @@ class BaseImporter(object):
             Coords are saved as (x, y)
         """
         for osm_id, tags, coords in nodes:
-            # save nodes needed by relations or ways
-            if osm_id in self.nodes_cache.precache:
-                self._cache_node(osm_id, tags, coords)
-            else:
-                # save nodes which describe part of locations
-                if self._is_node_to_cache(osm_id, tags, coords):
+            if osm_id != '0':
+                # save nodes needed by relations or ways or save nodes which describe part of locations
+                if osm_id in self.nodes_cache.precache or self._is_node_to_cache(osm_id, tags, coords):
                     self._cache_node(osm_id, tags, coords)
         self.nodes_cache.commit()
 
@@ -445,6 +447,7 @@ class BaseImporter(object):
             # save coords needed by relations or ways
             if osm_id in self.nodes_cache.precache:
                 self.nodes_cache.set(osm_id, ({}, (x, y)))
+        self.nodes_cache.commit()
 
     def _import_relations(self):
         for osm_id in self.relations_cache.keys():
@@ -458,9 +461,8 @@ class BaseImporter(object):
 
     def _import_nodes(self):
         for osm_id in self.nodes_cache.keys():
-            if osm_id != '0':
-                tags, coords = self.nodes_cache.get(osm_id)
-                self._import_node(osm_id, tags, coords)
+            tags, coords = self.nodes_cache.get(osm_id)
+            self._import_node(osm_id, tags, coords)
 
     def _import_relation(self, osm_id, tags, members):
         raise NotImplementedError
@@ -489,17 +491,6 @@ class BaseImporter(object):
         return any([
             self._is_node_place(osm_id, tags, coords)
         ])
-
-    @classmethod
-    def _tag_filter(cls, tags):
-        pass
-        # for key in tags.keys():
-        #     if key not in cls.whitelist_tags:
-        #         del tags[key]
-        # if 'name' in tags and len(tags) == 1:
-        #     # tags with only a name have no information
-        #     # how to handle this element
-        #     del tags['name']
 
     @classmethod
     def _get_duplicated_citysubarea_names(cls, city):

@@ -79,7 +79,7 @@ class GermanyImporter(BaseImporter):
             border = self._get_multipolygon_from_members(members)
             admin_centre_node_id = self._get_admin_centre_node_id_from_members(members)
             if border:
-                print(tags['name'], osm_id)
+                print(tags['name'], 'http://openstreetmap.org/relation/{}'.format(osm_id))
                 create_or_update_dict = {
                     'relation_osm_id': osm_id,
                     'name': tags['name'],
@@ -98,7 +98,7 @@ class GermanyImporter(BaseImporter):
             border = self._get_multipolygon_from_members(members)
             admin_centre_node_id = self._get_admin_centre_node_id_from_members(members)
             if border:
-                print(tags['name'], osm_id)
+                print(tags['name'], 'http://openstreetmap.org/relation/{}'.format(osm_id))
                 create_or_update_dict = {
                     'relation_osm_id': osm_id,
                     'name': tags['name'],
@@ -116,7 +116,7 @@ class GermanyImporter(BaseImporter):
         if self._is_way_place(osm_id, tags, refs) and self._are_all_refs_cached(refs):
             border = self._get_multipolygon_from_refs(refs)
             if border:
-                print(tags['name'], osm_id)
+                print(tags['name'], 'http://openstreetmap.org/way/{}'.format(osm_id))
                 self.create_or_update(Place, {
                     'way_osm_id': osm_id,
                     'name': tags['name'],
@@ -127,7 +127,7 @@ class GermanyImporter(BaseImporter):
 
     def _import_place_from_node(self, osm_id, tags, coords):
         if self._is_node_place(osm_id, tags, coords):
-            print(tags['name'], osm_id)
+            print(tags['name'], 'http://openstreetmap.org/node/{}'.format(osm_id))
             self.create_or_update(Place, {
                 'node_osm_id': osm_id,
                 'name': tags['name'],
@@ -141,8 +141,7 @@ class GermanyImporter(BaseImporter):
             border = self._get_multipolygon_from_members(members)
             admin_centre_node_id = self._get_admin_centre_node_id_from_members(members)
             if border:
-                print(tags['name'], osm_id)
-
+                print(tags['name'], 'http://openstreetmap.org/relation/{}'.format(osm_id))
                 create_or_update_dict = {
                     'relation_osm_id': osm_id,
                     'name': tags['name'],
@@ -159,7 +158,7 @@ class GermanyImporter(BaseImporter):
 
     def _import_street_from_relation(self, osm_id, tags, members):
         if self._is_relation_street(osm_id, tags, members) and self._are_all_members_cached(members):
-            print(tags['name'], osm_id)
+            print(tags['name'], 'http://openstreetmap.org/relation/{}'.format(osm_id))
             self.create_or_update(Street, {
                 'relation_osm_id': osm_id,
                 'name': tags['name'],
@@ -170,7 +169,7 @@ class GermanyImporter(BaseImporter):
 
     def _import_street_from_way(self, osm_id, tags, refs):
         if self._is_way_street(osm_id, tags, refs) and self._are_all_refs_cached(refs):
-            print(tags['name'], osm_id)
+            print(tags['name'], 'http://openstreetmap.org/way/{}'.format(osm_id))
             self.create_or_update(Street, {
                 'way_osm_id': osm_id,
                 'name': tags['name'],
