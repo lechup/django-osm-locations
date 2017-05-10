@@ -226,7 +226,7 @@ class BaseImporter(object):
     @classmethod
     def _tag_filter(cls, tags):
         # reduce memory usage
-        for key in tags:
+        for key in tags.keys():
             if key not in cls.whitelist_tags:
                 del tags[key]
 
