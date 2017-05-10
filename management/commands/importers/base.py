@@ -29,6 +29,7 @@ else:
 
 
 class BaseImporter(object):
+    whitelist_tags = set(['name', 'admin_level', 'boundary', 'place', 'highway'])
     location_models_mergable = [CountrySubarea, PlaceSubarea, Street]
     location_models_not_mergable = [Place]
     location_models = location_models_mergable + location_models_not_mergable
@@ -214,12 +215,20 @@ class BaseImporter(object):
         print("Creating cache for Nodes %s ..." % start)
         p = OSMParser(
             concurrency=2,
-            nodes_callback=self._cache_nodes
+            nodes_callback=self._cache_nodes,
+            nodes_tag_filter=self._tag_filter
         )
         p.parse(self.file_path)
         del p
         end = datetime.now()
         print("Nodes cache ended: %s, took: %s!\n" % (end, end - start))
+
+    @classmethod
+    def _tag_filter(cls, tags):
+        # reduce memory usage
+        for key in tags:
+            if key not in cls.whitelist_tags:
+                del tags[key]
 
     def _are_all_members_cached(self, members):
         """
