@@ -202,8 +202,9 @@ class LocationOSMMultilineBase(LocationMultilineBase, LocationOSMBase):
 class LocationMergableBase(gis_models.Model):
     is_merged = models.BooleanField(
         default=False,
-        db_index=True,
-        help_text='Is given location merged with other one?'
+        help_text='Is given location merged with other one?',
+        # we have partial index defined manually in migrations
+        # 'WHERE NOT is_merged' for each model using this base class
     )
 
     objects = MergableDefaultManager()
