@@ -551,4 +551,6 @@ class BaseImporter(object):
                 # mark as merged
                 Street.objects_all.filter(id__in=ids_array).mark_as_merged()
                 # save one item with lines merged
-                Street.objects_all.filter(id=id_min).update(lines=merged_lines)
+                street = Street.objects_all.get(id=id_min)
+                street.lines = merged_lines
+                street.save()
