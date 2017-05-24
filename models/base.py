@@ -28,7 +28,16 @@ class LocationBase(gis_models.Model):
                   'cordinates of NortEast point.'
     )
     center = gis_models.PointField(default=None, null=True, blank=True)
-    search_vector = SearchVectorField(default=None, null=True)
+    search_vector = SearchVectorField(
+        default=None,
+        null=True,
+        help_text='Used to enable prefix matching filtering on all denormalized fields of given location.'
+    )
+    search_vector_name = SearchVectorField(
+        default=None,
+        null=True,
+        help_text='Used to enable prefix matching filtering on name of given location.'
+    )
 
     class Meta:
         abstract = True

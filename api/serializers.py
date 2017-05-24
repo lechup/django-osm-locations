@@ -33,15 +33,11 @@ class CountryBaseSerializer(serializers.HyperlinkedModelSerializer):
         view_name='country-detail',
         lookup_field='slug'
     )
-    places = serializers.HyperlinkedIdentityField(view_name='country-places', lookup_field='slug')
-    placesubareas = serializers.HyperlinkedIdentityField(view_name='country-placesubareas', lookup_field='slug')
-    subareas = serializers.HyperlinkedIdentityField(view_name='country-subareas', lookup_field='slug')
-    streets = serializers.HyperlinkedIdentityField(view_name='country-streets', lookup_field='slug')
 
     class Meta:
         model = Country
         fields = LOCATION_BASE_SERIALIZER_FIELDS + LOCATION_BORDER_BASE_SERIALIZER_FIELDS + \
-            ('iso2', 'iso3', 'un', 'population', 'places', 'placesubareas', 'subareas', 'streets')
+            ('iso2', 'iso3', 'un', 'population')
 
 
 class CountryDefaultSerializer(CountryBaseSerializer):
@@ -59,15 +55,10 @@ class CountrySubareaBaseSerializer(serializers.HyperlinkedModelSerializer):
         view_name='countrysubarea-detail',
         lookup_field='slug'
     )
-    places = serializers.HyperlinkedIdentityField(view_name='countrysubarea-places', lookup_field='slug')
-    streets = serializers.HyperlinkedIdentityField(view_name='countrysubarea-streets', lookup_field='slug')
 
     class Meta:
         model = CountrySubarea
-        fields = LOCATION_OSM_BORDER_BASE_SERIALIZER_FIELDS + CountrySubarea.denorm_fields + (
-            'places',
-            'streets',
-        )
+        fields = LOCATION_OSM_BORDER_BASE_SERIALIZER_FIELDS + CountrySubarea.denorm_fields
 
 
 class CountrySubareaDefaultSerializer(CountrySubareaBaseSerializer):
@@ -85,15 +76,10 @@ class PlaceBaseSerializer(serializers.HyperlinkedModelSerializer):
         view_name='place-detail',
         lookup_field='slug'
     )
-    subareas = serializers.HyperlinkedIdentityField(view_name='place-subareas', lookup_field='slug')
-    streets = serializers.HyperlinkedIdentityField(view_name='place-streets', lookup_field='slug')
 
     class Meta:
         model = Place
-        fields = LOCATION_OSM_BORDER_BASE_SERIALIZER_FIELDS + Place.denorm_fields + (
-            'subareas',
-            'streets'
-        )
+        fields = LOCATION_OSM_BORDER_BASE_SERIALIZER_FIELDS + Place.denorm_fields
 
 
 class PlaceDefaultSerializer(PlaceBaseSerializer):
@@ -111,15 +97,10 @@ class PlaceSubareaBaseSerializer(serializers.HyperlinkedModelSerializer):
         view_name='placesubarea-detail',
         lookup_field='slug'
     )
-    streets = serializers.HyperlinkedIdentityField(
-        view_name='placesubarea-streets',
-        lookup_field='slug'
-    )
 
     class Meta:
         model = PlaceSubarea
-        fields = LOCATION_OSM_BORDER_BASE_SERIALIZER_FIELDS + PlaceSubarea.denorm_fields + \
-            ('streets',)
+        fields = LOCATION_OSM_BORDER_BASE_SERIALIZER_FIELDS + PlaceSubarea.denorm_fields
 
 
 class PlaceSubareaDefaultSerializer(PlaceSubareaBaseSerializer):

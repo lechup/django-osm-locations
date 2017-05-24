@@ -181,6 +181,7 @@ class Command(BaseCommand):
         search_concat_args.append("replace(slugify(name), '-', ' ')")
         return """
             UPDATE "locations_{model_name}" SET search_vector = to_tsvector('english', concat({search_concat_args}));
+            UPDATE "locations_{model_name}" SET search_vector_name = to_tsvector('english', slugify(name));
         """.format(**{
             'model_name': model_class.__name__.lower(),
             'search_concat_args': ", ".join(search_concat_args)
