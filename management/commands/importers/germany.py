@@ -9,6 +9,13 @@ from .. import CountrySubarea, Place, PlaceSubarea, Street
 
 
 class GermanyImporter(BaseImporter):
+    def __init__(self, country_slug, file_path, *args, **kwargs):
+        super(self.__class__, self).__init__(country_slug, file_path, *args, **kwargs)
+        # place can be imported from relation - it's center is node that later is imported
+        # we use that cache to cache nodes_ids of relation centers, so that we won't have duplicates
+        # see: https://www.openstreetmap.org/relation/3267973
+        self.already_imported_places_node_ids = set()
+
     def do_merge(self):
         # merge CountrySubareas like: http://www.openstreetmap.org/relation/62745
         # with places like: http://www.openstreetmap.org/node/240038130
@@ -77,7 +84,7 @@ class GermanyImporter(BaseImporter):
     def _import_countrysubarea_from_relation(self, osm_id, tags, members):
         if self._is_relation_countrysubarea(osm_id, tags, members) and self._are_all_members_cached(members):
             border = self._get_multipolygon_from_members(members)
-            admin_centre_node_id = self._get_admin_centre_node_id_from_members(members)
+            center_node_id = self._get_center_node_id_from_members(members)
             if border:
                 print(tags['name'], 'http://openstreetmap.org/relation/{}'.format(osm_id))
                 create_or_update_dict = {
@@ -85,10 +92,11 @@ class GermanyImporter(BaseImporter):
                     'name': tags['name'],
                     'border': border,
                 }
-                if admin_centre_node_id is not None:
-                    admin_centre_node = self.nodes_cache.get(admin_centre_node_id)
-                    _, coords = admin_centre_node
+                if center_node_id is not None:
+                    center_node = self.nodes_cache.get(center_node_id)
+                    _, coords = center_node
                     create_or_update_dict['center'] = Point(coords)
+                    self.already_imported_places_node_ids.add(center_node_id)
                 self.create_or_update(CountrySubarea, create_or_update_dict)
             return True
         return False
@@ -96,7 +104,7 @@ class GermanyImporter(BaseImporter):
     def _import_place_from_relation(self, osm_id, tags, members):
         if self._is_relation_place(osm_id, tags, members) and self._are_all_members_cached(members):
             border = self._get_multipolygon_from_members(members)
-            admin_centre_node_id = self._get_admin_centre_node_id_from_members(members)
+            center_node_id = self._get_center_node_id_from_members(members)
             if border:
                 print(tags['name'], 'http://openstreetmap.org/relation/{}'.format(osm_id))
                 create_or_update_dict = {
@@ -104,9 +112,9 @@ class GermanyImporter(BaseImporter):
                     'name': tags['name'],
                     'border': border,
                 }
-                if admin_centre_node_id is not None:
-                    admin_centre_node = self.nodes_cache.get(admin_centre_node_id)
-                    _, coords = admin_centre_node
+                if center_node_id is not None:
+                    center_node = self.nodes_cache.get(center_node_id)
+                    _, coords = center_node
                     create_or_update_dict['center'] = Point(coords)
                 self.create_or_update(Place, create_or_update_dict)
             return True
@@ -126,7 +134,7 @@ class GermanyImporter(BaseImporter):
         return False
 
     def _import_place_from_node(self, osm_id, tags, coords):
-        if self._is_node_place(osm_id, tags, coords):
+        if osm_id not in self.already_imported_places_node_ids and self._is_node_place(osm_id, tags, coords):
             print(tags['name'], 'http://openstreetmap.org/node/{}'.format(osm_id))
             self.create_or_update(Place, {
                 'node_osm_id': osm_id,
@@ -139,7 +147,7 @@ class GermanyImporter(BaseImporter):
     def _import_placesubarea_from_relation(self, osm_id, tags, members):
         if self._is_relation_placesubarea(osm_id, tags, members) and self._are_all_members_cached(members):
             border = self._get_multipolygon_from_members(members)
-            admin_centre_node_id = self._get_admin_centre_node_id_from_members(members)
+            admin_centre_node_id = self._get_center_node_id_from_members(members)
             if border:
                 print(tags['name'], 'http://openstreetmap.org/relation/{}'.format(osm_id))
                 create_or_update_dict = {

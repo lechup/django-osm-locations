@@ -303,9 +303,12 @@ class BaseImporter(object):
             return None
 
     @classmethod
-    def _get_admin_centre_node_id_from_members(cls, members):
+    def _get_center_node_id_from_members(cls, members):
         for member in members:
             if member[1] == 'node' and member[2] == 'admin_centre':
+                return member[0]
+        for member in members:
+            if member[1] == 'node' and member[2] == 'label':
                 return member[0]
         return None
 
