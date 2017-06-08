@@ -32,7 +32,7 @@ else:
 
 
 class BaseImporter(object):
-    whitelist_tags = set(['name', 'admin_level', 'boundary', 'place', 'highway', 'population'])
+    whitelist_tags = ['name', 'admin_level', 'boundary', 'place', 'highway', 'population']
     location_models_mergable = [CountrySubarea, PlaceSubarea, Street]
     location_models_not_mergable = [Place]
     location_models = location_models_mergable + location_models_not_mergable
