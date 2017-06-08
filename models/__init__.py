@@ -10,12 +10,11 @@ class Country(LocationBorderBase):
     iso2 = models.CharField('ISO Aplpha-2 Code', max_length=3)
     iso3 = models.CharField('ISO Aplha-3 Code', max_length=3)
     un = models.SmallIntegerField('United Nations Code')
-    population = models.IntegerField(default=None, null=True, blank=True)
 
     class Meta:
         verbose_name_plural = 'countries'
         unique_together = ('iso2', 'iso3', 'un')
-        ordering = ['-area']
+        ordering = ['-area', '-population']
 
     @property
     def subareas(self):
@@ -44,7 +43,7 @@ class CountrySubarea(LocationMergableBase, LocationOSMBorderBase):
     countrysubarea = DenormArrayField(max_length=255)
 
     class Meta:
-        ordering = ['-area', 'relation_osm_id']
+        ordering = ['-area', '-population']
 
     @property
     def subareas(self):
@@ -69,7 +68,7 @@ class Place(LocationOSMBorderBase):
     place = DenormArrayField(max_length=255)
 
     class Meta:
-        ordering = ['-area', 'relation_osm_id', 'node_osm_id']
+        ordering = ['-area', '-population']
 
     @property
     def subareas(self):
@@ -96,7 +95,7 @@ class PlaceSubarea(LocationMergableBase, LocationOSMBorderBase):
     placesubarea = DenormArrayField(max_length=255)
 
     class Meta:
-        ordering = ['-area', 'relation_osm_id']
+        ordering = ['-area', '-population']
 
     @property
     def streets(self):
@@ -112,4 +111,4 @@ class Street(LocationMergableBase, LocationOSMMultilineBase):
     placesubarea = DenormArrayField(max_length=255)
 
     class Meta:
-        ordering = ['-length', 'relation_osm_id', 'way_osm_id']
+        ordering = ['-length']

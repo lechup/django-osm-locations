@@ -10,9 +10,12 @@ from django.contrib.postgres.aggregates.general import ArrayAgg
 from django.db import transaction, reset_queries
 from django.db.models import Count, Min
 from django.utils.functional import cached_property
+from django.contrib.gis.geos import Point, MultiPolygon
+
 from imposm.parser import OSMParser
 from shapely.ops import polygonize
 from tqdm import tqdm
+
 
 from .. import Country, CountrySubarea, Place, PlaceSubarea, Street, MergeMultiline
 from ..caches.base import MemoryCache, MemcachedCache, DiskCache, FileCache
@@ -29,7 +32,7 @@ else:
 
 
 class BaseImporter(object):
-    whitelist_tags = set(['name', 'admin_level', 'boundary', 'place', 'highway'])
+    whitelist_tags = set(['name', 'admin_level', 'boundary', 'place', 'highway', 'population'])
     location_models_mergable = [CountrySubarea, PlaceSubarea, Street]
     location_models_not_mergable = [Place]
     location_models = location_models_mergable + location_models_not_mergable
@@ -43,6 +46,11 @@ class BaseImporter(object):
         self.nodes_cache = CACHE_CLASS()
         self.ways_cache = CACHE_CLASS()
         self.relations_cache = CACHE_CLASS()
+
+        # place can be imported from relation - it's center is node that later is imported also as new place
+        # we use that cache to cache nodes_ids of relation centers, so that we won't have duplicates
+        # see: https://www.openstreetmap.org/relation/3267973
+        self.already_imported_places_node_ids = set()
 
     def do_import(self):
         self._parse_and_cache()
@@ -435,6 +443,17 @@ class BaseImporter(object):
         for ref in refs:
             self.nodes_cache.precache.add(ref)
 
+    def _cache_coords(self, coords):
+        """
+            Callback for parsing Coords (Nodes without tags) and storing in cache.
+            Coords are saved as (x, y) with empty tags in nodes cache.
+        """
+        for osm_id, x, y in coords:
+            # save coords needed by relations or ways
+            if osm_id in self.nodes_cache.precache:
+                self.nodes_cache.set(osm_id, ({}, (x, y)))
+        self.nodes_cache.commit()
+
     def _cache_nodes(self, nodes):
         """
             Callback for parsing Coords (Nodes without tags) and storing in cache.
@@ -450,17 +469,6 @@ class BaseImporter(object):
     def _cache_node(self, osm_id, tags, coords):
         self.nodes_cache.set(osm_id, (tags, coords))
 
-    def _cache_coords(self, coords):
-        """
-            Callback for parsing Coords (Nodes without tags) and storing in cache.
-            Coords are saved as (x, y) with empty tags in nodes cache.
-        """
-        for osm_id, x, y in coords:
-            # save coords needed by relations or ways
-            if osm_id in self.nodes_cache.precache:
-                self.nodes_cache.set(osm_id, ({}, (x, y)))
-        self.nodes_cache.commit()
-
     def _import_relations(self):
         for osm_id in self.relations_cache.keys():
             tags, members = self.relations_cache.get(osm_id)
@@ -475,15 +483,6 @@ class BaseImporter(object):
         for osm_id in self.nodes_cache.keys():
             tags, coords = self.nodes_cache.get(osm_id)
             self._import_node(osm_id, tags, coords)
-
-    def _import_relation(self, osm_id, tags, members):
-        raise NotImplementedError
-
-    def _import_way(self, osm_id, tags, refs):
-        raise NotImplementedError
-
-    def _import_node(self, osm_id, tags, coords):
-        raise NotImplementedError
 
     def _is_relation_to_cache(self, osm_id, tags, members):
         return any([
@@ -557,3 +556,139 @@ class BaseImporter(object):
                 street = Street.objects_all.get(id=id_min)
                 street.lines = merged_lines
                 street.save()
+
+    def _import_countrysubarea_from_relation(self, osm_id, tags, members):
+        if self._is_relation_countrysubarea(osm_id, tags, members) and self._are_all_members_cached(members):
+            border = self._get_multipolygon_from_members(members)
+            if border:
+                print(tags.get('name'), 'http://openstreetmap.org/relation/{}'.format(osm_id))
+                countrysubarea_defaults = {
+                    'name': tags.get('name'),
+                    'border': border,
+                    'population': tags.get('population')
+                }
+                center_node_id = self._get_center_node_id_from_members(members)
+                if center_node_id is not None:
+                    center_node = self.nodes_cache.get(center_node_id)
+                    _, coords = center_node
+                    countrysubarea_defaults['center'] = Point(coords)
+                CountrySubarea.objects.update_or_create(
+                    relation_osm_id=osm_id,
+                    defaults=countrysubarea_defaults
+                )
+            return True
+        return False
+
+    def _import_place_from_relation(self, osm_id, tags, members):
+        if self._is_relation_place(osm_id, tags, members) and self._are_all_members_cached(members):
+            border = self._get_multipolygon_from_members(members)
+            if border:
+                print(tags.get('name'), 'http://openstreetmap.org/relation/{}'.format(osm_id))
+                place_defaults = {
+                    'name': tags.get('name'),
+                    'border': border,
+                    'population': tags.get('population')
+                }
+                center_node_id = self._get_center_node_id_from_members(members)
+                if center_node_id is not None:
+                    center_node = self.nodes_cache.get(center_node_id)
+                    _, coords = center_node
+                    place_defaults['center'] = Point(coords)
+                    self.already_imported_places_node_ids.add(center_node_id)
+                Place.objects.update_or_create(
+                    relation_osm_id=osm_id,
+                    defaults=place_defaults
+                )
+            return True
+        return False
+
+    def _import_place_from_way(self, osm_id, tags, refs):
+        if self._is_way_place(osm_id, tags, refs) and self._are_all_refs_cached(refs):
+            border = self._get_multipolygon_from_refs(refs)
+            if border:
+                print(tags.get('name'), 'http://openstreetmap.org/way/{}'.format(osm_id))
+                Place.objects.update_or_create(
+                    way_osm_id=osm_id,
+                    defaults={
+                        'name': tags.get('name'),
+                        'border': border,
+                        'population': tags.get('population')
+                    }
+                )
+            return True
+        return False
+
+    def _import_place_from_node(self, osm_id, tags, coords):
+        if osm_id not in self.already_imported_places_node_ids and self._is_node_place(osm_id, tags, coords):
+            print(tags.get('name'), 'http://openstreetmap.org/node/{}'.format(osm_id))
+            Place.objects.update_or_create(
+                node_osm_id=osm_id,
+                defaults={
+                    'name': tags.get('name'),
+                    'center': Point(coords),
+                    'population': tags.get('population')
+                }
+            )
+            return True
+        return False
+
+    def _import_placesubarea_from_relation(self, osm_id, tags, members):
+        if self._is_relation_placesubarea(osm_id, tags, members) and self._are_all_members_cached(members):
+            border = self._get_multipolygon_from_members(members)
+            if border:
+                print(tags.get('name'), 'http://openstreetmap.org/relation/{}'.format(osm_id))
+                placesubarea_defaults = {
+                    'name': tags.get('name'),
+                    'border': border,
+                    'population': tags.get('population')
+                }
+                center_node_id = self._get_center_node_id_from_members(members)
+                if center_node_id is not None:
+                    center_node = self.nodes_cache.get(center_node_id)
+                    _, coords = center_node
+                    placesubarea_defaults['center'] = Point(coords)
+                PlaceSubarea.objects.update_or_create(
+                    relation_osm_id=osm_id,
+                    defaults=placesubarea_defaults
+                )
+            return True
+        return False
+
+    def _import_street_from_relation(self, osm_id, tags, members):
+        if self._is_relation_street(osm_id, tags, members) and self._are_all_members_cached(members):
+            print(tags.get('name'), 'http://openstreetmap.org/relation/{}'.format(osm_id))
+            Street.objects.update_or_create(
+                relation_osm_id=osm_id,
+                defaults={
+                    'name': tags.get('name'),
+                    'lines': self._get_merged_multiline_from_members(members),
+                }
+            )
+            return True
+        return False
+
+    def _import_street_from_way(self, osm_id, tags, refs):
+        if self._is_way_street(osm_id, tags, refs) and self._are_all_refs_cached(refs):
+            print(tags.get('name'), 'http://openstreetmap.org/way/{}'.format(osm_id))
+            Street.objects.update_or_create(
+                way_osm_id=osm_id,
+                defaults={
+                    'name': tags.get('name'),
+                    'lines': self._get_multiline_from_refs(refs),
+                }
+            )
+            return True
+        return False
+
+    def _import_relation(self, osm_id, tags, members):
+        self._import_countrysubarea_from_relation(osm_id, tags, members)
+        self._import_place_from_relation(osm_id, tags, members)
+        self._import_placesubarea_from_relation(osm_id, tags, members)
+        self._import_street_from_relation(osm_id, tags, members)
+
+    def _import_way(self, osm_id, tags, refs):
+        self._import_place_from_way(osm_id, tags, refs)
+        self._import_street_from_way(osm_id, tags, refs)
+
+    def _import_node(self, osm_id, tags, coords):
+        self._import_place_from_node(osm_id, tags, coords)
