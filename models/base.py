@@ -175,6 +175,15 @@ class LocationBorderBase(LocationBase):
         elif self.center:
             self.bbox = self.center_bbox
 
+    def _presave_population(self, *args, **kwargs):
+        # leave only digits, if there are is no digits set to None
+        if isinstance(self.population, basestring):
+            new_population = ''.join(c for c in self.population if c.isdigit())
+            if new_population:
+                self.population = int(new_population)
+            else:
+                self.population = None
+
     class Meta:
         abstract = True
 
