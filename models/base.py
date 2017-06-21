@@ -176,13 +176,10 @@ class LocationBorderBase(LocationBase):
             self.bbox = self.center_bbox
 
     def _presave_population(self, *args, **kwargs):
-        # leave only digits, if there are is no digits set to None
-        if isinstance(self.population, basestring):
-            self.population = unicode(self.population)
-            if self.population.isnumeric():
-                self.population = int(self.population)
-            else:
-                self.population = None
+        try:
+            self.population = int(self.population)
+        except ValueError:
+            self.population = None
 
     class Meta:
         abstract = True
