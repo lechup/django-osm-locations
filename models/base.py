@@ -176,6 +176,11 @@ class LocationBorderBase(LocationBase):
             self.bbox = self.center_bbox
 
     def _presave_population(self, *args, **kwargs):
+        # ignore all strings that are not numeric
+        # for example:
+        # http://www.openstreetmap.org/node/2978192547
+        # population: 991 (31.12.2015)
+        # population: ~900
         try:
             self.population = int(self.population)
         except ValueError:
