@@ -19,21 +19,36 @@ class Command(BaseCommand):
         )
 
     @classmethod
+    def get_order_by_clause(cls, model_class):
+        orderings = []
+        for ordering in model_class._meta.ordering:
+            order = 'DESC' if '-' in ordering else 'ASC'
+            ordering = ordering.replace('-', '')
+            orderings.append(
+                '{} {}'.format(
+                    ordering,
+                    order
+                )
+            )
+
+        return 'ORDER BY {}'.format(
+                    ','.join(orderings)
+                )
+
+    @classmethod
     def set_unique_slugs(cls, model_class):
         """
         Set slug fields for :param model_class: to unique values by appending object id. First object does not have
         id appended.
         """
-        order_by_column = model_class._meta.ordering[0].replace('-', '')
+        order_by = cls.get_order_by_clause(model_class)
         duplicated_slugs = model_class.objects.values(
             'slug'
         ).annotate(
             slug_count=Count('slug'),
             ids_array=ArrayAggOrderBy(
                 'id',
-                order_by='ORDER BY {} DESC'.format(
-                    order_by_column
-                )
+                order_by=order_by
             ),
         ).filter(
             slug_count__gt=1

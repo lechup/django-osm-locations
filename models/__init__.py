@@ -14,7 +14,7 @@ class Country(LocationBorderBase):
     class Meta:
         verbose_name_plural = 'countries'
         unique_together = ('iso2', 'iso3', 'un')
-        ordering = ['-area', '-population']
+        ordering = ['-population', '-area']
 
     @property
     def subareas(self):
