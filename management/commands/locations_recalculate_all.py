@@ -10,10 +10,10 @@ from .locations_recalculate_denormalized_fields import Command as RecalculateDen
 class Command(BaseCommand):
     help = "Do all recalculations at once:\nlocations_recalculate_areas_and_lengths: {}\n" \
            "locations_recalculate_slugs: {}\nlocations_recalculate_denormalized_fields: {}".format(
-        RecalculateAreasAndLengthCommand.help,
-        RecalculateSlugs.help,
-        RecalculateDenormalizedFields.help
-    )
+               RecalculateAreasAndLengthCommand.help,
+               RecalculateSlugs.help,
+               RecalculateDenormalizedFields.help
+           )
 
     def handle(self, *args, **options):
         call_command('locations_recalculate_areas_and_lengths')
