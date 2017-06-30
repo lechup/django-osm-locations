@@ -43,7 +43,7 @@ class CountrySubarea(LocationMergableBase, LocationOSMBorderBase):
     countrysubarea = DenormArrayField(max_length=255)
 
     class Meta:
-        ordering = ['-area', '-population']
+        ordering = ['-population', '-area']
 
     @property
     def subareas(self):
@@ -68,7 +68,7 @@ class Place(LocationOSMBorderBase):
     place = DenormArrayField(max_length=255)
 
     class Meta:
-        ordering = ['-area', '-population']
+        ordering = ['-population', '-area']
 
     @property
     def subareas(self):
@@ -95,7 +95,7 @@ class PlaceSubarea(LocationMergableBase, LocationOSMBorderBase):
     placesubarea = DenormArrayField(max_length=255)
 
     class Meta:
-        ordering = ['-area', '-population']
+        ordering = ['-population', '-area']
 
     @property
     def streets(self):
