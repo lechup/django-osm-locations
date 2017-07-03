@@ -36,8 +36,11 @@ class GermanyImporter(BaseImporter):
         # include default places
         if is_relation_place and tags['admin_level'] in ['8']:
             return True
-        # include places defined like: http://www.openstreetmap.org/relation/62649
-        elif is_relation_place and tags['admin_level'] in ['6'] and 'de:place' in tags and tags['de:place'] == 'city':
+        # include places defined like:
+        # * http://www.openstreetmap.org/relation/62649
+        # * http://www.openstreetmap.org/relation/62422
+        elif is_relation_place and tags['admin_level'] in ['4', '5', '6', '7', '8'] and 'de:place' in tags \
+                and tags['de:place'] == 'city':
             return True
         return False
 
