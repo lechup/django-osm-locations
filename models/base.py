@@ -153,7 +153,7 @@ class LocationBorderBase(LocationBase):
     # on geography types, details:
     # https://docs.djangoproject.com/en/1.10/ref/contrib/gis/model-api/#geography-type
     gborder = gis_models.MultiPolygonField(default=None, null=True, blank=True, geography=True)
-    population = models.IntegerField(default=None, null=True, blank=True, db_index=True)
+    population = models.IntegerField(default=0, blank=True, db_index=True)
 
     def _presave_center(self, *args, **kwargs):
         if self.border and not self.center:
@@ -183,7 +183,7 @@ class LocationBorderBase(LocationBase):
         try:
             self.population = int(self.population)
         except (ValueError, TypeError):
-            self.population = None
+            self.population = 0
 
     class Meta:
         abstract = True
