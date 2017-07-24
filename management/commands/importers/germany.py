@@ -18,6 +18,7 @@ class GermanyImporter(BaseImporter):
         for place in tqdm(places, total=places_count,
                 desc='Doing merge of Places...'):
             self._merge_streets(place)
+        super(self.__class__, self).do_merge()
 
     @classmethod
     def _is_relation_countrysubarea(cls, osm_id, tags, members):

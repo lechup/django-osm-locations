@@ -26,6 +26,7 @@ class PolandImporter(BaseImporter):
                 desc='Doing merge of Places...', leave=False):
             self._merge_place_subareas(place)
             self._merge_streets(place)
+        super(self.__class__, self).do_merge()
 
     def do_update_country_border(self):
         country_border = MultiPolygon([])

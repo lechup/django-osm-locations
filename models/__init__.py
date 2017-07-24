@@ -58,7 +58,7 @@ class CountrySubarea(LocationMergableBase, LocationOSMBorderBase):
         return Street.objects.filter(center__within=self.bbox_polygon)
 
 
-class Place(LocationOSMBorderBase):
+class Place(LocationMergableBase, LocationOSMBorderBase):
     """
     Model for all towns/villages/places
     """

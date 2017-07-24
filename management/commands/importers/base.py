@@ -1,25 +1,21 @@
 # -*- coding: utf-8 -*-
 from __future__ import unicode_literals
-from collections import defaultdict
+
 from datetime import datetime
 
 from django.conf import settings
-from django.contrib.gis.geos import MultiLineString, LineString, Polygon, MultiPolygon
+from django.contrib.gis.geos import MultiLineString, LineString, Polygon, Point, MultiPolygon
 from django.contrib.gis.geos.geometry import GEOSGeometry
+from django.contrib.gis.measure import D
 from django.contrib.postgres.aggregates.general import ArrayAgg
-from django.db import transaction, reset_queries
+from django.db import transaction
 from django.db.models import Count, Min
-from django.utils.functional import cached_property
-from django.contrib.gis.geos import Point, MultiPolygon
-
 from imposm.parser import OSMParser
 from shapely.ops import polygonize
 from tqdm import tqdm
 
-
 from .. import Country, CountrySubarea, Place, PlaceSubarea, Street, MergeMultiline
 from ..caches.base import MemoryCache, MemcachedCache, DiskCache, FileCache
-
 
 if getattr(settings, 'LOCATIONS_MEMCACHED_CACHE', False):
     CACHE_CLASS = MemcachedCache
@@ -33,8 +29,8 @@ else:
 
 class BaseImporter(object):
     whitelist_tags = ['name', 'admin_level', 'boundary', 'place', 'highway', 'population']
-    location_models_mergable = [CountrySubarea, PlaceSubarea, Street]
-    location_models_not_mergable = [Place]
+    location_models_mergable = [CountrySubarea, Place, PlaceSubarea, Street]
+    location_models_not_mergable = []
     location_models = location_models_mergable + location_models_not_mergable
 
     def __init__(self, country_slug, file_path, verbose=0):
@@ -90,13 +86,13 @@ class BaseImporter(object):
         Use this method to unmerge locations (eg. before updating from new country OSM file)
         """
         for model_class in tqdm(self.location_models_mergable, desc='Doing unmerge...', leave=False):
-            model_class.objects_all.all().mark_as_not_merged()
+            model_class.objects_all.merged().mark_as_not_merged()
 
     def do_merge(self):
         """
         Use this method in child class to merge locations (eg. multiple entries of same street or city subarea)
         """
-        pass
+        self._merge_places()
 
     def do_update_country_border(self):
         print("Update'ing %s country border....\n" % (self.__class__.__name__,))
@@ -106,62 +102,6 @@ class BaseImporter(object):
             country_border += country_subarea.border
         self.country.border = self._merge_multipolygon(country_border)
         self.country.save()
-
-    @cached_property
-    def location_osm_ids_from_db_cache(self):
-        cache = defaultdict(dict)
-        for model_class in self.location_models:
-            cache[model_class.__name__]['node_osm_id'] = set(
-                self.location_objects_from_db_cache[model_class.__name__]['node_osm_id'].keys()
-            )
-            cache[model_class.__name__]['way_osm_id'] = set(
-                self.location_objects_from_db_cache[model_class.__name__]['way_osm_id'].keys()
-            )
-            cache[model_class.__name__]['relation_osm_id'] = set(
-                self.location_objects_from_db_cache[model_class.__name__]['relation_osm_id'].keys()
-            )
-        return cache
-
-    @cached_property
-    def location_objects_from_db_cache(self):
-        cache = defaultdict(dict)
-        for model_class in self.location_models:
-            model_class_objects = getattr(model_class, 'objects_all', getattr(model_class, 'objects'))
-            cache[model_class.__name__]['node_osm_id'] = {}
-            cache[model_class.__name__]['way_osm_id'] = {}
-            cache[model_class.__name__]['relation_osm_id'] = {}
-
-            for model_class_object in model_class_objects.exclude(node_osm_id=None).iterator():
-                cache[model_class.__name__]['node_osm_id'][model_class_object.node_osm_id] = model_class_object
-            for model_class_object in model_class_objects.exclude(way_osm_id=None).iterator():
-                cache[model_class.__name__]['way_osm_id'][model_class_object.way_osm_id] = model_class_object
-            for model_class_object in model_class_objects.exclude(relation_osm_id=None).iterator():
-                cache[model_class.__name__]['relation_osm_id'][model_class_object.relation_osm_id] = model_class_object
-        return cache
-
-    def create_or_update(self, model_class, model_kwargs):
-        def update_object(obj, **kwargs):
-            for k, v in kwargs.items():
-                setattr(obj, k, v)
-            obj.save(update_fields=kwargs.keys())
-
-        for model_kwargs_key in model_kwargs.keys():
-            if model_kwargs_key.find('_osm_id') != -1:
-                osm_ids_cache_name = model_kwargs_key
-                break
-
-        osm_id = model_kwargs.get(osm_ids_cache_name)
-
-        if osm_id in self.location_osm_ids_from_db_cache[model_class.__name__][osm_ids_cache_name]:
-            model_class_object = self.location_objects_from_db_cache[model_class.__name__][osm_ids_cache_name][osm_id]
-            update_object(model_class_object, **model_kwargs)
-        else:
-            model_class.objects.create(**model_kwargs).save()
-
-        # do not store queries for debugging even if debug mode is enabled
-        # to avoid memory consumption...
-        if settings.DEBUG:
-            reset_queries()
 
     def _parse_and_cache(self):
         """
@@ -556,6 +496,38 @@ class BaseImporter(object):
                 street = Street.objects_all.get(id=id_min)
                 street.lines = merged_lines
                 street.save()
+
+    @classmethod
+    def _get_duplicated_place_tuples(cls):
+        return Place.objects_all.values(
+            'name'
+        ).annotate(
+            name_count=Count('name'),
+            ids=ArrayAgg('id')
+        ).filter(name_count__gt=1).values_list('name', 'ids').order_by()
+
+    @classmethod
+    def _merge_places(cls):
+        places_to_merge = tqdm(
+            list(cls._get_duplicated_place_tuples()),
+            desc='Doing merge of Places...',
+            leave=False
+        )
+        for name, ids in places_to_merge:
+            with transaction.atomic():
+                for place in Place.objects_all.filter(id__in=ids):
+                    # make sure we have latest is_merged status
+                    place.refresh_from_db()
+                    if not place.is_merged:
+                        all_but_place_ids = list(ids)
+                        all_but_place_ids.remove(place.id)
+                        duplicated_places = Place.objects_all.filter(
+                            id__in=all_but_place_ids,
+                            center__distance__lte=D(km=2)
+                        )
+                        for duplicated_place in duplicated_places:
+                            tqdm.write('{} merged with {}!'.format(duplicated_place, place))
+                            duplicated_place.mark_as_merged()
 
     def _import_countrysubarea_from_relation(self, osm_id, tags, members):
         if self._is_relation_countrysubarea(osm_id, tags, members) and self._are_all_members_cached(members):
