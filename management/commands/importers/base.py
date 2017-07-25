@@ -523,7 +523,7 @@ class BaseImporter(object):
                         all_but_place_ids.remove(place.id)
                         duplicated_places = Place.objects_all.filter(
                             id__in=all_but_place_ids,
-                            center__distance__lte=D(km=2)
+                            center__distance_lte=(place.center, D(km=2))
                         )
                         for duplicated_place in duplicated_places:
                             tqdm.write('{} merged with {}!'.format(duplicated_place, place))
