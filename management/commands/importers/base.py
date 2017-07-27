@@ -513,17 +513,18 @@ class BaseImporter(object):
             desc='Doing merge of Places...',
             leave=False
         )
-        for name, ids in places_to_merge:
+        for name, place_ids in places_to_merge:
             with transaction.atomic():
-                for place in Place.objects_all.filter(id__in=ids):
+                for place_id in place_ids:
                     # make sure we have latest is_merged status
-                    place.refresh_from_db()
+                    place = Place.objects_all.get(id=place_id)
                     if not place.is_merged:
-                        all_but_place_ids = list(ids)
+                        all_but_place_ids = list(place_ids)
                         all_but_place_ids.remove(place.id)
                         duplicated_places = Place.objects_all.filter(
                             id__in=all_but_place_ids,
-                            center__distance_lte=(place.center, D(km=2))
+                            center__distance_lte=(place.center, D(km=2)),
+                            is_merged=False
                         )
                         for duplicated_place in duplicated_places:
                             tqdm.write('{} merged with {}!'.format(duplicated_place, place))
