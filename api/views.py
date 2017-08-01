@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
-from django.core.exceptions import ObjectDoesNotExist
-from django.http.response import Http404
 from rest_framework import viewsets
-from rest_framework.decorators import detail_route
-from rest_framework.response import Response
+from rest_framework_gis.filters import InBBoxFilter
+from rest_framework.settings import api_settings
+
 
 from .filters import (
     CountryFilterSet, CountrySubareaFilterSet, PlaceFilterSet, PlaceSubareaFilterSet, StreetFilterSet
@@ -16,9 +15,11 @@ from ..models import Country, CountrySubarea, Place, PlaceSubarea, Street
 
 
 class BaseLocationViewSet(viewsets.ReadOnlyModelViewSet):
+    filter_backends = api_settings.DEFAULT_FILTER_BACKENDS + [InBBoxFilter]
     retrieve_serialize_class = None
     lookup_field = 'slug'
     ordering_fields = ('name',)
+    bbox_filter_field = 'center'
 
     def get_serializer_class(self):
         if self.action == 'retrieve':
