@@ -108,7 +108,7 @@ class BaseImporter(object):
         parse osm data file and store it in cache by using imposm.parser callbacks
         http://imposm.org/docs/imposm.parser/latest/concepts.html
         we store parsed data in 3 caches (relations_cache, ways_cache, nodes_cache)
-        we need to make 3 passes to get whole hierarchy: relations -> ways -> nodes/coords
+        we need to make 4 passes to get whole hierarchy: relations -> ways -> coords -> nodes
         """
 
         start_all = datetime.now()
@@ -444,8 +444,8 @@ class BaseImporter(object):
         ])
 
     @classmethod
-    def _get_duplicated_citysubarea_names(cls, city):
-        return city.subareas.values('name').annotate(Count('name')).filter(name__count__gt=1).values_list(
+    def _get_duplicated_placesubarea_names(cls, place):
+        return place.subareas.values('name').annotate(Count('name')).filter(name__count__gt=1).values_list(
             'name',
             flat=True
         ).order_by()
@@ -453,7 +453,7 @@ class BaseImporter(object):
     @classmethod
     def _merge_place_subareas(cls, place):
         duplicated_subarea_names = tqdm(
-            cls._get_duplicated_citysubarea_names(place),
+            cls._get_duplicated_placesubarea_names(place),
             desc='Doing merge of PlaceSubareas for {}...'.format(place),
             leave=False
         )
@@ -534,7 +534,7 @@ class BaseImporter(object):
         if self._is_relation_countrysubarea(osm_id, tags, members) and self._are_all_members_cached(members):
             border = self._get_multipolygon_from_members(members)
             if border:
-                print(tags.get('name'), 'http://openstreetmap.org/relation/{}'.format(osm_id))
+                print('CountrySubarea:', tags.get('name'), 'http://openstreetmap.org/relation/{}'.format(osm_id))
                 countrysubarea_defaults = {
                     'name': tags.get('name'),
                     'border': border,
@@ -556,17 +556,22 @@ class BaseImporter(object):
         if self._is_relation_place(osm_id, tags, members) and self._are_all_members_cached(members):
             border = self._get_multipolygon_from_members(members)
             if border:
-                print(tags.get('name'), 'http://openstreetmap.org/relation/{}'.format(osm_id))
+                print('Place:', tags.get('name'), 'http://openstreetmap.org/relation/{}'.format(osm_id))
+                population = tags.get('population', None)
+                center_node_id = self._get_center_node_id_from_members(members)
+                center_node_coords = None
+                if center_node_id is not None:
+                    center_node_tags, center_node_coords = self.nodes_cache.get(center_node_id)
+                    center_node_population = center_node_tags.get('population', None)
+                    if center_node_population:
+                        population = center_node_population
                 place_defaults = {
                     'name': tags.get('name'),
                     'border': border,
-                    'population': tags.get('population')
+                    'population': population
                 }
-                center_node_id = self._get_center_node_id_from_members(members)
                 if center_node_id is not None:
-                    center_node = self.nodes_cache.get(center_node_id)
-                    _, coords = center_node
-                    place_defaults['center'] = Point(coords)
+                    place_defaults['center'] = Point(center_node_coords)
                     self.already_imported_places_node_ids.add(center_node_id)
                 Place.objects.update_or_create(
                     relation_osm_id=osm_id,
@@ -579,7 +584,7 @@ class BaseImporter(object):
         if self._is_way_place(osm_id, tags, refs) and self._are_all_refs_cached(refs):
             border = self._get_multipolygon_from_refs(refs)
             if border:
-                print(tags.get('name'), 'http://openstreetmap.org/way/{}'.format(osm_id))
+                print('Place:', tags.get('name'), 'http://openstreetmap.org/way/{}'.format(osm_id))
                 Place.objects.update_or_create(
                     way_osm_id=osm_id,
                     defaults={
@@ -593,7 +598,7 @@ class BaseImporter(object):
 
     def _import_place_from_node(self, osm_id, tags, coords):
         if osm_id not in self.already_imported_places_node_ids and self._is_node_place(osm_id, tags, coords):
-            print(tags.get('name'), 'http://openstreetmap.org/node/{}'.format(osm_id))
+            print('Place:', tags.get('name'), 'http://openstreetmap.org/node/{}'.format(osm_id))
             Place.objects.update_or_create(
                 node_osm_id=osm_id,
                 defaults={
@@ -609,7 +614,7 @@ class BaseImporter(object):
         if self._is_relation_placesubarea(osm_id, tags, members) and self._are_all_members_cached(members):
             border = self._get_multipolygon_from_members(members)
             if border:
-                print(tags.get('name'), 'http://openstreetmap.org/relation/{}'.format(osm_id))
+                print('PlaceSubarea:', tags.get('name'), 'http://openstreetmap.org/relation/{}'.format(osm_id))
                 placesubarea_defaults = {
                     'name': tags.get('name'),
                     'border': border,
@@ -629,7 +634,7 @@ class BaseImporter(object):
 
     def _import_street_from_relation(self, osm_id, tags, members):
         if self._is_relation_street(osm_id, tags, members) and self._are_all_members_cached(members):
-            print(tags.get('name'), 'http://openstreetmap.org/relation/{}'.format(osm_id))
+            print('Street:', tags.get('name'), 'http://openstreetmap.org/relation/{}'.format(osm_id))
             Street.objects.update_or_create(
                 relation_osm_id=osm_id,
                 defaults={
@@ -642,7 +647,7 @@ class BaseImporter(object):
 
     def _import_street_from_way(self, osm_id, tags, refs):
         if self._is_way_street(osm_id, tags, refs) and self._are_all_refs_cached(refs):
-            print(tags.get('name'), 'http://openstreetmap.org/way/{}'.format(osm_id))
+            print('Street:', tags.get('name'), 'http://openstreetmap.org/way/{}'.format(osm_id))
             Street.objects.update_or_create(
                 way_osm_id=osm_id,
                 defaults={

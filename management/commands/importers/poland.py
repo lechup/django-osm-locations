@@ -59,13 +59,13 @@ class PolandImporter(BaseImporter):
     @classmethod
     def _is_way_place(cls, osm_id, tags, refs):
         if len(refs) > 2 and cls._is_way_closed(refs) and 'place' in tags and\
-                tags['place'] in set(('city', 'village', 'hamlet', 'town')) and 'name' in tags:
+                tags['place'] in {'city', 'village', 'hamlet', 'town'} and 'name' in tags:
             return True
         return False
 
     @classmethod
     def _is_node_place(cls, osm_id, tags, coords):
-        if 'place' in tags and tags['place'] in set(('city', 'village', 'hamlet', 'town')) and 'name' in tags:
+        if 'place' in tags and tags['place'] in {'city', 'village', 'hamlet', 'town'} and 'name' in tags:
             return True
         return False
 
