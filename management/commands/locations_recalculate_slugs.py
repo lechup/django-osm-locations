@@ -2,7 +2,7 @@
 from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.db.models import Count, F, Func, CharField, Value
-from django.db.models.functions import Concat
+from django.db.models.functions import Concat, Coalesce
 from tqdm import tqdm
 
 from .. import Country, CountrySubarea, Place, PlaceSubarea, Street, ArrayAggOrderBy
@@ -64,7 +64,7 @@ class Command(BaseCommand):
                 new_slug=Concat(
                     'slug',
                     Value('-'),
-                    'id',
+                    Coalesce('relation_osm_id', 'way_osm_id', 'node_osm_id', 'id'),
                     output_field=CharField()
                 )
             ).update(
