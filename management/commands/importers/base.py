@@ -5,13 +5,12 @@ from datetime import datetime
 
 from django.conf import settings
 from django.contrib.gis.geos import MultiLineString, LineString, Polygon, Point, MultiPolygon
-from django.contrib.gis.geos.geometry import GEOSGeometry
 from django.contrib.gis.measure import D
 from django.contrib.postgres.aggregates.general import ArrayAgg
 from django.db import transaction
 from django.db.models import Count, Min
 from imposm.parser import OSMParser
-from shapely.ops import polygonize
+from shapely.ops import polygonize_full
 from tqdm import tqdm
 
 from .. import Country, CountrySubarea, Place, PlaceSubarea, Street, MergeMultiline
@@ -213,16 +212,6 @@ class BaseImporter(object):
                 return False
         return True
 
-    def _get_multipolygon_from_members(self, members):
-        return self.__class__._get_multipolygon_from_multiline(
-            self._get_multiline_from_members(members)
-        )
-
-    def _get_multipolygon_from_refs(self, refs):
-        return self.__class__._get_multipolygon_from_multiline(
-            self._get_multiline_from_refs(refs)
-        )
-
     @classmethod
     def merge_multiline(cls, multilinestring):
         """
@@ -329,17 +318,19 @@ class BaseImporter(object):
         if multiline:
             lines = []
             for line in multiline:
-                lines.append(line.coords[:])
+                lines.append(list(line.coords))
 
-            for polygon in polygonize(lines):
-                # that can be MultiLineString or LineString
-                polygon_boundaries = GEOSGeometry(polygon.boundary.to_wkt())
-                if type(polygon_boundaries) is not MultiLineString:
-                    polygon_boundaries = [polygon_boundaries]
-                for polygon_boundary in polygon_boundaries:
-                    polygons.append(
-                        Polygon(polygon_boundary.coords[:])
-                    )
+            shapely_polygons, dangles, cuts, invalids = polygonize_full(lines)
+            for shapely_polygon in shapely_polygons.geoms:
+                polygon_exterior_coords = list(shapely_polygon.exterior.coords)
+                polygon_holes = [list(interior.coords) for interior in shapely_polygon.interiors]
+                try:
+                    polygon = Polygon(polygon_exterior_coords, *polygon_holes)
+                except:
+                    import ipdb;ipdb.set_trace()
+                polygons.append(
+                    polygon
+                )
 
             if polygons:
                 multipolygon = MultiPolygon(polygons)
@@ -532,7 +523,8 @@ class BaseImporter(object):
 
     def _import_countrysubarea_from_relation(self, osm_id, tags, members):
         if self._is_relation_countrysubarea(osm_id, tags, members) and self._are_all_members_cached(members):
-            border = self._get_multipolygon_from_members(members)
+            multiline = self._get_multiline_from_members(members)
+            border = self._get_multipolygon_from_multiline(multiline)
             if border:
                 print('CountrySubarea:', tags.get('name'), 'http://openstreetmap.org/relation/{}'.format(osm_id))
                 countrysubarea_defaults = {
@@ -549,12 +541,18 @@ class BaseImporter(object):
                     relation_osm_id=osm_id,
                     defaults=countrysubarea_defaults
                 )
-            return True
-        return False
+            else:
+                if multiline:
+                    print(
+                        "CountrySubarea not valid (doesn't have border but have multiline):",
+                        tags.get('name'),
+                        'http://openstreetmap.org/relation/{}'.format(osm_id)
+                    )
 
     def _import_place_from_relation(self, osm_id, tags, members):
         if self._is_relation_place(osm_id, tags, members) and self._are_all_members_cached(members):
-            border = self._get_multipolygon_from_members(members)
+            multiline = self._get_multiline_from_members(members)
+            border = self._get_multipolygon_from_multiline(multiline)
             if border:
                 print('Place:', tags.get('name'), 'http://openstreetmap.org/relation/{}'.format(osm_id))
                 population = tags.get('population', None)
@@ -577,12 +575,18 @@ class BaseImporter(object):
                     relation_osm_id=osm_id,
                     defaults=place_defaults
                 )
-            return True
-        return False
+            else:
+                if multiline:
+                    print(
+                        "Place not valid (doesn't have border but have multiline):",
+                        tags.get('name'),
+                        'http://openstreetmap.org/relation/{}'.format(osm_id)
+                    )
 
     def _import_place_from_way(self, osm_id, tags, refs):
         if self._is_way_place(osm_id, tags, refs) and self._are_all_refs_cached(refs):
-            border = self._get_multipolygon_from_refs(refs)
+            multiline = self._get_multiline_from_refs(refs)
+            border = self._get_multipolygon_from_multiline(multiline)
             if border:
                 print('Place:', tags.get('name'), 'http://openstreetmap.org/way/{}'.format(osm_id))
                 Place.objects.update_or_create(
@@ -593,8 +597,13 @@ class BaseImporter(object):
                         'population': tags.get('population')
                     }
                 )
-            return True
-        return False
+            else:
+                if multiline:
+                    print(
+                        "Place not valid (doesn't have border but have multiline):",
+                        tags.get('name'),
+                        'http://openstreetmap.org/way/{}'.format(osm_id)
+                    )
 
     def _import_place_from_node(self, osm_id, tags, coords):
         if osm_id not in self.already_imported_places_node_ids and self._is_node_place(osm_id, tags, coords):
@@ -607,12 +616,11 @@ class BaseImporter(object):
                     'population': tags.get('population')
                 }
             )
-            return True
-        return False
 
     def _import_placesubarea_from_relation(self, osm_id, tags, members):
         if self._is_relation_placesubarea(osm_id, tags, members) and self._are_all_members_cached(members):
-            border = self._get_multipolygon_from_members(members)
+            multiline = self._get_multiline_from_members(members)
+            border = self._get_multipolygon_from_multiline(multiline)
             if border:
                 print('PlaceSubarea:', tags.get('name'), 'http://openstreetmap.org/relation/{}'.format(osm_id))
                 placesubarea_defaults = {
@@ -629,8 +637,13 @@ class BaseImporter(object):
                     relation_osm_id=osm_id,
                     defaults=placesubarea_defaults
                 )
-            return True
-        return False
+            else:
+                if multiline:
+                    print(
+                        "PlaceSubarea not valid (doesn't have border but have multiline):",
+                        tags.get('name'),
+                        'http://openstreetmap.org/relation/{}'.format(osm_id)
+                    )
 
     def _import_street_from_relation(self, osm_id, tags, members):
         if self._is_relation_street(osm_id, tags, members) and self._are_all_members_cached(members):
@@ -642,8 +655,6 @@ class BaseImporter(object):
                     'lines': self._get_merged_multiline_from_members(members),
                 }
             )
-            return True
-        return False
 
     def _import_street_from_way(self, osm_id, tags, refs):
         if self._is_way_street(osm_id, tags, refs) and self._are_all_refs_cached(refs):
@@ -655,8 +666,6 @@ class BaseImporter(object):
                     'lines': self._get_multiline_from_refs(refs),
                 }
             )
-            return True
-        return False
 
     def _import_relation(self, osm_id, tags, members):
         self._import_countrysubarea_from_relation(osm_id, tags, members)
