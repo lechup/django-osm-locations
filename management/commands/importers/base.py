@@ -80,18 +80,21 @@ class BaseImporter(object):
         end = datetime.now()
         print("Importing ended: %s, took: %s." % (end, end - start_all))
 
-    def do_unmerge(self):
-        """
-        Use this method to unmerge locations (eg. before updating from new country OSM file)
-        """
-        for model_class in tqdm(self.location_models_mergable, desc='Doing unmerge...', leave=False):
-            model_class.objects_all.merged().mark_as_not_merged()
-
     def do_merge(self):
         """
         Use this method in child class to merge locations (eg. multiple entries of same street or city subarea)
         """
+        # remove duplicates from places
         self._merge_places()
+
+        # remove duplicates from locations below places eg:
+        # streets (one street can be saved as more than one line in OSM)
+        places = self.country.places.not_merged().exclude(border=None).iterator()
+        places_count = self.country.places.not_merged().exclude(border=None).count()
+        for place in tqdm(places, total=places_count,
+                desc='Doing merge of Places...', leave=False):
+            self._merge_place_subareas(place)
+            self._merge_place_streets(place)
 
     def do_update_country_border(self):
         print("Update'ing %s country border....\n" % (self.__class__.__name__,))
@@ -471,7 +474,7 @@ class BaseImporter(object):
         ).filter(name_count__gt=1).values_list('name', 'id_min', 'ids_array', 'merged_lines').order_by()
 
     @classmethod
-    def _merge_streets(cls, place):
+    def _merge_place_streets(cls, place):
         streets_to_merge = tqdm(
             list(cls._get_duplicated_street_tuples(place)),
             desc='Doing merge of Streets for {}...'.format(place),
@@ -482,15 +485,15 @@ class BaseImporter(object):
             ids_array.remove(id_min)
             with transaction.atomic():
                 # mark as merged
-                Street.objects_all.filter(id__in=ids_array).mark_as_merged()
+                Street.objects.filter(id__in=ids_array).mark_as_merged()
                 # save one item with lines merged
-                street = Street.objects_all.get(id=id_min)
+                street = Street.objects.get(id=id_min)
                 street.lines = merged_lines
                 street.save()
 
     @classmethod
     def _get_duplicated_place_tuples(cls):
-        return Place.objects_all.values(
+        return Place.objects.values(
             'name'
         ).annotate(
             name_count=Count('name'),
@@ -508,11 +511,11 @@ class BaseImporter(object):
             with transaction.atomic():
                 for place_id in place_ids:
                     # make sure we have latest is_merged status
-                    place = Place.objects_all.get(id=place_id)
+                    place = Place.objects.get(id=place_id)
                     if not place.is_merged:
                         all_but_place_ids = list(place_ids)
                         all_but_place_ids.remove(place.id)
-                        duplicated_places = Place.objects_all.filter(
+                        duplicated_places = Place.objects.filter(
                             id__in=all_but_place_ids,
                             center__distance_lte=(place.center, D(km=2)),
                             is_merged=False

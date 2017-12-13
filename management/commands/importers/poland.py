@@ -2,6 +2,7 @@
 from __future__ import unicode_literals
 
 from django.contrib.gis.geos import MultiPolygon
+from django.db.models import Q
 from tqdm import tqdm
 
 from .base import BaseImporter
@@ -17,20 +18,15 @@ class PolandImporter(BaseImporter):
         for country_subarea in tqdm(
                 country_subareas, total=country_subarea_count, desc='Doing merge of CountrySubareas...', leave=False):
             self._merge_country_subareas(country_subarea)
-
-        # remove duplicates from locations below places eg:
-        # streets (one street can be saved as more than one line in OSM)
-        places = self.country.places.exclude(border=None).iterator()
-        places_count = self.country.places.exclude(border=None).count()
-        for place in tqdm(places, total=places_count,
-                desc='Doing merge of Places...', leave=False):
-            self._merge_place_subareas(place)
-            self._merge_streets(place)
+        # do usual stuff
         super(self.__class__, self).do_merge()
 
     def do_update_country_border(self):
         country_border = MultiPolygon([])
-        for country_subarea in CountrySubarea.objects.filter(name__icontains='województwo'):
+        countrysubareas = CountrySubarea.objects.filter(
+            Q(name__icontains='województwo ') | Q(name__icontains='powiat ')
+        )
+        for country_subarea in countrysubareas:
             country_border = self._merge_multipolygon(country_border + country_subarea.border)
         self.country.border = country_border
         self.country.save()

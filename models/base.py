@@ -10,7 +10,7 @@ from django.utils.functional import cached_property
 from django.utils.text import slugify
 from unidecode import unidecode
 
-from .managers import MergableDefaultManager, MergableAllManager
+from .managers import MergableManager
 
 
 @python_2_unicode_compatible
@@ -227,8 +227,7 @@ class LocationMergableBase(gis_models.Model):
         # 'WHERE NOT is_merged' for each model using this base class
     )
 
-    objects = MergableDefaultManager()
-    objects_all = MergableAllManager()
+    objects = MergableManager()
 
     class Meta:
         abstract = True

@@ -16,6 +16,7 @@ class Command(BaseCommand):
            )
 
     def handle(self, *args, **options):
+        call_command('locations_clear_merged')
         call_command('locations_recalculate_areas_and_lengths')
         call_command('locations_recalculate_slugs')
         call_command('locations_recalculate_denormalized_fields')

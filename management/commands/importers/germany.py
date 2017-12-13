@@ -10,16 +10,6 @@ from .. import Place
 class GermanyImporter(BaseImporter):
     whitelist_tags = BaseImporter.whitelist_tags + ['de:place']
 
-    def do_merge(self):
-        # remove duplicates from locations below places eg:
-        # streets (one street can be saved as more than one line in OSM)
-        places = self.country.places.exclude(border=None).iterator()
-        places_count = self.country.places.exclude(border=None).count()
-        for place in tqdm(places, total=places_count,
-                desc='Doing merge of Places...'):
-            self._merge_streets(place)
-        super(self.__class__, self).do_merge()
-
     @classmethod
     def _is_relation_countrysubarea(cls, osm_id, tags, members):
         is_relation_countrysubarea = 'admin_level' in tags and tags['admin_level'] in ['4', '5', '6', '7'] and \

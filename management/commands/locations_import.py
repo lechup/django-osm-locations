@@ -145,7 +145,6 @@ class Command(BaseCommand):
                 importer = importer_class(country_slug, self._get_osm_file_path(osm_repository_country))
 
                 if (not options['merge_only'] and not options['import_only']) or options['import_only']:
-                    importer.do_unmerge()
                     importer.do_import()
                 if (not options['merge_only'] and not options['import_only']) or options['merge_only']:
                     importer.do_merge()
