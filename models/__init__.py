@@ -14,7 +14,7 @@ class Country(LocationBorderBase):
     class Meta:
         verbose_name_plural = 'countries'
         unique_together = ('iso2', 'iso3', 'un')
-        ordering = ['-area', '-population']
+        ordering = ['-area']
 
     @property
     def subareas(self):
@@ -43,7 +43,7 @@ class CountrySubarea(LocationMergableBase, LocationOSMBorderBase):
     countrysubarea = DenormArrayField(max_length=255)
 
     class Meta:
-        ordering = ['-area', '-population']
+        ordering = ['-area']
 
     @property
     def subareas(self):
@@ -68,7 +68,7 @@ class Place(LocationMergableBase, LocationOSMBorderBase):
     place = DenormArrayField(max_length=255)
 
     class Meta:
-        ordering = ['-area', '-population']
+        ordering = ['-area']
 
     @property
     def subareas(self):
@@ -99,7 +99,7 @@ class PlaceSubarea(LocationMergableBase, LocationOSMBorderBase):
     placesubarea = DenormArrayField(max_length=255)
 
     class Meta:
-        ordering = ['-area', '-population']
+        ordering = ['-area']
 
     @property
     def streets(self):
