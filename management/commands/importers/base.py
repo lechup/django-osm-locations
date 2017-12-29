@@ -96,14 +96,16 @@ class BaseImporter(object):
             self._merge_place_subareas(place)
             self._merge_place_streets(place)
 
-    def do_update_country_border(self):
-        print("Update'ing %s country border....\n" % (self.__class__.__name__,))
+    @classmethod
+    def do_update_country_border(cls, slug):
+        country = Country.objects.get(slug=slug)
+        print("Update'ing {} border....".format(country))
         country_border = MultiPolygon([])
         country_subarea_count = CountrySubarea.objects.count()
         for country_subarea in tqdm(CountrySubarea.objects.all().iterator(), total=country_subarea_count):
             country_border += country_subarea.border
-        self.country.border = self._merge_multipolygon(country_border)
-        self.country.save()
+        country.border = cls._merge_multipolygon(country_border)
+        country.save(update_fields=['border', 'gborder'])
 
     def _parse_and_cache(self):
         """

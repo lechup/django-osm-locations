@@ -31,7 +31,7 @@ class LocationBase(gis_models.Model):
     # duplicated column for center with geography type enabled, some functions works better
     # on geography types, details:
     # https://docs.djangoproject.com/en/1.11/ref/contrib/gis/model-api/#geography-type
-    gcenter = gis_models.PointField(default=None, null=True, blank=True, geography=True, db_index=True)
+    gcenter = gis_models.PointField(default=None, null=True, blank=True, geography=True, spatial_index=True)
     search_vector = SearchVectorField(
         default=None,
         null=True,
@@ -160,7 +160,7 @@ class LocationBorderBase(LocationBase):
     # duplicated column for border with geography type enabled, some functions works better
     # on geography types, details:
     # https://docs.djangoproject.com/en/1.11/ref/contrib/gis/model-api/#geography-type
-    gborder = gis_models.MultiPolygonField(default=None, null=True, blank=True, geography=True)
+    gborder = gis_models.MultiPolygonField(default=None, null=True, blank=True, geography=True, spatial_index=True)
     population = models.IntegerField(default=0, blank=True, db_index=True)
 
     def _presave_center(self, *args, **kwargs):
@@ -231,8 +231,6 @@ class LocationMergableBase(gis_models.Model):
     is_merged = models.BooleanField(
         default=False,
         help_text='Is given location merged with other one?',
-        # we have partial index defined manually in migrations
-        # 'WHERE NOT is_merged' for each model using this base class
     )
 
     objects = MergableManager()

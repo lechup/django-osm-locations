@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 from __future__ import unicode_literals
+
+from django.contrib.gis.db.models.functions import Distance
 from django.core.management.base import BaseCommand
 from django.db import transaction, connection
-from django.db.models import F, Value
-from django.db.models.expressions import RawSQL
-from django.db.models.functions import Concat
+from django.utils import six
 from django.utils.text import slugify
 from tqdm import tqdm
 
@@ -57,7 +57,7 @@ class Command(BaseCommand):
             'model_name': model_name,
             'field_name': field_name,
             'array_value': array_value,
-            'border_ewkb': border_ewkb,
+            'border_ewkb': six.text_type(border_ewkb, 'ascii'),
             'ST_Function': field_and_function['function'],
             'ST_Field': field_and_function['field'],
         })
@@ -157,6 +157,26 @@ class Command(BaseCommand):
         for model_class_to_update in cls.MODEL_CLASSES_TO_UPDATE:
             print("{} - updating denorm fields...".format(model_class_to_update.__name__))
             cls.update_denorm_fields_for_model_class(model_class_to_update)
+
+    @classmethod
+    @transaction.atomic
+    def update_street_place_field(cls):
+        streets = Street.objects.filter(place__len=0).only('place', 'gcenter')
+        for street in tqdm(
+            streets.iterator(),
+            total=streets.count(),
+            desc="Updating Streets not belonging to Places"
+        ):
+            closest_place = Place.objects.only('slug', 'name').annotate(
+                distance=Distance('gcenter', street.gcenter)
+            ).order_by('distance').first()
+            street.place = [
+                [
+                    closest_place.name,
+                    closest_place.slug
+                ]
+            ]
+            street.save(update_fields=['place'])
 
     @classmethod
     def get_sql_for_search_vector(cls, model_class):
