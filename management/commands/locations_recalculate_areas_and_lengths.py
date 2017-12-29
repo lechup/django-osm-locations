@@ -16,7 +16,7 @@ class Command(BaseCommand):
     @classmethod
     def set_area(cls, model_class):
         model_class.objects.exclude(border=None).annotate(
-            gis_area=Area('gborder')
+            gis_area=Area('border')
         ).update(area=F('gis_area') / 1000000)
         model_class.objects.filter(border=None).update(area=0)
 

@@ -28,7 +28,7 @@ class PlaceSubdomainMiddleware(object):
             place = None
             try:
                 place = get_object_or_404(
-                    Place.objects.defer('gborder'),
+                    Place.objects.all(),
                     slug=request.subdomain
                 )
             except Http404:
@@ -37,7 +37,7 @@ class PlaceSubdomainMiddleware(object):
                     if len(main_subdomain) == 2:
                         main_subdomain = main_subdomain[0]
                         place = get_object_or_404(
-                            Place.objects.defer('gborder'),
+                            Place.objects.all(),
                             slug=main_subdomain
                         )
                         return HttpResponsePermanentRedirect('{}://{}.{}{}'.format(

@@ -28,10 +28,6 @@ class LocationBase(gis_models.Model):
                   'cordinates of NortEast point.'
     )
     center = gis_models.PointField(default=None, null=True, blank=True)
-    # duplicated column for center with geography type enabled, some functions works better
-    # on geography types, details:
-    # https://docs.djangoproject.com/en/1.11/ref/contrib/gis/model-api/#geography-type
-    gcenter = gis_models.PointField(default=None, null=True, blank=True, geography=True, spatial_index=True)
     search_vector = SearchVectorField(
         default=None,
         null=True,
@@ -105,10 +101,6 @@ class LocationBase(gis_models.Model):
         if not self.slug:
             self.slug = self.slugify
 
-    def _presave_gcenter(self, *args, **kwargs):
-        if self.center:
-            self.gcenter = self.center
-
     def _presave(self, *args, **kwargs):
         """
         run all _presave_X methods of current class
@@ -157,10 +149,6 @@ class LocationOSMBase(gis_models.Model):
 class LocationBorderBase(LocationBase):
     area = models.FloatField(default=0, blank=True, db_index=True)
     border = gis_models.MultiPolygonField(default=None, null=True, blank=True)
-    # duplicated column for border with geography type enabled, some functions works better
-    # on geography types, details:
-    # https://docs.djangoproject.com/en/1.11/ref/contrib/gis/model-api/#geography-type
-    gborder = gis_models.MultiPolygonField(default=None, null=True, blank=True, geography=True, spatial_index=True)
     population = models.IntegerField(default=0, blank=True, db_index=True)
 
     def _presave_center(self, *args, **kwargs):
@@ -170,10 +158,6 @@ class LocationBorderBase(LocationBase):
     def _presave_area(self, *args, **kwargs):
         if self.border and not self.area:
             self.area = self.border.area
-
-    def _presave_gborder(self, *args, **kwargs):
-        if self.border:
-            self.gborder = self.border
 
     def _presave_bbox(self, *args, **kwargs):
         # use border to count bounding_box

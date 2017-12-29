@@ -105,7 +105,7 @@ class BaseImporter(object):
         for country_subarea in tqdm(CountrySubarea.objects.all().iterator(), total=country_subarea_count):
             country_border += country_subarea.border
         country.border = cls._merge_multipolygon(country_border)
-        country.save(update_fields=['border', 'gborder'])
+        country.save(update_fields=['border'])
 
     def _parse_and_cache(self):
         """

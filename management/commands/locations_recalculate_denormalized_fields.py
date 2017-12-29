@@ -161,14 +161,14 @@ class Command(BaseCommand):
     @classmethod
     @transaction.atomic
     def update_street_place_field(cls):
-        streets = Street.objects.filter(place__len=0).only('place', 'gcenter')
+        streets = Street.objects.filter(place__len=0).only('place', 'center')
         for street in tqdm(
             streets.iterator(),
             total=streets.count(),
             desc="Updating Streets not belonging to Places"
         ):
             closest_place = Place.objects.only('slug', 'name').annotate(
-                distance=Distance('gcenter', street.gcenter)
+                distance=Distance('center', street.center)
             ).order_by('distance').first()
             street.place = [
                 [
