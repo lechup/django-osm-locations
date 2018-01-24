@@ -33,4 +33,4 @@ class Command(BaseCommand):
             mergable_model_classes = [Place, PlaceSubarea, Street]
             for mergable_model_class in mergable_model_classes:
                 print("{} - removing objects outside of country borders...".format(mergable_model_class.__name__))
-                print(mergable_model_class.objects.exclude(center__within=country.border).only('id').delete())
+                print(mergable_model_class.objects.exclude(center__intersects=country.border).only('id').delete())
