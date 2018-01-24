@@ -18,19 +18,19 @@ class Country(LocationBorderBase):
 
     @property
     def subareas(self):
-        return CountrySubarea.objects.filter(center__within=self.bbox_polygon)
+        return CountrySubarea.objects.filter(center__intersects=self.bbox_polygon)
 
     @property
     def places(self):
-        return Place.objects.filter(center__within=self.bbox_polygon)
+        return Place.objects.filter(center__intersects=self.bbox_polygon)
 
     @property
     def placesubareas(self):
-        return PlaceSubarea.objects.filter(center__within=self.bbox_polygon)
+        return PlaceSubarea.objects.filter(center__intersects=self.bbox_polygon)
 
     @property
     def streets(self):
-        return Street.objects.filter(center__within=self.bbox_polygon)
+        return Street.objects.filter(center__intersects=self.bbox_polygon)
 
 
 class CountrySubarea(LocationMergableBase, LocationOSMBorderBase):
@@ -47,15 +47,15 @@ class CountrySubarea(LocationMergableBase, LocationOSMBorderBase):
 
     @property
     def subareas(self):
-        return PlaceSubarea.objects.filter(center__within=self.bbox_polygon)
+        return PlaceSubarea.objects.filter(center__intersects=self.bbox_polygon)
 
     @property
     def places(self):
-        return Place.objects.filter(center__within=self.bbox_polygon)
+        return Place.objects.filter(center__intersects=self.bbox_polygon)
 
     @property
     def streets(self):
-        return Street.objects.filter(center__within=self.bbox_polygon)
+        return Street.objects.filter(center__intersects=self.bbox_polygon)
 
 
 class Place(LocationMergableBase, LocationOSMBorderBase):
@@ -72,19 +72,23 @@ class Place(LocationMergableBase, LocationOSMBorderBase):
 
     @property
     def subareas(self):
-        subareas = PlaceSubarea.objects.filter(center__within=self.bbox_polygon)
+        subareas = PlaceSubarea.objects.filter(center__intersects=self.bbox_polygon)
         none_subareas = PlaceSubarea.objects.none()
         return subareas if self.border else none_subareas
 
     @property
+    def subareas_within_border(self):
+        return PlaceSubarea.objects.filter(center__intersects=self.border)
+
+    @property
     def streets(self):
-        streets = Street.objects.filter(center__within=self.bbox_polygon)
+        streets = Street.objects.filter(center__intersects=self.bbox_polygon)
         none_streets = Street.objects.none()
         return streets if self.border else none_streets
 
     @property
     def streets_within_border(self):
-        return Street.objects.filter(center__within=self.border)
+        return Street.objects.filter(center__intersects=self.border)
 
 
 class PlaceSubarea(LocationMergableBase, LocationOSMBorderBase):
@@ -103,7 +107,7 @@ class PlaceSubarea(LocationMergableBase, LocationOSMBorderBase):
 
     @property
     def streets(self):
-        return Street.objects.filter(center__within=self.bbox_polygon)
+        return Street.objects.filter(center__intersects=self.bbox_polygon)
 
 
 class Street(LocationMergableBase, LocationOSMMultilineBase):
