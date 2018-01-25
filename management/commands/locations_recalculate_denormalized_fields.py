@@ -37,29 +37,16 @@ class Command(BaseCommand):
 
     @classmethod
     def get_sql_for_update_denorm_fields(cls, model_name, field_name, array_value, border_ewkb):
-        if model_name == 'street':
-            field_and_function = {
-                'field': 'lines',
-                'function': 'ST_Intersects'
-            }
-        else:
-            field_and_function = {
-                'field': 'Coalesce(border, center)',
-                'function': 'ST_Within'
-            }
-
         sql = """
             UPDATE "locations_{model_name}" SET {field_name} =
             array_cat({field_name}, {array_value}) WHERE
-              {ST_Function}({ST_Field}, ST_GeomFromEWKB('\\x{border_ewkb}'))
+              ST_Intersects('center', ST_GeomFromEWKB('\\x{border_ewkb}'))
             ;
         """.format(**{
             'model_name': model_name,
             'field_name': field_name,
             'array_value': array_value,
             'border_ewkb': six.text_type(border_ewkb, 'ascii'),
-            'ST_Function': field_and_function['function'],
-            'ST_Field': field_and_function['field'],
         })
         return sql
 
