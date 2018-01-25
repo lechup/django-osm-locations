@@ -538,7 +538,7 @@ class BaseImporter(object):
                             duplicated_places = Place.objects.filter(
                                 id__in=all_but_place_ids,
                                 center__intersects=Place.get_polygon_from_bbox(
-                                    Place.near_bbox(km=25)
+                                    place.near_bbox(km=25)
                                 ),
                                 is_merged=False
                             )
