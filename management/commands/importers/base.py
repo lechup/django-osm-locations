@@ -526,8 +526,8 @@ class BaseImporter(object):
                                 # when center is automatically generated populate center from
                                 # merged place
                                 if place.border.point_on_surface == place.center:
-                                    new_center = duplicated_places.first().center
-                                    place.center = new_center
+                                    duplicated_place = duplicated_places.first()
+                                    place.center = duplicated_place.center
                                     place.save(update_fields=['center'])
                                     tqdm.write('{} merged with {}!'.format(duplicated_place, place))
 
