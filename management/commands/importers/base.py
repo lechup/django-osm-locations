@@ -498,7 +498,7 @@ class BaseImporter(object):
             'name'
         ).annotate(
             name_count=Count('name'),
-            ids=ArrayAggOrderBy('id', 'ORDER BY area DESC')
+            ids=ArrayAggOrderBy('id', order_by='ORDER BY area DESC')
         ).filter(name_count__gt=1).values_list('name', 'ids').order_by()
 
     @classmethod
