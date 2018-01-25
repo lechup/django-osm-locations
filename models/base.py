@@ -68,19 +68,19 @@ class LocationBase(gis_models.Model):
 
         return self.__class__.get_polygon_from_bbox(self.bbox)
 
-    def near_bbox(self, delta=0.009):
+    def near_bbox(self, km=1, delta=0.009):
         """
         Return bounding box calculated as delta from self.center each way,
-        delta = 0.009 is ~1km in coordinates values.
+        delta = 0.009 is ~1km in coordinates values for Poland.
 
         :return: list of 4 floats, [:2] SW point, [3:] NE point or empty list
         """
         if self.center:
             return [
-                self.center[0] - delta,
-                self.center[1] - delta,
-                self.center[0] + delta,
-                self.center[1] + delta,
+                self.center[0] - delta * km,
+                self.center[1] - delta * km,
+                self.center[0] + delta * km,
+                self.center[1] + delta * km,
             ]
         else:
             return []

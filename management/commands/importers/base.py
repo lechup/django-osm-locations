@@ -5,7 +5,6 @@ from datetime import datetime
 
 from django.conf import settings
 from django.contrib.gis.geos import MultiLineString, LineString, Polygon, Point, MultiPolygon
-from django.contrib.gis.measure import D
 from django.contrib.postgres.aggregates.general import ArrayAgg
 from django.db import transaction
 from django.db.models import Count, Min
@@ -13,7 +12,7 @@ from imposm.parser import OSMParser
 from shapely.ops import polygonize_full
 from tqdm import tqdm
 
-from .. import Country, CountrySubarea, Place, PlaceSubarea, Street, MergeMultiline
+from .. import Country, CountrySubarea, Place, PlaceSubarea, Street, MergeMultiline, ArrayAggOrderBy
 from ..caches.base import MemoryCache, MemcachedCache, DiskCache, FileCache
 
 if getattr(settings, 'LOCATIONS_MEMCACHED_CACHE', False):
@@ -499,7 +498,7 @@ class BaseImporter(object):
             'name'
         ).annotate(
             name_count=Count('name'),
-            ids=ArrayAgg('id')
+            ids=ArrayAggOrderBy('id', 'ORDER BY area DESC')
         ).filter(name_count__gt=1).values_list('name', 'ids').order_by()
 
     @classmethod
@@ -512,19 +511,39 @@ class BaseImporter(object):
         for name, place_ids in places_to_merge:
             with transaction.atomic():
                 for place_id in place_ids:
+                    all_but_place_ids = list(place_ids)
+                    all_but_place_ids.remove(place.id)
                     # make sure we have latest is_merged status
                     place = Place.objects.get(id=place_id)
                     if not place.is_merged:
-                        all_but_place_ids = list(place_ids)
-                        all_but_place_ids.remove(place.id)
-                        duplicated_places = Place.objects.filter(
-                            id__in=all_but_place_ids,
-                            center__distance_lte=(place.center, D(km=2)),
-                            is_merged=False
-                        )
-                        for duplicated_place in duplicated_places:
-                            tqdm.write('{} merged with {}!'.format(duplicated_place, place))
-                            duplicated_place.mark_as_merged()
+                        if place.border:
+                            duplicated_places = Place.objects.filter(
+                                id__in=all_but_place_ids,
+                                center__intersects=place.bbox_polygon,
+                                is_merged=False
+                            )
+                            # when center is automatically generated populate center from
+                            # merged place
+                            if place.border.point_on_surface == place.center:
+                                new_center = duplicated_places.first().center
+                                place.center = new_center
+                                place.save(update_fields=['center'])
+                                tqdm.write('{} merged with {}!'.format(duplicated_place, place))
+
+                            for duplicated_place in duplicated_places:
+                                tqdm.write('{} merged with {}!'.format(duplicated_place, place))
+                                duplicated_place.mark_as_merged()
+                        else:
+                            duplicated_places = Place.objects.filter(
+                                id__in=all_but_place_ids,
+                                center__intersects=Place.get_polygon_from_bbox(
+                                    Place.near_bbox(km=25)
+                                ),
+                                is_merged=False
+                            )
+                            for duplicated_place in duplicated_places:
+                                tqdm.write('{} merged with {}!'.format(duplicated_place, place))
+                                duplicated_place.mark_as_merged()
 
     def _import_countrysubarea_from_relation(self, osm_id, tags, members):
         if self._is_relation_countrysubarea(osm_id, tags, members) and self._are_all_members_cached(members):
