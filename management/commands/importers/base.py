@@ -522,17 +522,18 @@ class BaseImporter(object):
                                 center__intersects=place.bbox_polygon,
                                 is_merged=False
                             )
-                            # when center is automatically generated populate center from
-                            # merged place
-                            if place.border.point_on_surface == place.center:
-                                new_center = duplicated_places.first().center
-                                place.center = new_center
-                                place.save(update_fields=['center'])
-                                tqdm.write('{} merged with {}!'.format(duplicated_place, place))
+                            if duplicated_places.count() > 0:
+                                # when center is automatically generated populate center from
+                                # merged place
+                                if place.border.point_on_surface == place.center:
+                                    new_center = duplicated_places.first().center
+                                    place.center = new_center
+                                    place.save(update_fields=['center'])
+                                    tqdm.write('{} merged with {}!'.format(duplicated_place, place))
 
-                            for duplicated_place in duplicated_places:
-                                tqdm.write('{} merged with {}!'.format(duplicated_place, place))
-                                duplicated_place.mark_as_merged()
+                                for duplicated_place in duplicated_places:
+                                    tqdm.write('{} merged with {}!'.format(duplicated_place, place))
+                                    duplicated_place.mark_as_merged()
                         else:
                             duplicated_places = Place.objects.filter(
                                 id__in=all_but_place_ids,
