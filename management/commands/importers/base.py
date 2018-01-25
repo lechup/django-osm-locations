@@ -511,10 +511,10 @@ class BaseImporter(object):
         for name, place_ids in places_to_merge:
             with transaction.atomic():
                 for place_id in place_ids:
-                    all_but_place_ids = list(place_ids)
-                    all_but_place_ids.remove(place.id)
                     # make sure we have latest is_merged status
                     place = Place.objects.get(id=place_id)
+                    all_but_place_ids = list(place_ids)
+                    all_but_place_ids.remove(place.id)
                     if not place.is_merged:
                         if place.border:
                             duplicated_places = Place.objects.filter(
