@@ -40,7 +40,7 @@ class Command(BaseCommand):
         sql = """
             UPDATE "locations_{model_name}" SET {field_name} =
             array_cat({field_name}, {array_value}) WHERE
-              ST_Intersects('center', ST_GeomFromEWKB('\\x{border_ewkb}'))
+              ST_Intersects(center, ST_GeomFromEWKB('\\x{border_ewkb}'))
             ;
         """.format(**{
             'model_name': model_name,
