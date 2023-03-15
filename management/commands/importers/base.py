@@ -465,9 +465,7 @@ class BaseImporter(object):
 
     @classmethod
     def _get_duplicated_street_tuples(cls, place):
-        return place.streets_within_border.values(
-            'name'
-        ).annotate(
+        return place.streets_within_border.annotate(
             id_min=Min('id'),
             name_count=Count('name'),
             ids_array=ArrayAgg('id'),

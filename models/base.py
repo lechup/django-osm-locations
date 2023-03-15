@@ -1,6 +1,5 @@
 from __future__ import unicode_literals
 
-from django.utils.encoding import python_2_unicode_compatible
 from django.contrib.gis.db import models as gis_models
 from django.contrib.gis.geos import Polygon
 from django.contrib.postgres.fields.array import ArrayField
@@ -13,7 +12,6 @@ from unidecode import unidecode
 from .managers import MergableManager
 
 
-@python_2_unicode_compatible
 class LocationBase(gis_models.Model):
     """
     Abstract model used for other location models.
@@ -126,7 +124,6 @@ class LocationBase(gis_models.Model):
         )
 
 
-@python_2_unicode_compatible
 class LocationOSMBase(gis_models.Model):
     node_osm_id = models.BigIntegerField(default=None, null=True, db_index=True)
     way_osm_id = models.BigIntegerField(default=None, null=True, db_index=True)
