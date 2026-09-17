@@ -59,6 +59,11 @@ api = [
 importers = [
     "requests>=2.25",
     "Shapely>=1.8",
+    # numpy backs the packed coordinate store; Shapely already requires it
+    "numpy>=1.21",
+    # roaring bitmaps for the node/way id sets -- optional but worth ~1.5GB
+    # on a country extract, see caches.base.IdSet
+    "pyroaring>=0.4",
 ]
 
 # Optional cache backends for the importer's node/way/relation caches.

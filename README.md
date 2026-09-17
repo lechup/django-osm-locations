@@ -218,9 +218,27 @@ country's `admin_level` conventions — see `poland.py` and `germany.py`.
 | `LOCATIONS_MEMCACHED_CACHE` | `False` | Use memcached |
 | `LOCATIONS_RESERVED_SUBDOMAINS` | `www`, `api`, `admin`, … | Subdomains never treated as a place slug |
 
-Importing a full country holds every node, way and relation in a cache. The
-default is an in-memory dict, which is fastest but needs a lot of RAM for a
-large extract — switch to `LOCATIONS_DISK_CACHE` if memory is tight.
+### Memory during import
+
+Importing a country means holding its whole node/way/relation graph before it
+can become geometry, and a country extract has tens of millions of nodes. Three
+structures carry the weight, and the two optional dependencies in the
+`importers` extra matter a lot:
+
+| Structure | Representation | Cost per node |
+|---|---|---|
+| node coordinates | packed `array` + numpy binary search | ~23 B |
+| node/way id sets | roaring bitmap (`pyroaring`) | ~0.8 B |
+| | plain `set()` fallback | ~34 B |
+
+Measured on 50M nodes, that is roughly **14 GB → 1.1 GB**. Both numpy and
+pyroaring are pulled in by `pip install 'django-osm-locations[importers]'`;
+without pyroaring the id sets fall back to a plain `set` and the import still
+works, just using about 1.5 GB more.
+
+Tagged nodes, ways and relations still go through the cache backend selected
+below. The default keeps them in memory, which is fastest; switch to
+`LOCATIONS_DISK_CACHE` if even that does not fit.
 
 ## Development
 

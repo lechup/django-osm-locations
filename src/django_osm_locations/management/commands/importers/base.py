@@ -4,6 +4,7 @@ from django.conf import settings
 from django.contrib.gis.geos import MultiLineString, LineString, Polygon, Point, MultiPolygon
 from django.contrib.postgres.aggregates.general import ArrayAgg
 from django.db import transaction
+from django.contrib.gis.db.models.aggregates import Union
 from django.db.models import Count, Min
 from tqdm import tqdm
 
@@ -14,7 +15,7 @@ from tqdm import tqdm
 # commands -- does not hard-fail on an install without the import extras.
 
 from .. import Country, CountrySubarea, Place, PlaceSubarea, Street, MergeMultiline, ArrayAggOrderBy
-from ..caches.base import MemoryCache, MemcachedCache, DiskCache, FileCache
+from ..caches.base import MemoryCache, MemcachedCache, DiskCache, FileCache, NodeCache
 
 if getattr(settings, 'LOCATIONS_MEMCACHED_CACHE', False):
     CACHE_CLASS = MemcachedCache
@@ -62,7 +63,10 @@ class BaseImporter(object):
         self.file_path = file_path
         self.verbose = verbose
 
-        self.nodes_cache = CACHE_CLASS()
+        # Nodes dominate the footprint, so they get the two-tier cache:
+        # tagged nodes in the selected backend, bare coordinates in packed
+        # arrays. Relations and ways stay on the selected backend.
+        self.nodes_cache = NodeCache(CACHE_CLASS)
         self.ways_cache = CACHE_CLASS()
         self.relations_cache = CACHE_CLASS()
 
@@ -141,17 +145,29 @@ class BaseImporter(object):
 
     @classmethod
     def _rebuild_country_border(cls, country):
+        """
+        Union every country subarea into the country border.
+
+        Done by PostGIS rather than in Python: accumulating
+        ``border += subarea.border`` pulled every subarea geometry into memory
+        and rebuilt a progressively larger MultiPolygon on each iteration, which
+        is quadratic in both time and allocation over thousands of subareas.
+
+        NOTE: this merges *every* CountrySubarea in the database, not only the
+        ones belonging to ``country``. That is the long-standing behaviour and
+        is correct for a single-country database; importers for a second
+        country should override ``do_update_country_border`` (as Poland does)
+        until the subareas carry a country foreign key.
+        """
         print("Update'ing {} border....".format(country))
-        country_border = MultiPolygon([])
-        # NOTE: this merges *every* CountrySubarea in the database, not only the
-        # ones belonging to ``country``. That is the long-standing behaviour and
-        # is correct for a single-country database; importers for a second
-        # country should override ``do_update_country_border`` (as Poland does)
-        # until the subareas carry a country foreign key.
-        country_subarea_count = CountrySubarea.objects.count()
-        for country_subarea in tqdm(CountrySubarea.objects.all().iterator(), total=country_subarea_count):
-            country_border += country_subarea.border
-        country.border = cls._merge_multipolygon(country_border)
+        border = CountrySubarea.objects.exclude(border=None).aggregate(
+            border=Union('border'),
+        )['border']
+        if border is None:
+            return
+        if isinstance(border, Polygon):
+            border = MultiPolygon(border)
+        country.border = cls._merge_multipolygon(border)
         country.save(update_fields=['border'])
 
     def _parse_and_cache(self):
@@ -434,7 +450,7 @@ class BaseImporter(object):
         for osm_id, x, y in coords:
             # save coords needed by relations or ways
             if osm_id in self.nodes_cache.precache:
-                self.nodes_cache.set(osm_id, ({}, (x, y)))
+                self.nodes_cache.set_coords(osm_id, x, y)
         self.nodes_cache.commit()
 
     def _cache_nodes(self, nodes):
@@ -549,8 +565,13 @@ class BaseImporter(object):
 
     @classmethod
     def _merge_places(cls):
+        # count() first rather than list(): the query can return a very large
+        # number of groups and materialising them all just to show a progress
+        # bar held the whole result set in memory alongside the caches.
+        duplicated_places = cls._get_duplicated_place_tuples()
         places_to_merge = tqdm(
-            list(cls._get_duplicated_place_tuples()),
+            duplicated_places.iterator(),
+            total=duplicated_places.count(),
             desc='Doing merge of Places...',
             leave=False
         )
