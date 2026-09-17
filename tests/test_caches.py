@@ -169,3 +169,104 @@ def test_disk_cache_constructs(tmp_path, settings):
     assert cache.get(1) == ('tags', 'value')
     assert list(cache.keys()) == [1]
     assert not cache.exists(2)
+
+
+class TestBatchedLookup:
+    def test_get_many_matches_get(self):
+        store = CoordsStore()
+        for osm_id in [50, 10, 30, 20, 40]:
+            store.add(osm_id, osm_id / 10, -osm_id / 10)
+        ids = [10, 20, 30, 40, 50]
+        assert store.get_many(ids) == [store.get(i) for i in ids]
+
+    def test_get_many_reports_missing_as_none(self):
+        store = CoordsStore()
+        store.add(1, 1.0, 2.0)
+        assert store.get_many([1, 999, 1]) == [(1.0, 2.0), None, (1.0, 2.0)]
+
+    def test_get_many_on_empty_store(self):
+        assert CoordsStore().get_many([1, 2]) == [None, None]
+        assert CoordsStore().get_many([]) == []
+
+    def test_get_many_includes_overflow_entries(self):
+        store = CoordsStore()
+        store.add(1, 1.0, 1.0)
+        store.get(1)                 # freeze
+        store.add(2, 2.0, 2.0)       # overflow
+        assert store.get_many([1, 2, 3]) == [(1.0, 1.0), (2.0, 2.0), None]
+
+    def test_get_many_handles_ids_below_and_above_the_range(self):
+        store = CoordsStore()
+        for osm_id in [100, 200, 300]:
+            store.add(osm_id, 1.0, 1.0)
+        assert store.get_many([1, 100, 999]) == [None, (1.0, 1.0), None]
+
+    def test_get_many_with_large_ids(self):
+        store = CoordsStore()
+        base = 12_000_000_000
+        for offset in range(5):
+            store.add(base + offset, offset, -offset)
+        got = store.get_many([base + 3, base + 99])
+        assert got == [(3.0, -3.0), None]
+
+
+class TestNodeCacheBatch:
+    def test_coords_for_spans_both_tiers(self):
+        cache = NodeCache(MemoryCache)
+        cache.set(1, ({'place': 'city'}, (10.0, 20.0)))   # tagged tier
+        cache.set_coords(2, 1.0, 2.0)                     # coords tier
+        assert cache.coords_for([1, 2, 3]) == [(10.0, 20.0), (1.0, 2.0), None]
+
+    def test_coords_for_preserves_order_and_duplicates(self):
+        cache = NodeCache(MemoryCache)
+        cache.set_coords(7, 7.0, 7.0)
+        cache.set_coords(8, 8.0, 8.0)
+        assert cache.coords_for([8, 7, 8]) == [(8.0, 8.0), (7.0, 7.0), (8.0, 8.0)]
+
+    def test_coords_for_empty(self):
+        assert NodeCache(MemoryCache).coords_for([]) == []
+
+
+class TestMembershipFastPath:
+    def test_contains_all_true_when_every_id_present(self):
+        store = CoordsStore()
+        for osm_id in [3, 1, 2]:
+            store.add(osm_id, 1.0, 1.0)
+        assert store.contains_all([1, 2, 3]) is True
+
+    def test_contains_all_false_when_any_missing(self):
+        store = CoordsStore()
+        store.add(1, 1.0, 1.0)
+        assert store.contains_all([1, 2]) is False
+
+    def test_contains_all_empty_is_true(self):
+        assert CoordsStore().contains_all([]) is True
+
+    def test_contains_all_on_empty_store(self):
+        assert CoordsStore().contains_all([1]) is False
+
+    def test_contains_all_considers_overflow(self):
+        store = CoordsStore()
+        store.add(1, 1.0, 1.0)
+        store.get(1)                # freeze
+        store.add(2, 2.0, 2.0)      # overflow
+        assert store.contains_all([1, 2]) is True
+        assert store.contains_all([1, 2, 3]) is False
+
+    def test_contains_all_agrees_with_get_many(self):
+        store = CoordsStore()
+        for osm_id in [10, 20, 30]:
+            store.add(osm_id, 1.0, 1.0)
+        for probe in ([10], [10, 20], [10, 99], [99], [10, 20, 30]):
+            expected = all(c is not None for c in store.get_many(probe))
+            assert store.contains_all(probe) is expected, probe
+
+    def test_has_all_coords_spans_both_tiers(self):
+        cache = NodeCache(MemoryCache)
+        cache.set(1, ({'place': 'city'}, (1.0, 2.0)))   # tagged only
+        cache.set_coords(2, 3.0, 4.0)
+        assert cache.has_all_coords([1, 2]) is True
+        assert cache.has_all_coords([1, 2, 3]) is False
+
+    def test_has_all_coords_empty(self):
+        assert NodeCache(MemoryCache).has_all_coords([]) is True

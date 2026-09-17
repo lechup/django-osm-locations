@@ -217,6 +217,7 @@ country's `admin_level` conventions — see `poland.py` and `germany.py`.
 | `LOCATIONS_FILE_CACHE` | `False` | Use a `shelve` file cache |
 | `LOCATIONS_MEMCACHED_CACHE` | `False` | Use memcached |
 | `LOCATIONS_RESERVED_SUBDOMAINS` | `www`, `api`, `admin`, … | Subdomains never treated as a place slug |
+| `LOCATIONS_PARSER_CONCURRENCY` | `os.cpu_count()` | OSM parser worker processes |
 
 ### Memory during import
 

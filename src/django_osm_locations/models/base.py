@@ -97,17 +97,37 @@ class LocationBase(gis_models.Model):
         if not self.slug:
             self.slug = self.slugify
 
+    @classmethod
+    def _save_hooks(cls):
+        """
+        Names of this class's ``_presave_*`` hooks, resolved once per class.
+
+        This used to run ``dir(self)`` on every save and call ``getattr`` on all
+        ~125 resulting names to test callability. That was slow in itself, and
+        worse, ``getattr`` *evaluates properties*: every save built
+        ``bbox_polygon``, ``center_bbox`` and ``center_bbox_polygon`` -- GEOS
+        geometry -- purely as a side effect of looking for method names.
+
+        The set of hooks is fixed per class, so it is computed once and cached.
+
+        Note the name: anything containing ``_presave_`` would match its own
+        discovery filter and be invoked as a hook.
+        """
+        methods = cls.__dict__.get('_save_hooks_cache')
+        if methods is None:
+            methods = tuple(sorted(
+                name for name in dir(cls)
+                if '_presave_' in name and callable(getattr(cls, name, None))
+            ))
+            cls._save_hooks_cache = methods
+        return methods
+
     def _presave(self, *args, **kwargs):
         """
         run all _presave_X methods of current class
         that calculates fields based on other fields
         """
-        save_methods = [
-            save_method for save_method in dir(self) if '_presave_' in save_method and callable(
-                getattr(self, save_method)
-            )
-        ]
-        for save_method in save_methods:
+        for save_method in self.__class__._save_hooks():
             getattr(self, save_method)(*args, **kwargs)
 
     def save(self, *args, **kwargs):

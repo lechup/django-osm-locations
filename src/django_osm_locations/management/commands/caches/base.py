@@ -17,6 +17,11 @@ import os
 from array import array
 from itertools import count
 
+try:
+    import numpy as np
+except ImportError:  # pragma: no cover - numpy ships with Shapely
+    np = None
+
 from django.conf import settings
 
 from ....conf import get_cache_dir
@@ -107,8 +112,11 @@ class CoordsStore:
         Peaks at roughly twice the final size while the permutation is applied;
         still far below what the dict representation costs at rest.
         """
-        import numpy as np
-
+        if np is None:
+            raise ImportError(
+                "Packed coordinate storage needs numpy. "
+                "Install it with: pip install 'django-osm-locations[importers]'"
+            )
         ids = np.frombuffer(memoryview(self._ids), dtype=np.int64)
         order = np.argsort(ids, kind='stable')
         sorted_ids = ids[order]
@@ -136,12 +144,81 @@ class CoordsStore:
                 return None
             self._freeze()
 
-        import numpy as np
-
         position = np.searchsorted(self._sorted_ids, osm_id)
         if position >= self._sorted_ids.size or self._sorted_ids[position] != osm_id:
             return None
         return float(self._sorted_xs[position]), float(self._sorted_ys[position])
+
+    def get_many(self, osm_ids):
+        """
+        Resolve many ids in one vectorised search.
+
+        The importer resolves a whole way's node refs at once, and doing that
+        one ``get()`` at a time costs a Python call plus a separate binary
+        search per ref -- about 2.5us each, which at a few hundred million way
+        refs dominates the import. One ``searchsorted`` over the whole list
+        brings it to roughly 0.1us per ref.
+
+        :return: list of ``(x, y)`` tuples, with ``None`` where the id is absent
+        """
+        osm_ids = list(osm_ids)
+        if not osm_ids:
+            return []
+
+        if self._sorted_ids is None:
+            if not len(self._ids):
+                return [self._overflow.get(int(i)) for i in osm_ids]
+            self._freeze()
+
+        keys = np.asarray([int(i) for i in osm_ids], dtype=np.int64)
+        size = self._sorted_ids.size
+        positions = np.searchsorted(self._sorted_ids, keys)
+        clipped = np.clip(positions, 0, max(size - 1, 0))
+        found = (positions < size) & (self._sorted_ids[clipped] == keys)
+
+        xs = self._sorted_xs[clipped]
+        ys = self._sorted_ys[clipped]
+
+        results = list(zip(xs.tolist(), ys.tolist()))
+        for index in np.flatnonzero(~found).tolist():
+            results[index] = None
+
+        # ids added after the sorted view was built live in the overflow dict
+        if self._overflow:
+            for index, value in enumerate(results):
+                if value is None:
+                    results[index] = self._overflow.get(int(osm_ids[index]))
+        return results
+
+    def contains_all(self, osm_ids):
+        """
+        Whether every id is present, without materialising any coordinates.
+
+        ``_are_all_refs_cached`` only needs a yes/no, so building a tuple per
+        ref just to discard it is wasted work on the hottest path in the import.
+        """
+        osm_ids = list(osm_ids)
+        if not osm_ids:
+            return True
+
+        if self._sorted_ids is None:
+            if not len(self._ids):
+                return all(int(i) in self._overflow for i in osm_ids)
+            self._freeze()
+
+        keys = np.asarray([int(i) for i in osm_ids], dtype=np.int64)
+        size = self._sorted_ids.size
+        positions = np.searchsorted(self._sorted_ids, keys)
+        clipped = np.clip(positions, 0, max(size - 1, 0))
+        found = (positions < size) & (self._sorted_ids[clipped] == keys)
+        if found.all():
+            return True
+        if not self._overflow:
+            return False
+        return all(
+            int(osm_ids[index]) in self._overflow
+            for index in np.flatnonzero(~found).tolist()
+        )
 
     def __contains__(self, osm_id):
         return self.get(osm_id) is not None
@@ -241,6 +318,32 @@ class NodeCache(CacheBase):
         if coords is None:
             return None
         return {}, coords
+
+    def coords_for(self, osm_ids):
+        """
+        Resolve coordinates for many node ids across both tiers.
+
+        Bulk-resolves the coordinate tier in one vectorised call, then fills
+        the few gaps from the tagged tier.
+        """
+        osm_ids = list(osm_ids)
+        results = self.coords.get_many(osm_ids)
+        for index, value in enumerate(results):
+            if value is None:
+                tagged = self.tagged.get(osm_ids[index])
+                if tagged is not None:
+                    results[index] = tagged[1]
+        return results
+
+    def has_all_coords(self, osm_ids):
+        """Whether coordinates are known for every id, across both tiers."""
+        osm_ids = list(osm_ids)
+        if self.coords.contains_all(osm_ids):
+            return True
+        # fall back only for the ids the coord tier is missing
+        return all(
+            coords is not None for coords in self.coords_for(osm_ids)
+        )
 
     def exists(self, key):
         return self.tagged.exists(key) or key in self.coords

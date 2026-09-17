@@ -1,3 +1,4 @@
+import os
 from datetime import datetime
 
 from django.conf import settings
@@ -16,6 +17,19 @@ from tqdm import tqdm
 
 from .. import Country, CountrySubarea, Place, PlaceSubarea, Street, MergeMultiline, ArrayAggOrderBy
 from ..caches.base import MemoryCache, MemcachedCache, DiskCache, FileCache, NodeCache
+
+def _parser_concurrency():
+    """
+    Worker count for the OSM parser.
+
+    Was hardcoded to 2 regardless of the machine. Override with
+    ``LOCATIONS_PARSER_CONCURRENCY``.
+    """
+    configured = getattr(settings, 'LOCATIONS_PARSER_CONCURRENCY', None)
+    if configured:
+        return max(1, int(configured))
+    return max(1, (os.cpu_count() or 2))
+
 
 if getattr(settings, 'LOCATIONS_MEMCACHED_CACHE', False):
     CACHE_CLASS = MemcachedCache
@@ -193,7 +207,7 @@ class BaseImporter(object):
         start = datetime.now()
         print("Creating cache for Relations %s ..." % start)
         p = _load_osm_parser()(
-            concurrency=2,
+            concurrency=_parser_concurrency(),
             relations_callback=self._cache_relations
         )
         p.parse(self.file_path)
@@ -205,7 +219,7 @@ class BaseImporter(object):
         start = datetime.now()
         print("Creating cache for Ways %s ..." % start)
         p = _load_osm_parser()(
-            concurrency=2,
+            concurrency=_parser_concurrency(),
             ways_callback=self._cache_ways
         )
         p.parse(self.file_path)
@@ -217,7 +231,7 @@ class BaseImporter(object):
         start = datetime.now()
         print("Creating cache for Coords %s ..." % start)
         p = _load_osm_parser()(
-            concurrency=2,
+            concurrency=_parser_concurrency(),
             coords_callback=self._cache_coords,
         )
         p.parse(self.file_path)
@@ -229,7 +243,7 @@ class BaseImporter(object):
         start = datetime.now()
         print("Creating cache for Nodes %s ..." % start)
         p = _load_osm_parser()(
-            concurrency=2,
+            concurrency=_parser_concurrency(),
             nodes_callback=self._cache_nodes,
             nodes_tag_filter=self._tag_filter
         )
@@ -271,14 +285,12 @@ class BaseImporter(object):
             Check if all @refs are in country osm data vel in cache
             :param refs: list of refs eg. [123, 234, 345, ...]
             :rtype : bool
+
+            Resolved in one batch. Doing it per ref cost an exists() and a get()
+            -- two separate binary searches each -- which at a few hundred
+            million way refs dominated the import.
         """
-        for ref in refs:
-            if self.nodes_cache.exists(ref):
-                if self.nodes_cache.get(ref) is None:
-                    return False
-            else:
-                return False
-        return True
+        return self.nodes_cache.has_all_coords(refs)
 
     @classmethod
     def merge_multiline(cls, multilinestring):
@@ -331,10 +343,7 @@ class BaseImporter(object):
             return None
 
     def _get_coords_from_way_refs(self, refs):
-        coords = []
-        for ref in refs:
-            coords.append(self.nodes_cache.get(ref)[1])
-        return coords
+        return self.nodes_cache.coords_for(refs)
 
     @classmethod
     def _is_way_closed(cls, refs):
