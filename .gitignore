@@ -75,3 +75,12 @@ docs/_build/
 
 # PyBuilder
 target/
+
+# packaging
+*.egg-info/
+.tox/
+
+# locations app runtime dirs
+osm_data/
+.disk_cache/
+.file_cache/

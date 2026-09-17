@@ -1,0 +1,8 @@
+include README.md
+include LICENSE
+recursive-include src/django_osm_locations/fixtures *.json
+recursive-include src/django_osm_locations/migrations *.py
+
+# never ship OSM extracts or local caches
+global-exclude *.pbf
+global-exclude *.py[cod]

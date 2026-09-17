@@ -1,0 +1,80 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "django-osm-locations"
+version = "0.1.0"
+description = "Django app that imports OpenStreetMap extracts into a PostGIS location hierarchy and serves them over a REST API."
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Leszek Piątek", email = "lpiatek@gmail.com" }]
+keywords = ["django", "openstreetmap", "osm", "postgis", "gis", "geodjango"]
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Web Environment",
+    "Framework :: Django",
+    "Framework :: Django :: 4.2",
+    "Framework :: Django :: 5.0",
+    "Framework :: Django :: 5.1",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: GIS",
+]
+
+# Core runtime: the models, admin and middleware only.
+dependencies = [
+    "Django>=4.2",
+    "Unidecode>=1.3",
+    # progress reporting, used by the recalculate/merge management commands
+    "tqdm>=4.60",
+]
+
+[project.optional-dependencies]
+# REST API layer (django_osm_locations.api).
+api = [
+    "djangorestframework>=3.14",
+    "djangorestframework-gis>=1.0",
+    "django-filter>=2.0",
+]
+
+# OSM import pipeline (the locations_import management command).
+#
+# NOTE: this extra deliberately omits the PBF parser itself. The importer needs
+# a Python 3 compatible ``imposm.parser``; upstream stopped at 1.0.7 (Python 2
+# only) and never published the 1.0.8 port to PyPI, and PyPI forbids direct-URL
+# dependencies in published metadata. Install it separately, e.g.:
+#
+#     pip install https://github.com/<fork>/imposm-parser/archive/<ref>.tar.gz
+#
+# See README "Importing OSM data" for details.
+importers = [
+    "requests>=2.25",
+    "Shapely>=1.8",
+]
+
+# Optional cache backends for the importer's node/way/relation caches.
+diskcache = ["diskcache>=5.0"]
+memcached = ["python-memcached>=1.59"]
+
+dev = [
+    "django-osm-locations[api,importers,diskcache]",
+    "pytest>=7.0",
+    "pytest-django>=4.5",
+]
+
+[project.urls]
+Homepage = "https://bitbucket.org/iRynek/locations"
+Source = "https://bitbucket.org/iRynek/locations"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+django_osm_locations = ["fixtures/*.json"]
