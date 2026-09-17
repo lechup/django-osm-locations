@@ -1,1 +1,35 @@
-[{"model": "locations.country", "pk": 1, "fields": {"name": "Polska", "slug": "polska", "iso2": "PL", "iso3": "POL", "un": 616}},{"model": "locations.country", "pk": 2, "fields": {"name": "Deutschland", "slug": "deutschland", "iso2": "DE", "iso3": "DEU", "un": 276}}]
+[
+  {
+    "model": "locations.country",
+    "pk": 1,
+    "fields": {
+      "name": "Polska",
+      "slug": "polska",
+      "iso2": "PL",
+      "iso3": "POL",
+      "un": 616
+    }
+  },
+  {
+    "model": "locations.country",
+    "pk": 2,
+    "fields": {
+      "name": "Deutschland",
+      "slug": "deutschland",
+      "iso2": "DE",
+      "iso3": "DEU",
+      "un": 276
+    }
+  },
+  {
+    "model": "locations.country",
+    "pk": 3,
+    "fields": {
+      "name": "Isle of Man",
+      "slug": "isle-of-man",
+      "iso2": "IM",
+      "iso3": "IMN",
+      "un": 833
+    }
+  }
+]

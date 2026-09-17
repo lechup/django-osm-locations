@@ -1,3 +1,5 @@
+import inspect
+
 from django.db.models.expressions import Func
 from django.db.models.aggregates import Aggregate
 from django.contrib.postgres.aggregates.general import ArrayAgg
@@ -11,8 +13,22 @@ class MergeMultiline(Aggregate):
     template = "ST_Multi(ST_LineMerge(ST_Multi(ST_union(%(expressions)s))))"
 
 
-class ArrayAggOrderBy(ArrayAgg):
+def array_agg_ordered(expression, order_by):
     """
-    Usage: ArrayAggOrderBy('array_field', order_by='ORDER BY area DESC')
+    ``ArrayAgg`` with a defined element order, portable across Django versions.
+
+    Replaces an ``ArrayAgg`` subclass that injected a raw ``ORDER BY ...``
+    string through the SQL template. Modern Django resolves ``order_by`` as a
+    field reference, so that raised
+    ``FieldError: Cannot resolve keyword 'ORDER BY area DESC' into field``
+    the moment it ran.
+
+    The kwarg itself was renamed: 4.2 takes ``ordering``, 5.2 added ``order_by``
+    and deprecated ``ordering``, and 6.0 removed it. Pick whichever the
+    installed version accepts.
+
+    Usage: ``array_agg_ordered('id', '-area')``
     """
-    template = '%(function)s(%(expressions)s %(order_by)s)'
+    if 'order_by' in inspect.signature(ArrayAgg.__init__).parameters:
+        return ArrayAgg(expression, order_by=order_by)
+    return ArrayAgg(expression, ordering=order_by)

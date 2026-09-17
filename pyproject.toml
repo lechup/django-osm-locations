@@ -84,6 +84,11 @@ Source = "https://bitbucket.org/iRynek/locations"
 DJANGO_SETTINGS_MODULE = "tests.settings"
 testpaths = ["tests"]
 filterwarnings = ["error::SyntaxWarning"]
+# The .pbf integration test parses a real extract and takes ~20s, needs a
+# Python 3 build of imposm.parser and the extract itself, so it is opt-in:
+#   pytest -m pbf
+markers = ["pbf: parses a real OSM extract (slow, opt-in)"]
+addopts = "-m 'not pbf'"
 
 [tool.setuptools.packages.find]
 where = ["src"]

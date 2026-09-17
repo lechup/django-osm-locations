@@ -15,7 +15,7 @@ from tqdm import tqdm
 # importing this module -- which Django does whenever it enumerates management
 # commands -- does not hard-fail on an install without the import extras.
 
-from .. import Country, CountrySubarea, Place, PlaceSubarea, Street, MergeMultiline, ArrayAggOrderBy
+from .. import Country, CountrySubarea, Place, PlaceSubarea, Street, MergeMultiline, array_agg_ordered
 from ..caches.base import MemoryCache, MemcachedCache, DiskCache, FileCache, NodeCache
 
 def _parser_concurrency():
@@ -182,7 +182,11 @@ class BaseImporter(object):
         if isinstance(border, Polygon):
             border = MultiPolygon(border)
         country.border = cls._merge_multipolygon(border)
-        country.save(update_fields=['border'])
+        # Save the derived fields too. With update_fields=['border'] the bbox,
+        # center and area that _presave recomputes were discarded, leaving
+        # country.bbox empty -- and since country.places filters on
+        # bbox_polygon, the whole merge phase silently matched nothing.
+        country.save(update_fields=['border', 'bbox', 'center', 'area'])
 
     def _parse_and_cache(self):
         """
@@ -370,11 +374,38 @@ class BaseImporter(object):
     def _merge_multipolygon(cls, multipolygon):
         """
         Always return MutliPolygon even if merging results in one Polygon.
+
+        ``unary_union``, not ``cascaded_union``: the latter was deprecated in
+        Django 3.1 and removed in 4.0.
         """
-        multipolygon = multipolygon.cascaded_union
+        multipolygon = multipolygon.unary_union
         if type(multipolygon) == Polygon:
             multipolygon = MultiPolygon(multipolygon)
         return multipolygon
+
+    # Country importers decide what counts as a subarea / place / place subarea
+    # from that country's admin_level conventions. They default to "nothing"
+    # rather than being absent, so that a subclass which only overrides some of
+    # them still runs instead of raising AttributeError halfway through a parse.
+    @classmethod
+    def _is_relation_countrysubarea(cls, osm_id, tags, members):
+        return False
+
+    @classmethod
+    def _is_relation_place(cls, osm_id, tags, members):
+        return False
+
+    @classmethod
+    def _is_relation_placesubarea(cls, osm_id, tags, members):
+        return False
+
+    @classmethod
+    def _is_way_place(cls, osm_id, tags, refs):
+        return False
+
+    @classmethod
+    def _is_node_place(cls, osm_id, tags, coords):
+        return False
 
     @classmethod
     def _is_relation_street(cls, osm_id, tags, members):
@@ -538,7 +569,17 @@ class BaseImporter(object):
 
     @classmethod
     def _get_duplicated_street_tuples(cls, place):
-        return place.streets_within_border.annotate(
+        """
+        Street names occurring more than once inside ``place``.
+
+        ``.values('name')`` is what puts a GROUP BY on the query. Without it
+        Count('name') is evaluated per row and is therefore always 1, so
+        ``name_count__gt=1`` matches nothing and no street is ever merged --
+        which is what happened when it was dropped in "python 3.x support".
+        """
+        return place.streets_within_border.values(
+            'name'
+        ).annotate(
             id_min=Min('id'),
             name_count=Count('name'),
             ids_array=ArrayAgg('id'),
@@ -569,7 +610,7 @@ class BaseImporter(object):
             'name'
         ).annotate(
             name_count=Count('name'),
-            ids=ArrayAggOrderBy('id', order_by='ORDER BY area DESC')
+            ids=array_agg_ordered('id', ['-area'])
         ).filter(name_count__gt=1).values_list('name', 'ids').order_by()
 
     @classmethod

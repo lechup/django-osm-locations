@@ -20,6 +20,7 @@ class Command(BaseCommand):
     osm_repository_country_to_slug_mapping = {
         'poland': 'polska',
         'germany': 'deutschland',
+        'isle-of-man': 'isle-of-man',
     }
     osm_repository_url = '%s%%(country_path)s%%(file_name)s' % (osm_repository,)
 

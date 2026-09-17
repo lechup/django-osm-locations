@@ -259,6 +259,23 @@ importer tag predicates) run without the container:
 pytest tests/test_slugify.py tests/test_middleware.py tests/test_importers.py
 ```
 
+### The end-to-end import test
+
+One test parses a real OSM extract and runs the whole pipeline into PostGIS.
+It is opt-in, because it needs a ~6MB download, about 20 seconds, and a
+Python 3 build of `imposm.parser`:
+
+```bash
+curl -L -o /tmp/isle-of-man.osm.pbf \
+    https://download.geofabrik.de/europe/isle-of-man-latest.osm.pbf
+LOCATIONS_TEST_PBF=/tmp/isle-of-man.osm.pbf pytest -m pbf
+```
+
+The Isle of Man extract is the smallest Geofabrik country extract that still
+has the full hierarchy — `admin_level` 6 sheadings, `admin_level` 8 parishes,
+and a few thousand named streets. It covers the parts no unit test reaches:
+multi-way boundary assembly, geometry construction and the merge pass.
+
 ## License
 
 BSD 3-Clause — see [LICENSE](LICENSE).

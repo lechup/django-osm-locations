@@ -4,7 +4,7 @@ from django.db.models import Count, F, Func, CharField, Value
 from django.db.models.functions import Concat, Coalesce
 from tqdm import tqdm
 
-from .. import Country, CountrySubarea, Place, PlaceSubarea, Street, ArrayAggOrderBy
+from .. import Country, CountrySubarea, Place, PlaceSubarea, Street, array_agg_ordered
 
 
 class Command(BaseCommand):
@@ -18,37 +18,16 @@ class Command(BaseCommand):
         )
 
     @classmethod
-    def get_order_by_clause(cls, model_class):
-        orderings = []
-        for ordering in model_class._meta.ordering:
-            order = 'DESC' if '-' in ordering else 'ASC'
-            ordering = ordering.replace('-', '')
-            orderings.append(
-                '{} {}'.format(
-                    ordering,
-                    order
-                )
-            )
-
-        return 'ORDER BY {}'.format(
-                    ','.join(orderings)
-                )
-
-    @classmethod
     def set_unique_slugs(cls, model_class):
         """
         Set slug fields for :param model_class: to unique values by appending object id. First object does not have
         id appended.
         """
-        order_by = cls.get_order_by_clause(model_class)
         duplicated_slugs = model_class.objects.values(
             'slug'
         ).annotate(
             slug_count=Count('slug'),
-            ids_array=ArrayAggOrderBy(
-                'id',
-                order_by=order_by
-            ),
+            ids_array=array_agg_ordered('id', model_class._meta.ordering),
         ).filter(
             slug_count__gt=1
         ).values_list(
