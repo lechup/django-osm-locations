@@ -126,13 +126,36 @@ If you change one side, change all three and rerun
 
 ## Subdomain middleware
 
-Optional. Resolves `<place-slug>.example.com` to a `Place` and attaches it as
-`request.place`:
+Optional. Resolves `<place-slug>.example.com` to a `Place`:
 
 ```python
 MIDDLEWARE = ["django_osm_locations.middleware.PlaceSubdomainMiddleware", ...]
 ROOT_URL = "example.com"
 ```
+
+It sets two attributes on every request:
+
+- `request.subdomain` — the slug, `None` on the apex domain and on reserved
+  subdomains, or `False` for a host that is not under `ROOT_URL`
+- `request.place` — the matching `Place`, or `None`. Always set, so views can
+  read it unconditionally.
+
+Host parsing is driven by `ROOT_URL` rather than by counting dots, so
+multi-part TLDs (`example.co.uk`), ports and reserved names all behave:
+
+| Host (`ROOT_URL = example.com`) | Result |
+|---|---|
+| `krakow.example.com` | place `krakow` |
+| `example.com` | apex, no place |
+| `www.example.com` | apex (reserved) |
+| `a.b.example.com` | not a place |
+| `evil.com` | 301 to `ROOT_URL` |
+
+For local development point `ROOT_URL` at the dev host — `ROOT_URL =
+"localhost:8000"` makes both `localhost:8000` and `krakow.localhost:8000` work.
+
+Reserved subdomains default to `www`, `api`, `admin`, `static`, `media`,
+`mail`; override with `LOCATIONS_RESERVED_SUBDOMAINS`.
 
 ## Importing OSM data
 
@@ -193,11 +216,31 @@ country's `admin_level` conventions — see `poland.py` and `germany.py`.
 | `LOCATIONS_DISK_CACHE` | `False` | Use `diskcache` for the import cache |
 | `LOCATIONS_FILE_CACHE` | `False` | Use a `shelve` file cache |
 | `LOCATIONS_MEMCACHED_CACHE` | `False` | Use memcached |
+| `LOCATIONS_RESERVED_SUBDOMAINS` | `www`, `api`, `admin`, … | Subdomains never treated as a place slug |
 
 Importing a full country holds every node, way and relation in a cache. The
 default is an in-memory dict, which is fastest but needs a lot of RAM for a
 large extract — switch to `LOCATIONS_DISK_CACHE` if memory is tight.
 
+## Development
+
+The models need PostGIS, so the suite ships a database:
+
+```bash
+pip install -e '.[dev]'
+docker compose -f docker-compose.test.yml up -d
+pytest
+docker compose -f docker-compose.test.yml down -v
+```
+
+Tests that do not touch the database (slug normalisation, host parsing, the
+importer tag predicates) run without the container:
+
+```bash
+pytest tests/test_slugify.py tests/test_middleware.py tests/test_importers.py
+```
+
 ## License
 
-See `LICENSE`.
+Not yet licensed. Until a `LICENSE` file is added, this package carries no
+license grant and all rights are reserved.

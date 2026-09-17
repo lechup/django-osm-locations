@@ -32,23 +32,24 @@ class Command(BaseCommand):
         )
 
     @classmethod
-    def get_sql_for_update_denorm_fields(cls, model_name, field_name, array_value, border_ewkb):
-        sql = """
+    def get_sql_for_update_denorm_fields(cls, model_name, field_name):
+        """
+        Build the denormalisation UPDATE.
+
+        Only the table and column names are interpolated -- both come from model
+        class names, never from data. The location name, slug and border travel
+        as bound parameters; they originate in OSM and used to be escaped by
+        hand into the SQL string.
+        """
+        return """
             UPDATE "locations_{model_name}" SET {field_name} =
-            array_cat({field_name}, {array_value}) WHERE
-              ST_Intersects(center, ST_GeomFromEWKB('\\x{border_ewkb}'))
+            array_cat({field_name}, ARRAY[%s, %s]::varchar[]) WHERE
+              ST_Intersects(center, ST_GeomFromEWKB(decode(%s, 'hex')))
             ;
         """.format(**{
             'model_name': model_name,
             'field_name': field_name,
-            'array_value': array_value,
-            'border_ewkb': border_ewkb.decode('ascii'),
         })
-        return sql
-
-    @classmethod
-    def get_sql_array_value(cls, obj):
-        return """ARRAY['{}', '{}']::varchar[]""".format(obj.name.replace("'", "''"), obj.slug)
 
     @classmethod
     def get_sql_for_clean_denorm_fields(cls, model_name, field_name):
@@ -101,14 +102,9 @@ class Command(BaseCommand):
             for denormalized_model_class in denormalized_model_classes:
                 field_name = model_class_to_update.__name__.lower()
                 model_name = denormalized_model_class.__name__.lower()
-                sql = cls.get_sql_for_update_denorm_fields(
-                    model_name,
-                    field_name,
-                    cls.get_sql_array_value(obj),
-                    obj.border.hexewkb
-                )
+                sql = cls.get_sql_for_update_denorm_fields(model_name, field_name)
                 with connection.cursor() as cursor:
-                    cursor.execute(sql)
+                    cursor.execute(sql, [obj.name, obj.slug, obj.border.hexewkb.decode('ascii')])
 
     @classmethod
     @transaction.atomic

@@ -79,6 +79,7 @@ target/
 # packaging
 *.egg-info/
 .tox/
+.pytest_cache/
 
 # locations app runtime dirs
 osm_data/

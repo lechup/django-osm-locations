@@ -38,3 +38,16 @@ def get_cache_dir():
     Set ``LOCATIONS_CACHE_DIR`` in settings. Defaults to ``<BASE_DIR>``.
     """
     return str(getattr(settings, 'LOCATIONS_CACHE_DIR', None) or _project_dir())
+
+
+def get_reserved_subdomains():
+    """
+    Subdomains that are never treated as a place slug.
+
+    Set ``LOCATIONS_RESERVED_SUBDOMAINS`` in settings to override. Without this,
+    ``www.example.com`` is looked up as a place called "www" and 404s.
+    """
+    reserved = getattr(settings, 'LOCATIONS_RESERVED_SUBDOMAINS', None)
+    if reserved is None:
+        reserved = {'www', 'api', 'admin', 'static', 'media', 'mail'}
+    return {str(name).lower() for name in reserved}
