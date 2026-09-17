@@ -242,5 +242,10 @@ pytest tests/test_slugify.py tests/test_middleware.py tests/test_importers.py
 
 ## License
 
-Not yet licensed. Until a `LICENSE` file is added, this package carries no
-license grant and all rights are reserved.
+BSD 3-Clause — see [LICENSE](LICENSE).
+
+Note that this covers the **code**, not the data. OpenStreetMap is published
+under the [Open Database License](https://www.openstreetmap.org/copyright), so
+a database you build by running `locations_import` is an ODbL-derived database
+and carries that license's attribution and share-alike obligations, whatever
+license this package uses.
