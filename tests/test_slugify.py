@@ -1,7 +1,7 @@
 """
 The invariant that broke search: three implementations must agree.
 
-* the stored ``slug`` column     -- django slugify(unidecode(name))
+* the stored ``slug`` column     -- django slugify(anyascii(name))
 * ``search_vector*`` in Postgres -- the database slugify() function
 * the incoming API query         -- django_osm_locations.utils.slugify
 
@@ -12,14 +12,14 @@ import re
 
 import pytest
 from django.utils.text import slugify as django_slugify
-from unidecode import unidecode
+from anyascii import anyascii
 
 from django_osm_locations.utils.slugify import slugify as query_slugify
 
 
 def stored_slug(name):
     """What LocationBase.slugify writes to the slug column."""
-    return django_slugify(unidecode(name))
+    return django_slugify(anyascii(name))
 
 
 # Names chosen for the transliterations that actually differ between schemes:
@@ -81,9 +81,9 @@ def test_slugify_without_django_slugify_keeps_case():
 
 def test_sql_function_is_generated_not_handwritten():
     """
-    Guard the generation invariant: the migration must carry the full unidecode
-    table, not a short hand-maintained one. The original had 79 entries and
-    disagreed with unidecode on 119 characters.
+    Guard the generation invariant: the migration must carry the full
+    transliteration table, not a short hand-maintained one. The original had
+    79 entries and disagreed with it on 119 characters.
     """
     import pathlib
 
@@ -91,7 +91,7 @@ def test_sql_function_is_generated_not_handwritten():
 
     migration = (
         pathlib.Path(django_osm_locations.__file__).parent
-        / 'migrations' / '0030_align_slugify_with_unidecode.py'
+        / 'migrations' / '0030_align_slugify_with_anyascii.py'
     ).read_text(encoding='utf-8')
 
     translate = re.search(
@@ -101,8 +101,8 @@ def test_sql_function_is_generated_not_handwritten():
     assert translate, 'translate() pair not found in migration 0030'
     src, tgt = (g.replace("''", "'") for g in translate.groups())
     assert len(src) == len(tgt), 'translate() arguments must be the same length'
-    assert len(src) > 150, f'expected the full unidecode table, got {len(src)} entries'
+    assert len(src) > 150, f'expected the full transliteration table, got {len(src)} entries'
 
-    # every single-char mapping must be what unidecode produces
-    mismatched = [(a, b) for a, b in zip(src, tgt) if unidecode(a) != b]
-    assert not mismatched, f'SQL disagrees with unidecode: {mismatched[:10]}'
+    # every single-char mapping must be what anyascii produces
+    mismatched = [(a, b) for a, b in zip(src, tgt) if anyascii(a) != b]
+    assert not mismatched, f'SQL disagrees with anyascii: {mismatched[:10]}'

@@ -5,7 +5,7 @@ from django.contrib.postgres.search import SearchVectorField
 from django.db import models
 from django.utils.functional import cached_property
 from django.utils.text import slugify
-from unidecode import unidecode
+from anyascii import anyascii
 
 from .managers import MergableManager
 
@@ -40,7 +40,7 @@ class LocationBase(gis_models.Model):
 
     @cached_property
     def slugify(self):
-        return slugify(unidecode(self.name))
+        return slugify(anyascii(self.name))
 
     @classmethod
     def get_polygon_from_bbox(cls, bbox):

@@ -109,12 +109,12 @@ Three things have to agree or prefix search silently returns nothing:
 
 | What | Produced by |
 |---|---|
-| the stored `slug` column | `django.utils.text.slugify(unidecode(name))` |
+| the stored `slug` column | `django.utils.text.slugify(anyascii(name))` |
 | `search_vector` / `search_vector_name` | the database `slugify()` function |
 | the incoming query in `?search_vector_name=` | `django_osm_locations.utils.slugify` |
 
-All three transliterate through **unidecode**, so `München` is stored, indexed
-and searched as `munchen`. The database function is generated from the unidecode
+All three transliterate through **anyascii**, so `München` is stored, indexed
+and searched as `munchen`. The database function is generated from the anyascii
 table over Latin-1 Supplement and Latin Extended-A rather than maintained by
 hand, so the two sides cannot drift apart.
 

@@ -1,13 +1,13 @@
 """
 The database slugify() function, exercised against a real PostGIS instance.
 
-test_slugify.py asserts the generated table matches unidecode; this asserts
+test_slugify.py asserts the generated table matches anyascii; this asserts
 Postgres actually evaluates it the same way.
 """
 import pytest
 from django.db import connection
 from django.utils.text import slugify as django_slugify
-from unidecode import unidecode
+from anyascii import anyascii
 
 pytestmark = pytest.mark.django_db
 
@@ -25,7 +25,7 @@ def sql_slugify(value):
 ])
 def test_sql_slugify_matches_python(name):
     """This is the bug that made umlaut places unsearchable."""
-    assert sql_slugify(name) == django_slugify(unidecode(name))
+    assert sql_slugify(name) == django_slugify(anyascii(name))
 
 
 def test_sql_slugify_collapses_separators():

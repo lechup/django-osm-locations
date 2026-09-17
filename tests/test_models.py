@@ -13,7 +13,7 @@ def test_slug_is_derived_from_name(place):
     assert place.slug == 'krakow'
 
 
-def test_umlaut_slug_uses_unidecode(place_with_umlaut):
+def test_umlaut_slug_is_transliterated(place_with_umlaut):
     assert place_with_umlaut.slug == 'munchen'
 
 

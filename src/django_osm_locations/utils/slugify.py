@@ -4,19 +4,19 @@ Slug normalisation for search queries.
 This must produce exactly what is stored and indexed, or prefix search silently
 returns nothing:
 
-* ``LocationBase.slugify`` stores ``django.utils.text.slugify(unidecode(name))``
+* ``LocationBase.slugify`` stores ``django.utils.text.slugify(anyascii(name))``
 * the database ``slugify()`` function builds ``search_vector`` /
-  ``search_vector_name`` and is generated from the same unidecode table (see
-  migration ``0030_align_slugify_with_unidecode``)
+  ``search_vector_name`` and is generated from the same transliteration table
+  (see migration ``0030_align_slugify_with_anyascii``)
 * this module normalises the incoming query in ``api.filters.PrefixSearchFilter``
 
-All three therefore go through unidecode. The previous implementation kept a
+All three therefore go through anyascii. An earlier implementation kept a
 hand-maintained character map here, which disagreed with the other two -- it
 transliterated German umlauts as "ue"/"oe" while the stored slug and the index
 used "u"/"o", so no umlaut place could ever be found by name.
 """
+from anyascii import anyascii
 from django.template.defaultfilters import slugify as django_slugify
-from unidecode import unidecode
 
 
 def slugify(string, do_slugify=True, overwrite_char_map=None):
@@ -33,7 +33,7 @@ def slugify(string, do_slugify=True, overwrite_char_map=None):
         for replace_from, replace_to in overwrite_char_map.items():
             string = string.replace(replace_from, replace_to)
 
-    string = unidecode(string)
+    string = anyascii(string)
 
     if do_slugify:
         string = django_slugify(string)
