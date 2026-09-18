@@ -161,6 +161,34 @@ lists by default because a country border per hit is a lot of JSON.
 Prefix matching is done with an edge n-gram analyser at index time, with
 `asciifolding`, so `munch` and `münch` both find *München*.
 
+## Updating to newer OSM data
+
+The whole cycle, from a fresh extract to serving it:
+
+```bash
+# 1. fetch and import the new extract; --update re-downloads it
+python manage.py locations_import --update isle-of-man
+
+# 2. recompute derived fields (slugs, ancestry, areas)
+python manage.py locations_recalculate_all
+
+# 3. rebuild the index and swap the aliases over
+python manage.py locations_reindex
+```
+
+Each step is safe to interrupt and rerun:
+
+- **Import** upserts on the OSM id, so rerunning updates rows in place rather
+  than duplicating them. It never deletes: a feature removed from OSM keeps its
+  row in PostGIS until you remove it yourself.
+- **Reindex** builds into a new index and only moves the alias once the document
+  count matches the database. The previous index keeps serving until then, and
+  is kept afterwards so the swap can be undone.
+
+Because nothing is deleted, the database only grows. Rows that no longer exist
+upstream stay searchable, so if an extract's coverage shrinks you will need to
+decide what to do about the leftovers — this package will not guess.
+
 ## Building the index
 
 ```bash

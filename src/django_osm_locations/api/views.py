@@ -61,10 +61,25 @@ class SearchView(APIView):
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         prefix = get_index_prefix()
-        indexes = ','.join(INDEXES[name].alias(prefix) for name in names)
+        aliases = [INDEXES[name].alias(prefix) for name in names]
+
+        search_kwargs = {}
+        if len(aliases) > 1:
+            # Each index computes term statistics over its own documents, so a
+            # score from the places index is not comparable with one from the
+            # much larger streets index -- searching "peel" returned five Peel
+            # Roads and not the town. dfs_query_then_fetch gathers global term
+            # statistics first, at the cost of one extra round trip. Only worth
+            # it when more than one index is involved.
+            search_kwargs['search_type'] = 'dfs_query_then_fetch'
 
         client = get_client()
-        result = client.search(index=indexes, body=body, ignore_unavailable=True)
+        result = client.search(
+            index=','.join(aliases),
+            body=body,
+            ignore_unavailable=True,
+            **search_kwargs
+        )
         return Response(format_response(result, page, page_size))
 
 

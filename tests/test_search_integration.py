@@ -191,3 +191,40 @@ class TestSearchAPI:
 
     def test_bad_paging_is_a_400(self, client):
         assert client.get('/api/places/', {'page_size': '0'}).status_code == 400
+
+
+class TestCrossTypeRanking:
+    """
+    Scores from different indexes are only comparable when term statistics are
+    gathered globally. Without that, a search for a town returns the streets
+    named after it and not the town, because the streets index is much larger
+    and computes a different IDF for the same term.
+    """
+
+    @pytest.fixture(autouse=True)
+    def indexed(self, prefix, opensearch, settings, db):
+        settings.LOCATIONS_OPENSEARCH_INDEX_PREFIX = prefix
+        settings.ROOT_URL = 'testserver'
+
+        Place.objects.create(name='Peel', border=MultiPolygon(square(1, 1)))
+        # the same name recurring across many street rows is what skews IDF
+        for i in range(40):
+            Street.objects.create(
+                name='Peel Road %d' % i,
+                lines=MultiLineString(LineString((i / 100, 0), (i / 100 + 0.01, 0.01))),
+            )
+        for name in ('places', 'streets'):
+            reindex(name, prefix, opensearch)
+
+    def test_the_town_outranks_the_streets_named_after_it(self, client):
+        results = client.get('/api/search/', {'q': 'peel'}).json()['results']
+        assert results, 'no results at all'
+        assert results[0]['type'] == 'places', \
+            'expected the town first, got: {}'.format(
+                [(h['name'], h['type']) for h in results[:3]])
+        assert results[0]['name'] == 'Peel'
+
+    def test_single_type_search_still_works(self, client):
+        """Only one index, so global statistics are unnecessary there."""
+        body = client.get('/api/streets/', {'q': 'peel'}).json()
+        assert body['total'] == 40
