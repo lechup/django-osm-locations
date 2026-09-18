@@ -1,4 +1,5 @@
 import os
+from array import array
 from datetime import datetime
 
 from django.conf import settings
@@ -55,6 +56,42 @@ def _location_storage():
         return 'sparse_file_array'
     return 'flex_mem'
 
+
+
+class CoordinateView:
+    """
+    A read-only ``(lon, lat)`` sequence over a flat ``array('d')``.
+
+    Way coordinates are stored flat to keep a country-sized import in memory,
+    but everything that consumes them -- the tag predicates, LineString, the
+    closed-way check -- expects pairs. This presents the flat buffer as pairs
+    without copying it.
+    """
+
+    __slots__ = ('_flat',)
+
+    def __init__(self, flat):
+        self._flat = flat
+
+    def __len__(self):
+        return len(self._flat) // 2
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[i] for i in range(*index.indices(len(self)))]
+        if index < 0:
+            index += len(self)
+        if not 0 <= index < len(self):
+            raise IndexError(index)
+        return self._flat[index * 2], self._flat[index * 2 + 1]
+
+    def __iter__(self):
+        flat = self._flat
+        for i in range(0, len(flat), 2):
+            yield flat[i], flat[i + 1]
+
+    def __bool__(self):
+        return len(self._flat) > 0
 
 
 class BatchUpserter:
@@ -417,14 +454,18 @@ class BaseImporter(object):
         # Coordinates arrive resolved from libosmium. A way with a node outside
         # the extract is incomplete and cannot produce geometry, which is what
         # the old _are_all_refs_cached check was for.
-        coords = [
-            (node.location.lon, node.location.lat)
-            for node in way.nodes
-            if node.location.valid()
-        ]
-        if len(coords) != len(way.nodes):
-            return
-        if not needed and not self._is_way_to_cache(way.id, tags, coords):
+        #
+        # Stored flat in an array('d') rather than as a list of float tuples:
+        # a country extract holds millions of these, and the tuple form costs
+        # about 167 bytes per coordinate pair against 16 here.
+        coords = array('d')
+        for node in way.nodes:
+            location = node.location
+            if not location.valid():
+                return
+            coords.append(location.lon)
+            coords.append(location.lat)
+        if not needed and not self._is_way_to_cache(way.id, tags, CoordinateView(coords)):
             return
         self.ways[way.id] = (tags, coords)
 
@@ -475,9 +516,9 @@ class BaseImporter(object):
             way = self.ways.get(ref)
             if way is None:
                 continue
-            coords = way[1]
+            coords = CoordinateView(way[1])
             if len(coords) > 1:
-                lines.append(LineString(coords))
+                lines.append(LineString(list(coords)))
         if lines:
             return MultiLineString(lines)
         else:
@@ -498,7 +539,8 @@ class BaseImporter(object):
         return self.__class__.merge_multiline(multiline)
 
     def _get_multiline_from_coords(self, coords):
-        if coords and len(coords) > 1:
+        coords = list(coords)
+        if len(coords) > 1:
             return MultiLineString(LineString(coords))
         return None
 
@@ -607,7 +649,7 @@ class BaseImporter(object):
 
     def _import_ways(self):
         for osm_id, (tags, coords) in self.ways.items():
-            self._import_way(osm_id, tags, coords)
+            self._import_way(osm_id, tags, CoordinateView(coords))
 
     def _import_nodes(self):
         # Only nodes that carry tags can become a Place; the rest were kept

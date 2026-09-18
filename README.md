@@ -418,9 +418,9 @@ extracts:
 
 | Extract | Size | Peak RSS parsing |
 |---|---|---|
-| Isle of Man | 6 MB | 0.16 GB |
-| Poland | 2.0 GB | 5.75 GB |
-| Germany | 4.6 GB | ~13 GB (extrapolated) |
+| Isle of Man | 6 MB | 0.15 GB |
+| Poland | 2.0 GB | 4.55 GB |
+| Germany | 4.6 GB | ~10 GB (extrapolated) |
 
 Set `LOCATIONS_DISK_CACHE = True` to spill the node index to disk instead, which
 trades roughly 4 GB of RAM for the same in disk on a Poland-sized extract.
