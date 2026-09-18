@@ -3,55 +3,28 @@ from datetime import datetime
 
 from django.conf import settings
 from django.contrib.gis.geos import MultiLineString, LineString, Polygon, Point, MultiPolygon
+from django.contrib.gis.geos.error import GEOSException
 from django.contrib.postgres.aggregates.general import ArrayAgg
 from django.db import transaction
 from django.contrib.gis.db.models.aggregates import Union
 from django.db.models import Count, Min
 from tqdm import tqdm
 
-# ``imposm.parser`` and ``shapely`` are only needed to parse a .pbf extract, and
-# imposm in particular has no installable Python 3 release on PyPI (see the
-# "importers" extra in pyproject.toml). Import them lazily so that merely
-# importing this module -- which Django does whenever it enumerates management
-# commands -- does not hard-fail on an install without the import extras.
-
 from .. import Country, CountrySubarea, Place, PlaceSubarea, Street, MergeMultiline, array_agg_ordered
-from ..caches.base import MemoryCache, MemcachedCache, DiskCache, FileCache, NodeCache
-
-def _parser_concurrency():
-    """
-    Worker count for the OSM parser.
-
-    Was hardcoded to 2 regardless of the machine. Override with
-    ``LOCATIONS_PARSER_CONCURRENCY``.
-    """
-    configured = getattr(settings, 'LOCATIONS_PARSER_CONCURRENCY', None)
-    if configured:
-        return max(1, int(configured))
-    return max(1, (os.cpu_count() or 2))
 
 
-if getattr(settings, 'LOCATIONS_MEMCACHED_CACHE', False):
-    CACHE_CLASS = MemcachedCache
-elif getattr(settings, 'LOCATIONS_DISK_CACHE', False):
-    CACHE_CLASS = DiskCache
-elif getattr(settings, 'LOCATIONS_FILE_CACHE', False):
-    CACHE_CLASS = FileCache
-else:
-    CACHE_CLASS = MemoryCache
-
-
-def _load_osm_parser():
+# pyosmium and shapely are only needed to parse a .pbf extract. Import them
+# lazily so that merely importing this module -- which Django does whenever it
+# enumerates management commands -- does not hard-fail without the extras.
+def _load_osmium():
     try:
-        from imposm.parser import OSMParser
+        import osmium
     except ImportError as exc:  # pragma: no cover - depends on the environment
         raise ImportError(
-            "Parsing OSM extracts needs a Python 3 compatible 'imposm.parser'. "
-            "Upstream only published 1.0.7 (Python 2 only) to PyPI, so install "
-            "the 1.0.8 port directly, e.g. "
-            "pip install https://github.com/<fork>/imposm-parser/archive/<ref>.tar.gz"
+            "Parsing OSM extracts needs pyosmium. "
+            "Install it with: pip install 'django-osm-locations[importers]'"
         ) from exc
-    return OSMParser
+    return osmium
 
 
 def _load_polygonize_full():
@@ -63,6 +36,24 @@ def _load_polygonize_full():
             "Install it with: pip install 'django-osm-locations[importers]'"
         ) from exc
     return polygonize_full
+
+
+def _location_storage():
+    """
+    Which libosmium index backs the node-location lookup.
+
+    libosmium resolves way geometry itself, which is what replaced the
+    hand-rolled node cache. ``flex_mem`` keeps the index in RAM and is fine up
+    to country size; the ``*_file_array`` variants spill to disk for larger
+    extracts. Override with ``LOCATIONS_LOCATION_STORAGE``, or set
+    ``LOCATIONS_DISK_CACHE`` for a disk-backed default.
+    """
+    configured = getattr(settings, 'LOCATIONS_LOCATION_STORAGE', None)
+    if configured:
+        return str(configured)
+    if getattr(settings, 'LOCATIONS_DISK_CACHE', False):
+        return 'sparse_file_array'
+    return 'flex_mem'
 
 
 class BaseImporter(object):
@@ -77,12 +68,17 @@ class BaseImporter(object):
         self.file_path = file_path
         self.verbose = verbose
 
-        # Nodes dominate the footprint, so they get the two-tier cache:
-        # tagged nodes in the selected backend, bare coordinates in packed
-        # arrays. Relations and ways stay on the selected backend.
-        self.nodes_cache = NodeCache(CACHE_CLASS)
-        self.ways_cache = CACHE_CLASS()
-        self.relations_cache = CACHE_CLASS()
+        # Relations and ways we keep are a small subset of the extract, so plain
+        # dicts are fine. Node coordinates are *not* kept here at all: libosmium
+        # resolves way geometry during the read, which is what removed the need
+        # for the packed coordinate store this importer used to carry.
+        self.relations = {}
+        self.ways = {}
+        self.nodes = {}
+
+        # ids referenced by relations we kept, so pass two knows what to retain
+        self.needed_way_ids = set()
+        self.needed_node_ids = set()
 
         # place can be imported from relation - it's center is node that later is imported also as new place
         # we use that cache to cache nodes_ids of relation centers, so that we won't have duplicates
@@ -190,71 +186,153 @@ class BaseImporter(object):
 
     def _parse_and_cache(self):
         """
-        parse osm data file and store it in cache by using imposm.parser callbacks
-        http://imposm.org/docs/imposm.parser/latest/concepts.html
-        we store parsed data in 3 caches (relations_cache, ways_cache, nodes_cache)
-        we need to make 4 passes to get whole hierarchy: relations -> ways -> coords -> nodes
-        """
+        Read the extract and keep only what the import needs.
 
+        Two passes, not four. libosmium applies the tag filters in C++ and
+        resolves node locations itself, so only the handful of objects this
+        importer actually cares about ever cross into Python -- on a country
+        extract that is thousands of objects rather than hundreds of millions.
+
+        Pass one collects the relations we keep and notes which ways and nodes
+        they refer to. Pass two reads ways and nodes with locations attached,
+        keeping those the relations need plus those that are locations in their
+        own right (named highways, place nodes).
+        """
         start_all = datetime.now()
         print("Parsing for %s started %s.\n" % (self.country, start_all))
 
-        self._parse_and_cache_relations()
-        self._parse_and_cache_ways()
-        self._parse_and_cache_coords()
-        self._parse_and_cache_nodes()
+        self._parse_relations()
+        self._parse_ways()
+        self._parse_nodes()
 
         end = datetime.now()
         print("Parsing ended: %s, took: %s!\n" % (end, end - start_all))
 
-    def _parse_and_cache_relations(self):
-        start = datetime.now()
-        print("Creating cache for Relations %s ..." % start)
-        p = _load_osm_parser()(
-            concurrency=_parser_concurrency(),
-            relations_callback=self._cache_relations
-        )
-        p.parse(self.file_path)
-        del p
-        end = datetime.now()
-        print("Relations cache ended: %s, took: %s!\n" % (end, end - start))
+    @classmethod
+    def _tags_to_dict(cls, obj):
+        """OSM tags as a plain dict, reduced to the whitelist."""
+        whitelist = cls.whitelist_tags
+        return {tag.k: tag.v for tag in obj.tags if tag.k in whitelist}
 
-    def _parse_and_cache_ways(self):
+    def _parse_relations(self):
         start = datetime.now()
-        print("Creating cache for Ways %s ..." % start)
-        p = _load_osm_parser()(
-            concurrency=_parser_concurrency(),
-            ways_callback=self._cache_ways
-        )
-        p.parse(self.file_path)
-        del p
-        end = datetime.now()
-        print("Ways cache ended: %s, took: %s!\n" % (end, end - start))
+        print("Reading Relations %s ..." % start)
+        osmium = _load_osmium()
 
-    def _parse_and_cache_coords(self):
-        start = datetime.now()
-        print("Creating cache for Coords %s ..." % start)
-        p = _load_osm_parser()(
-            concurrency=_parser_concurrency(),
-            coords_callback=self._cache_coords,
+        processor = (
+            osmium.FileProcessor(self.file_path, osmium.osm.RELATION)
+            .with_filter(osmium.filter.EmptyTagFilter())
         )
-        p.parse(self.file_path)
-        del p
-        end = datetime.now()
-        print("Coords cache ended: %s, took: %s!\n" % (end, end - start))
+        for relation in processor:
+            members = [
+                (member.ref, member.type, member.role)
+                for member in relation.members
+            ]
+            tags = self._tags_to_dict(relation)
+            if not self._is_relation_to_cache(relation.id, tags, members):
+                continue
+            self.relations[relation.id] = (tags, members)
+            for ref, kind, _role in members:
+                if kind == 'w':
+                    self.needed_way_ids.add(ref)
+                elif kind == 'n':
+                    self.needed_node_ids.add(ref)
 
-    def _parse_and_cache_nodes(self):
-        start = datetime.now()
-        print("Creating cache for Nodes %s ..." % start)
-        p = _load_osm_parser()(
-            concurrency=_parser_concurrency(),
-            nodes_callback=self._cache_nodes,
-            nodes_tag_filter=self._tag_filter
-        )
-        p.parse(self.file_path)
-        del p
         end = datetime.now()
-        print("Nodes cache ended: %s, took: %s!\n" % (end, end - start))
+        print("Relations read: %s, took: %s! (%d kept)\n" % (
+            end, end - start, len(self.relations)))
+
+    def _parse_ways(self):
+        """
+        Read ways with their geometry already resolved.
+
+        Nodes must be in the entity mask for libosmium to build the location
+        index, but ``EntityFilter`` drops them again in C++ so only ways cross
+        into Python. That distinction is the whole point: letting every node
+        reach Python is slower than the four-pass approach it replaced.
+        """
+        start = datetime.now()
+        print("Reading Ways %s ..." % start)
+        osmium = _load_osmium()
+
+        processor = (
+            osmium.FileProcessor(self.file_path, osmium.osm.WAY | osmium.osm.NODE)
+            .with_locations(_location_storage())
+            .with_filter(osmium.filter.EntityFilter(osmium.osm.WAY))
+        )
+        for way in processor:
+            self._keep_way(way)
+
+        end = datetime.now()
+        print("Ways read: %s, took: %s! (%d kept)\n" % (end, end - start, len(self.ways)))
+
+    def _parse_nodes(self):
+        """
+        Read the nodes that can become places, then any relation centres missed.
+
+        Tagged nodes are selected in C++ by ``EmptyTagFilter``. Relation centre
+        nodes are usually tagged and therefore already caught; the few that are
+        not are fetched by id in a second, cheap filtered read.
+        """
+        start = datetime.now()
+        print("Reading Nodes %s ..." % start)
+        osmium = _load_osmium()
+
+        processor = (
+            osmium.FileProcessor(self.file_path, osmium.osm.NODE)
+            .with_filter(osmium.filter.EmptyTagFilter())
+        )
+        for node in processor:
+            self._keep_node(node)
+
+        missing = [
+            osm_id for osm_id in self.needed_node_ids if osm_id not in self.nodes
+        ]
+        if missing:
+            by_id = (
+                osmium.FileProcessor(self.file_path, osmium.osm.NODE)
+                .with_filter(osmium.filter.IdFilter(missing))
+            )
+            for node in by_id:
+                self._keep_node(node, force=True)
+
+        end = datetime.now()
+        print("Nodes read: %s, took: %s! (%d kept, %d fetched by id)\n" % (
+            end, end - start, len(self.nodes), len(missing)))
+
+    # tag keys that can make an untagged-by-relation way interesting on its own
+    way_keys_of_interest = ('highway', 'place')
+
+    def _keep_way(self, way):
+        needed = way.id in self.needed_way_ids
+        if not needed:
+            # Probe the C++ tag list before building a Python dict or touching
+            # node locations: most ways in an extract are neither a street nor a
+            # place outline, and materialising them all dominated this pass.
+            if not any(key in way.tags for key in self.way_keys_of_interest):
+                return
+            if 'name' not in way.tags:
+                return
+        tags = self._tags_to_dict(way)
+        # Coordinates arrive resolved from libosmium. A way with a node outside
+        # the extract is incomplete and cannot produce geometry, which is what
+        # the old _are_all_refs_cached check was for.
+        coords = [
+            (node.location.lon, node.location.lat)
+            for node in way.nodes
+            if node.location.valid()
+        ]
+        if len(coords) != len(way.nodes):
+            return
+        if not needed and not self._is_way_to_cache(way.id, tags, coords):
+            return
+        self.ways[way.id] = (tags, coords)
+
+    def _keep_node(self, node, force=False):
+        tags = self._tags_to_dict(node)
+        coords = (node.location.lon, node.location.lat)
+        if force or node.id in self.needed_node_ids or self._is_node_to_cache(node.id, tags, coords):
+            self.nodes[node.id] = (tags, coords)
 
     @classmethod
     def _tag_filter(cls, tags):
@@ -266,35 +344,15 @@ class BaseImporter(object):
     def _are_all_members_cached(self, members):
         """
             Check if all @members are in country osm data vel in cache
-            :param members: list of members eg. [(123, 'way', 'outer'), (234, 'node', 'inner') ...]
+            :param members: list of members eg. [(123, 'w', 'outer'), (234, 'n', 'inner') ...]
             :rtype : bool
         """
-        for member in members:
-            if member[1] == 'node':
-                if self.nodes_cache.exists(member[0]):
-                    if self.nodes_cache.get(member[0]) is None:
-                        return False
-                else:
-                    return False
-            if member[1] == 'way':
-                if self.ways_cache.exists(member[0]):
-                    if self.ways_cache.get(member[0]) is None:
-                        return False
-                else:
-                    return False
+        for ref, kind, _role in members:
+            if kind == 'n' and ref not in self.nodes:
+                return False
+            if kind == 'w' and ref not in self.ways:
+                return False
         return True
-
-    def _are_all_refs_cached(self, refs):
-        """
-            Check if all @refs are in country osm data vel in cache
-            :param refs: list of refs eg. [123, 234, 345, ...]
-            :rtype : bool
-
-            Resolved in one batch. Doing it per ref cost an exists() and a get()
-            -- two separate binary searches each -- which at a few hundred
-            million way refs dominated the import.
-        """
-        return self.nodes_cache.has_all_coords(refs)
 
     @classmethod
     def merge_multiline(cls, multilinestring):
@@ -311,13 +369,15 @@ class BaseImporter(object):
 
     def _get_multiline_from_members(self, members):
         lines = []
-        for member in members:
-            if member[1] == 'way':
-                lines.append(
-                    LineString(
-                        self._get_coords_from_way_refs(self.ways_cache.get(member[0])[1])
-                    )
-                )
+        for ref, kind, _role in members:
+            if kind != 'w':
+                continue
+            way = self.ways.get(ref)
+            if way is None:
+                continue
+            coords = way[1]
+            if len(coords) > 1:
+                lines.append(LineString(coords))
         if lines:
             return MultiLineString(lines)
         else:
@@ -326,10 +386,10 @@ class BaseImporter(object):
     @classmethod
     def _get_center_node_id_from_members(cls, members):
         for member in members:
-            if member[1] == 'node' and member[2] == 'admin_centre':
+            if member[1] == 'n' and member[2] == 'admin_centre':
                 return member[0]
         for member in members:
-            if member[1] == 'node' and member[2] == 'label':
+            if member[1] == 'n' and member[2] == 'label':
                 return member[0]
         return None
 
@@ -337,17 +397,10 @@ class BaseImporter(object):
         multiline = self._get_multiline_from_members(members)
         return self.__class__.merge_multiline(multiline)
 
-    def _get_multiline_from_refs(self, refs):
-        coords = self._get_coords_from_way_refs(refs)
-        if coords:
-            return MultiLineString(
-                LineString(coords)
-            )
-        else:
-            return None
-
-    def _get_coords_from_way_refs(self, refs):
-        return self.nodes_cache.coords_for(refs)
+    def _get_multiline_from_coords(self, coords):
+        if coords and len(coords) > 1:
+            return MultiLineString(LineString(coords))
+        return None
 
     @classmethod
     def _is_way_closed(cls, refs):
@@ -434,8 +487,10 @@ class BaseImporter(object):
                 polygon_holes = [list(interior.coords) for interior in shapely_polygon.interiors]
                 try:
                     polygon = Polygon(polygon_exterior_coords, *polygon_holes)
-                except:
-                    import ipdb;ipdb.set_trace()
+                except (ValueError, TypeError, GEOSException):
+                    # a ring that GEOS will not accept -- skip it rather than
+                    # dropping into a debugger, which is what used to happen
+                    continue
                 polygons.append(
                     polygon
                 )
@@ -446,82 +501,20 @@ class BaseImporter(object):
 
         return None
 
-    def _cache_relations(self, relations):
-        """
-            Callback for parsing Relation and storing in cache.
-            Relations are saved as (tags, [members]) where:
-            - tags: {'name': 'Whatever'}
-            - members: [(123, 'way', 'outer'), (234, 'node', 'inner') ...]
-        """
-        for osm_id, tags, members in relations:
-            if self._is_relation_to_cache(osm_id, tags, members):
-                self._cache_relation(osm_id, tags, members)
-        self.relations_cache.commit()
-
-    def _cache_relation(self, osm_id, tags, members):
-        self.relations_cache.set(osm_id, (tags, members))
-        for member in members:
-            if member[1] == 'node':
-                self.nodes_cache.precache.add(member[0])
-            elif member[1] == 'way':
-                self.ways_cache.precache.add(member[0])
-
-    def _cache_ways(self, ways):
-        """
-            Callback for parsing Ways and storing in cache.
-            Ways are saved as ({tags}, [refs])
-        """
-        for osm_id, tags, refs in ways:
-            # save ways needed by relations or save ways which describe part of locations
-            if osm_id in self.ways_cache.precache or self._is_way_to_cache(osm_id, tags, refs):
-                self._cache_way(osm_id, tags, refs)
-        self.ways_cache.commit()
-
-    def _cache_way(self, osm_id, tags, refs):
-        self.ways_cache.set(osm_id, (tags, refs))
-        for ref in refs:
-            self.nodes_cache.precache.add(ref)
-
-    def _cache_coords(self, coords):
-        """
-            Callback for parsing Coords (Nodes without tags) and storing in cache.
-            Coords are saved as (x, y) with empty tags in nodes cache.
-        """
-        for osm_id, x, y in coords:
-            # save coords needed by relations or ways
-            if osm_id in self.nodes_cache.precache:
-                self.nodes_cache.set_coords(osm_id, x, y)
-        self.nodes_cache.commit()
-
-    def _cache_nodes(self, nodes):
-        """
-            Callback for parsing Coords (Nodes without tags) and storing in cache.
-            Coords are saved as (x, y)
-        """
-        for osm_id, tags, coords in nodes:
-            if osm_id != '0':
-                # save nodes needed by relations or ways or save nodes which describe part of locations
-                if osm_id in self.nodes_cache.precache or self._is_node_to_cache(osm_id, tags, coords):
-                    self._cache_node(osm_id, tags, coords)
-        self.nodes_cache.commit()
-
-    def _cache_node(self, osm_id, tags, coords):
-        self.nodes_cache.set(osm_id, (tags, coords))
-
     def _import_relations(self):
-        for osm_id in self.relations_cache.keys():
-            tags, members = self.relations_cache.get(osm_id)
+        for osm_id, (tags, members) in self.relations.items():
             self._import_relation(osm_id, tags, members)
 
     def _import_ways(self):
-        for osm_id in self.ways_cache.keys():
-            tags, refs = self.ways_cache.get(osm_id)
-            self._import_way(osm_id, tags, refs)
+        for osm_id, (tags, coords) in self.ways.items():
+            self._import_way(osm_id, tags, coords)
 
     def _import_nodes(self):
-        for osm_id in self.nodes_cache.keys():
-            tags, coords = self.nodes_cache.get(osm_id)
-            self._import_node(osm_id, tags, coords)
+        # Only nodes that carry tags can become a Place; the rest were kept
+        # solely to position relation centres.
+        for osm_id, (tags, coords) in self.nodes.items():
+            if tags:
+                self._import_node(osm_id, tags, coords)
 
     def _is_relation_to_cache(self, osm_id, tags, members):
         return any([
@@ -676,7 +669,7 @@ class BaseImporter(object):
                 }
                 center_node_id = self._get_center_node_id_from_members(members)
                 if center_node_id is not None:
-                    center_node = self.nodes_cache.get(center_node_id)
+                    center_node = self.nodes.get(center_node_id)
                     _, coords = center_node
                     countrysubarea_defaults['center'] = Point(coords)
                 CountrySubarea.objects.update_or_create(
@@ -701,7 +694,7 @@ class BaseImporter(object):
                 center_node_id = self._get_center_node_id_from_members(members)
                 center_node_coords = None
                 if center_node_id is not None:
-                    center_node_tags, center_node_coords = self.nodes_cache.get(center_node_id)
+                    center_node_tags, center_node_coords = self.nodes[center_node_id]
                     center_node_population = center_node_tags.get('population', None)
                     if center_node_population:
                         population = center_node_population
@@ -725,9 +718,9 @@ class BaseImporter(object):
                         'http://openstreetmap.org/relation/{}'.format(osm_id)
                     )
 
-    def _import_place_from_way(self, osm_id, tags, refs):
-        if self._is_way_place(osm_id, tags, refs) and self._are_all_refs_cached(refs):
-            multiline = self._get_multiline_from_refs(refs)
+    def _import_place_from_way(self, osm_id, tags, coords):
+        if self._is_way_place(osm_id, tags, coords):
+            multiline = self._get_multiline_from_coords(coords)
             border = self._get_multipolygon_from_multiline(multiline)
             if border:
                 print('Place:', tags.get('name'), 'http://openstreetmap.org/way/{}'.format(osm_id))
@@ -772,7 +765,7 @@ class BaseImporter(object):
                 }
                 center_node_id = self._get_center_node_id_from_members(members)
                 if center_node_id is not None:
-                    center_node = self.nodes_cache.get(center_node_id)
+                    center_node = self.nodes.get(center_node_id)
                     _, coords = center_node
                     placesubarea_defaults['center'] = Point(coords)
                 PlaceSubarea.objects.update_or_create(
@@ -798,14 +791,14 @@ class BaseImporter(object):
                 }
             )
 
-    def _import_street_from_way(self, osm_id, tags, refs):
-        if self._is_way_street(osm_id, tags, refs) and self._are_all_refs_cached(refs):
+    def _import_street_from_way(self, osm_id, tags, coords):
+        if self._is_way_street(osm_id, tags, coords):
             print('Street:', tags.get('name'), 'http://openstreetmap.org/way/{}'.format(osm_id))
             Street.objects.update_or_create(
                 way_osm_id=osm_id,
                 defaults={
                     'name': tags.get('name'),
-                    'lines': self._get_multiline_from_refs(refs),
+                    'lines': self._get_multiline_from_coords(coords),
                 }
             )
 
@@ -815,9 +808,9 @@ class BaseImporter(object):
         self._import_placesubarea_from_relation(osm_id, tags, members)
         self._import_street_from_relation(osm_id, tags, members)
 
-    def _import_way(self, osm_id, tags, refs):
-        self._import_place_from_way(osm_id, tags, refs)
-        self._import_street_from_way(osm_id, tags, refs)
+    def _import_way(self, osm_id, tags, coords):
+        self._import_place_from_way(osm_id, tags, coords)
+        self._import_street_from_way(osm_id, tags, coords)
 
     def _import_node(self, osm_id, tags, coords):
         self._import_place_from_node(osm_id, tags, coords)

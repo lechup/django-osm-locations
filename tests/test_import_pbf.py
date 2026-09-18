@@ -9,8 +9,7 @@ Django 4.0, because that line is only reached with real multi-way boundaries.
 
 Opt-in, because it needs a ~6MB download and takes about 20 seconds:
 
-    # one-off: a Python 3 build of imposm.parser (not on PyPI, see README)
-    pip install <your imposm-parser py3 fork>
+    pip install 'django-osm-locations[importers]'
 
     curl -L -o /tmp/isle-of-man.osm.pbf \
         https://download.geofabrik.de/europe/isle-of-man-latest.osm.pbf
@@ -30,7 +29,7 @@ pytestmark = [pytest.mark.pbf, pytest.mark.django_db]
 
 EXTRACT = os.environ.get('LOCATIONS_TEST_PBF')
 
-pytest.importorskip('imposm.parser', reason='needs a Python 3 build of imposm.parser')
+pytest.importorskip('osmium', reason='needs pyosmium')
 pytest.importorskip('shapely')
 
 if not EXTRACT or not os.path.exists(EXTRACT):

@@ -47,31 +47,14 @@ api = [
 ]
 
 # OSM import pipeline (the locations_import management command).
-#
-# NOTE: this extra deliberately omits the PBF parser itself. The importer needs
-# a Python 3 compatible ``imposm.parser``; upstream stopped at 1.0.7 (Python 2
-# only) and never published the 1.0.8 port to PyPI, and PyPI forbids direct-URL
-# dependencies in published metadata. Install it separately, e.g.:
-#
-#     pip install https://github.com/<fork>/imposm-parser/archive/<ref>.tar.gz
-#
-# See README "Importing OSM data" for details.
 importers = [
     "requests>=2.25",
     "Shapely>=1.8",
-    # numpy backs the packed coordinate store; Shapely already requires it
-    "numpy>=1.21",
-    # roaring bitmaps for the node/way id sets -- optional but worth ~1.5GB
-    # on a country extract, see caches.base.IdSet
-    "pyroaring>=0.4",
+    "osmium>=3.6",
 ]
 
-# Optional cache backends for the importer's node/way/relation caches.
-diskcache = ["diskcache>=5.0"]
-memcached = ["python-memcached>=1.59"]
-
 dev = [
-    "django-osm-locations[api,importers,diskcache]",
+    "django-osm-locations[api,importers]",
     "pytest>=7.0",
     "pytest-django>=4.5",
 ]

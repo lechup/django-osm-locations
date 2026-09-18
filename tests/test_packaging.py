@@ -31,14 +31,16 @@ def test_version_is_exposed():
     assert django_osm_locations.__version__
 
 
-def test_importer_modules_do_not_require_imposm_at_import_time():
+def test_importer_modules_do_not_require_a_parser_at_import_time():
     """
-    imposm has no Python 3 release on PyPI, so it must not be imported at module
-    level -- otherwise every management command disappears from manage.py help.
+    The parser and Shapely are optional extras, so they must not be imported at
+    module level -- otherwise every management command disappears from
+    manage.py help on an install without them.
     """
     import importlib
 
     module = importlib.import_module(
         'django_osm_locations.management.commands.importers.base'
     )
-    assert hasattr(module, '_load_osm_parser')
+    assert hasattr(module, '_load_osmium')
+    assert hasattr(module, '_load_polygonize_full')

@@ -159,23 +159,15 @@ Reserved subdomains default to `www`, `api`, `admin`, `static`, `media`,
 
 ## Importing OSM data
 
-The importer needs the `importers` extra **and** a Python 3 compatible
-`imposm.parser`:
+The importer needs the `importers` extra:
 
 ```bash
-pip install 'django-osm-locations[importers,diskcache]'
+pip install 'django-osm-locations[importers]'
 ```
 
-`imposm.parser` is deliberately not declared as a dependency. Upstream only ever
-published 1.0.7 to PyPI, which is Python 2 only; the 1.0.8 port that works on
-Python 3 was never released there, and PyPI forbids direct-URL dependencies in
-published metadata. Install it yourself from whichever fork you trust:
-
-```bash
-pip install https://github.com/<fork>/imposm-parser/archive/<ref>.tar.gz
-```
-
-It also needs `protobuf-compiler` and `libprotobuf-dev` at the system level.
+That is all — parsing is done by [pyosmium](https://osmcode.org/pyosmium/),
+which ships binary wheels, so there is no compiler or protobuf toolchain to set
+up.
 
 Then:
 
@@ -212,34 +204,26 @@ country's `admin_level` conventions — see `poland.py` and `germany.py`.
 | Setting | Default | Purpose |
 |---|---|---|
 | `LOCATIONS_DATA_DIR` | `<BASE_DIR>/osm_data` | Where `.pbf` extracts are stored |
-| `LOCATIONS_CACHE_DIR` | `<BASE_DIR>` | Parent of the importer's cache dirs |
-| `LOCATIONS_DISK_CACHE` | `False` | Use `diskcache` for the import cache |
-| `LOCATIONS_FILE_CACHE` | `False` | Use a `shelve` file cache |
-| `LOCATIONS_MEMCACHED_CACHE` | `False` | Use memcached |
+| `LOCATIONS_CACHE_DIR` | `<BASE_DIR>` | Parent of on-disk index directories |
+| `LOCATIONS_LOCATION_STORAGE` | `flex_mem` | libosmium node-location index type |
+| `LOCATIONS_DISK_CACHE` | `False` | Shorthand for a disk-backed location index |
 | `LOCATIONS_RESERVED_SUBDOMAINS` | `www`, `api`, `admin`, … | Subdomains never treated as a place slug |
-| `LOCATIONS_PARSER_CONCURRENCY` | `os.cpu_count()` | OSM parser worker processes |
 
 ### Memory during import
 
-Importing a country means holding its whole node/way/relation graph before it
-can become geometry, and a country extract has tens of millions of nodes. Three
-structures carry the weight, and the two optional dependencies in the
-`importers` extra matter a lot:
+Node coordinates are the bulk of an extract, and libosmium holds them in its own
+index rather than in Python. `LOCATIONS_LOCATION_STORAGE` picks which one:
 
-| Structure | Representation | Cost per node |
+| Value | Where | Use for |
 |---|---|---|
-| node coordinates | packed `array` + numpy binary search | ~23 B |
-| node/way id sets | roaring bitmap (`pyroaring`) | ~0.8 B |
-| | plain `set()` fallback | ~34 B |
+| `flex_mem` (default) | RAM | up to country size |
+| `sparse_file_array` | disk | large extracts, or tight memory |
+| `dense_file_array` | disk | planet-scale, dense id ranges |
 
-Measured on 50M nodes, that is roughly **14 GB → 1.1 GB**. Both numpy and
-pyroaring are pulled in by `pip install 'django-osm-locations[importers]'`;
-without pyroaring the id sets fall back to a plain `set` and the import still
-works, just using about 1.5 GB more.
-
-Tagged nodes, ways and relations still go through the cache backend selected
-below. The default keeps them in memory, which is fastest; switch to
-`LOCATIONS_DISK_CACHE` if even that does not fit.
+Setting `LOCATIONS_DISK_CACHE = True` selects `sparse_file_array` as the
+default. Everything the importer keeps in Python — the relations it matched,
+the ways it will turn into geometry, and tagged nodes — is a small fraction of
+the file, because the tag filters run inside libosmium.
 
 ## Development
 
@@ -262,8 +246,7 @@ pytest tests/test_slugify.py tests/test_middleware.py tests/test_importers.py
 ### The end-to-end import test
 
 One test parses a real OSM extract and runs the whole pipeline into PostGIS.
-It is opt-in, because it needs a ~6MB download, about 20 seconds, and a
-Python 3 build of `imposm.parser`:
+It is opt-in, because it needs a ~6MB download and about 20 seconds:
 
 ```bash
 curl -L -o /tmp/isle-of-man.osm.pbf \
