@@ -132,3 +132,31 @@ def test_merge_marks_duplicate_streets(imported):
         imported.do_merge()
     after = Street.objects.not_merged().count()
     assert after < before, 'merge did not collapse any duplicate ways'
+
+
+def test_reimport_updates_in_place(imported):
+    """
+    Writes are batched now, so the upsert semantics of update_or_create have to
+    be preserved explicitly: a second import must update rows, not duplicate
+    them.
+    """
+    from django_osm_locations.models import CountrySubarea, Place, Street
+    from django_osm_locations.management.commands.importers.isle_of_man import (
+        IsleOfManImporter,
+    )
+
+    before = {m.__name__: m.objects.count() for m in (CountrySubarea, Place, Street)}
+    sample = Street.objects.order_by('way_osm_id').first()
+    sample_id = sample.id
+
+    importer = IsleOfManImporter('isle-of-man', EXTRACT)
+    with contextlib.redirect_stdout(io.StringIO()):
+        importer.do_import()
+
+    after = {m.__name__: m.objects.count() for m in (CountrySubarea, Place, Street)}
+    assert after == before, 'second import created duplicate rows'
+    assert Street.objects.get(way_osm_id=sample.way_osm_id).id == sample_id
+
+    stats = importer.writers[(Street, 'way_osm_id')]
+    assert stats.created == 0
+    assert stats.updated > 1000, 'the update path should have been exercised'

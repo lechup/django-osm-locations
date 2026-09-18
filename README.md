@@ -208,6 +208,7 @@ country's `admin_level` conventions — see `poland.py` and `germany.py`.
 | `LOCATIONS_LOCATION_STORAGE` | `flex_mem` | libosmium node-location index type |
 | `LOCATIONS_DISK_CACHE` | `False` | Shorthand for a disk-backed location index |
 | `LOCATIONS_RESERVED_SUBDOMAINS` | `www`, `api`, `admin`, … | Subdomains never treated as a place slug |
+| `LOCATIONS_WRITE_BATCH_SIZE` | `1000` | Rows per bulk insert/update during import |
 
 ### Memory during import
 

@@ -56,6 +56,83 @@ def _location_storage():
     return 'flex_mem'
 
 
+
+class BatchUpserter:
+    """
+    Accumulate ``update_or_create``-shaped writes and apply them in batches.
+
+    One ``update_or_create`` per object costs a SELECT and an INSERT/UPDATE
+    round trip each, which is what made writing a country's streets the slowest
+    part of an import by a wide margin. This buffers them, resolves a whole
+    batch's existing rows in a single query, and applies the rest with
+    ``bulk_create`` / ``bulk_update``.
+
+    ``bulk_create`` and ``bulk_update`` bypass ``Model.save()`` and therefore
+    the ``_presave_*`` hooks, so the hooks are invoked explicitly here. Their
+    names also say which fields they derive -- ``_presave_bbox`` produces
+    ``bbox`` -- so the update field list stays correct without a second list to
+    maintain.
+    """
+
+    def __init__(self, model, lookup_field, batch_size=1000):
+        self.model = model
+        self.lookup_field = lookup_field
+        self.batch_size = batch_size
+        self._pending = {}
+        self.created = 0
+        self.updated = 0
+
+    @property
+    def derived_fields(self):
+        prefix = '_presave_'
+        return {
+            name[len(prefix):]
+            for name in self.model._save_hooks()
+            if name.startswith(prefix)
+        }
+
+    def add(self, lookup_value, defaults):
+        # last write wins within a batch, matching repeated update_or_create
+        self._pending[lookup_value] = defaults
+        if len(self._pending) >= self.batch_size:
+            self.flush()
+
+    def flush(self):
+        if not self._pending:
+            return
+
+        lookup = self.lookup_field
+        pending, self._pending = self._pending, {}
+
+        existing = {
+            getattr(obj, lookup): obj
+            for obj in self.model.objects.filter(**{'%s__in' % lookup: list(pending)})
+        }
+
+        to_create, to_update, changed_fields = [], [], set()
+        for lookup_value, defaults in pending.items():
+            obj = existing.get(lookup_value)
+            if obj is None:
+                obj = self.model(**{lookup: lookup_value}, **defaults)
+                obj._presave()
+                to_create.append(obj)
+            else:
+                for field, value in defaults.items():
+                    setattr(obj, field, value)
+                obj._presave()
+                to_update.append(obj)
+                changed_fields.update(defaults)
+
+        with transaction.atomic():
+            if to_create:
+                self.model.objects.bulk_create(to_create, batch_size=self.batch_size)
+                self.created += len(to_create)
+            if to_update:
+                fields = sorted(changed_fields | self.derived_fields)
+                self.model.objects.bulk_update(to_update, fields, batch_size=self.batch_size)
+                self.updated += len(to_update)
+
+
 class BaseImporter(object):
     whitelist_tags = ['name', 'admin_level', 'boundary', 'place', 'highway', 'population']
     location_models_mergable = [CountrySubarea, Place, PlaceSubarea, Street]
@@ -80,6 +157,19 @@ class BaseImporter(object):
         self.needed_way_ids = set()
         self.needed_node_ids = set()
 
+        # Writes are buffered: one update_or_create per object dominated import
+        # time. Keyed by the OSM id field each import path looks up on.
+        batch_size = int(getattr(settings, 'LOCATIONS_WRITE_BATCH_SIZE', 1000) or 1000)
+        self.writers = {
+            (CountrySubarea, 'relation_osm_id'): BatchUpserter(CountrySubarea, 'relation_osm_id', batch_size),
+            (Place, 'relation_osm_id'): BatchUpserter(Place, 'relation_osm_id', batch_size),
+            (Place, 'way_osm_id'): BatchUpserter(Place, 'way_osm_id', batch_size),
+            (Place, 'node_osm_id'): BatchUpserter(Place, 'node_osm_id', batch_size),
+            (PlaceSubarea, 'relation_osm_id'): BatchUpserter(PlaceSubarea, 'relation_osm_id', batch_size),
+            (Street, 'relation_osm_id'): BatchUpserter(Street, 'relation_osm_id', batch_size),
+            (Street, 'way_osm_id'): BatchUpserter(Street, 'way_osm_id', batch_size),
+        }
+
         # place can be imported from relation - it's center is node that later is imported also as new place
         # we use that cache to cache nodes_ids of relation centers, so that we won't have duplicates
         # see: https://www.openstreetmap.org/relation/3267973
@@ -96,6 +186,7 @@ class BaseImporter(object):
         print("Importing Relations %s ..." % start)
         with transaction.atomic():
             self._import_relations()
+            self._flush_writes()
         end = datetime.now()
         print("Importing Relations ended: %s, took: %s!\n" % (end, end - start))
 
@@ -103,6 +194,7 @@ class BaseImporter(object):
         print("Importing Ways %s ..." % start)
         with transaction.atomic():
             self._import_ways()
+            self._flush_writes()
         end = datetime.now()
         print("Importing Ways ended: %s, took: %s!\n" % (end, end - start))
 
@@ -110,6 +202,7 @@ class BaseImporter(object):
         print("Importing Coords and Nodes %s ..." % start)
         with transaction.atomic():
             self._import_nodes()
+            self._flush_writes()
         end = datetime.now()
         print("Importing Coords and Nodes ended: %s, took: %s!\n" % (end, end - start))
 
@@ -183,6 +276,13 @@ class BaseImporter(object):
         # country.bbox empty -- and since country.places filters on
         # bbox_polygon, the whole merge phase silently matched nothing.
         country.save(update_fields=['border', 'bbox', 'center', 'area'])
+
+    def _upsert(self, model, lookup_field, lookup_value, defaults):
+        self.writers[(model, lookup_field)].add(lookup_value, defaults)
+
+    def _flush_writes(self):
+        for writer in self.writers.values():
+            writer.flush()
 
     def _parse_and_cache(self):
         """
@@ -672,10 +772,7 @@ class BaseImporter(object):
                     center_node = self.nodes.get(center_node_id)
                     _, coords = center_node
                     countrysubarea_defaults['center'] = Point(coords)
-                CountrySubarea.objects.update_or_create(
-                    relation_osm_id=osm_id,
-                    defaults=countrysubarea_defaults
-                )
+                self._upsert(CountrySubarea, 'relation_osm_id', osm_id, countrysubarea_defaults)
             else:
                 if multiline:
                     print(
@@ -706,10 +803,7 @@ class BaseImporter(object):
                 if center_node_id is not None:
                     place_defaults['center'] = Point(center_node_coords)
                     self.already_imported_places_node_ids.add(center_node_id)
-                Place.objects.update_or_create(
-                    relation_osm_id=osm_id,
-                    defaults=place_defaults
-                )
+                self._upsert(Place, 'relation_osm_id', osm_id, place_defaults)
             else:
                 if multiline:
                     print(
@@ -724,14 +818,11 @@ class BaseImporter(object):
             border = self._get_multipolygon_from_multiline(multiline)
             if border:
                 print('Place:', tags.get('name'), 'http://openstreetmap.org/way/{}'.format(osm_id))
-                Place.objects.update_or_create(
-                    way_osm_id=osm_id,
-                    defaults={
-                        'name': tags.get('name'),
-                        'border': border,
-                        'population': tags.get('population')
-                    }
-                )
+                self._upsert(Place, 'way_osm_id', osm_id, {
+                    'name': tags.get('name'),
+                    'border': border,
+                    'population': tags.get('population')
+                })
             else:
                 if multiline:
                     print(
@@ -743,14 +834,11 @@ class BaseImporter(object):
     def _import_place_from_node(self, osm_id, tags, coords):
         if osm_id not in self.already_imported_places_node_ids and self._is_node_place(osm_id, tags, coords):
             print('Place:', tags.get('name'), 'http://openstreetmap.org/node/{}'.format(osm_id))
-            Place.objects.update_or_create(
-                node_osm_id=osm_id,
-                defaults={
-                    'name': tags.get('name'),
-                    'center': Point(coords),
-                    'population': tags.get('population')
-                }
-            )
+            self._upsert(Place, 'node_osm_id', osm_id, {
+                'name': tags.get('name'),
+                'center': Point(coords),
+                'population': tags.get('population')
+            })
 
     def _import_placesubarea_from_relation(self, osm_id, tags, members):
         if self._is_relation_placesubarea(osm_id, tags, members) and self._are_all_members_cached(members):
@@ -768,10 +856,7 @@ class BaseImporter(object):
                     center_node = self.nodes.get(center_node_id)
                     _, coords = center_node
                     placesubarea_defaults['center'] = Point(coords)
-                PlaceSubarea.objects.update_or_create(
-                    relation_osm_id=osm_id,
-                    defaults=placesubarea_defaults
-                )
+                self._upsert(PlaceSubarea, 'relation_osm_id', osm_id, placesubarea_defaults)
             else:
                 if multiline:
                     print(
@@ -783,24 +868,18 @@ class BaseImporter(object):
     def _import_street_from_relation(self, osm_id, tags, members):
         if self._is_relation_street(osm_id, tags, members) and self._are_all_members_cached(members):
             print('Street:', tags.get('name'), 'http://openstreetmap.org/relation/{}'.format(osm_id))
-            Street.objects.update_or_create(
-                relation_osm_id=osm_id,
-                defaults={
-                    'name': tags.get('name'),
-                    'lines': self._get_merged_multiline_from_members(members),
-                }
-            )
+            self._upsert(Street, 'relation_osm_id', osm_id, {
+                'name': tags.get('name'),
+                'lines': self._get_merged_multiline_from_members(members),
+            })
 
     def _import_street_from_way(self, osm_id, tags, coords):
         if self._is_way_street(osm_id, tags, coords):
             print('Street:', tags.get('name'), 'http://openstreetmap.org/way/{}'.format(osm_id))
-            Street.objects.update_or_create(
-                way_osm_id=osm_id,
-                defaults={
-                    'name': tags.get('name'),
-                    'lines': self._get_multiline_from_coords(coords),
-                }
-            )
+            self._upsert(Street, 'way_osm_id', osm_id, {
+                'name': tags.get('name'),
+                'lines': self._get_multiline_from_coords(coords),
+            })
 
     def _import_relation(self, osm_id, tags, members):
         self._import_countrysubarea_from_relation(osm_id, tags, members)
