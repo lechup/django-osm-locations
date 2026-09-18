@@ -227,6 +227,35 @@ python manage.py locations_reindex --tolerance 10     # allow a small shortfall
 python manage.py locations_index_cleanup --keep 1     # drop older indexes
 ```
 
+## Slugs
+
+Slugs are public — places are served as subdomains — so duplicates are resolved
+by *where a thing is* rather than by appending an opaque OSM id:
+
+```
+station-road-ramsey        street, qualified by its place
+station-road-port-erin
+church-street-peel
+nowa-wies-krakow           place, qualified by the nearest larger place
+```
+
+The largest of a set keeps the bare slug, so `douglas` stays `douglas` and only
+its namesakes are qualified. "Largest" means population where OSM provides it
+(it rarely does — 6 of 90 places on the Isle of Man) and area otherwise. Rows
+flagged as merged always rank last: they are duplicates the import already
+resolved, and they are not in the search index, so they never take a readable
+slug from a live row.
+
+The qualifier is appended with a plain hyphen and no connector word, because
+"near", "bei" and "koło" would each be right in only one language, while the
+qualifier itself is a local name.
+
+The cascade differs by type — streets and place subareas use their parent place,
+places use the nearest larger place within about 110 km, country subareas use
+their country. The OSM id remains as a last resort for what geography cannot
+separate, such as two streets of the same name in the same town. On the Isle of
+Man extract it is never needed: all 2008 streets get a readable slug.
+
 ## Subdomain middleware
 
 Optional. Resolves `<place-slug>.example.com` to a `Place`:
@@ -296,7 +325,7 @@ country's `admin_level` conventions — see `poland.py` and `germany.py`.
 | `locations_import <country>` | Download, parse and import an extract |
 | `locations_recalculate_all` | Run every recalculation below, in order |
 | `locations_recalculate_areas_and_lengths` | Recompute `area` / `length` |
-| `locations_recalculate_slugs` | Recompute slugs |
+| `locations_recalculate_slugs` | Recompute slugs, qualifying duplicates by location |
 | `locations_recalculate_denormalized_fields` | Rebuild ancestry arrays and search vectors |
 | `locations_update` | Fetch OSM diffs, reimport, recalculate and reindex |
 | `locations_reindex` | Rebuild the search index and swap the alias |
