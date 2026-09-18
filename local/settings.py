@@ -1,0 +1,68 @@
+"""
+Settings for running real imports against the local stack.
+
+    docker compose -f docker-compose.local.yml up -d
+    DJANGO_SETTINGS_MODULE=local.settings python -m django migrate
+    DJANGO_SETTINGS_MODULE=local.settings python -m django locations_import poland
+
+This is a development harness, not a deployment example: the credentials are
+the ones in docker-compose.local.yml and the secret key is a placeholder.
+"""
+import os
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+SECRET_KEY = 'local-development-only'
+DEBUG = True
+ALLOWED_HOSTS = ['*']
+
+INSTALLED_APPS = [
+    'django.contrib.contenttypes',
+    'django.contrib.auth',
+    'django.contrib.gis',
+    'django.contrib.postgres',
+    'django_osm_locations',
+    'rest_framework',
+]
+
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.contrib.gis.db.backends.postgis',
+        'NAME': os.environ.get('LOCATIONS_LOCAL_DB_NAME', 'locations'),
+        'USER': os.environ.get('LOCATIONS_LOCAL_DB_USER', 'locations'),
+        'PASSWORD': os.environ.get('LOCATIONS_LOCAL_DB_PASSWORD', 'locations'),
+        'HOST': os.environ.get('LOCATIONS_LOCAL_DB_HOST', '127.0.0.1'),
+        'PORT': os.environ.get('LOCATIONS_LOCAL_DB_PORT', '55433'),
+    }
+}
+
+LOCATIONS_OPENSEARCH_HOSTS = [
+    'http://%s:%s' % (
+        os.environ.get('LOCATIONS_LOCAL_OPENSEARCH_HOST', '127.0.0.1'),
+        os.environ.get('LOCATIONS_LOCAL_OPENSEARCH_PORT', '59201'),
+    )
+]
+LOCATIONS_OPENSEARCH_INDEX_PREFIX = 'locations'
+
+# Extracts land here rather than inside the installed package.
+LOCATIONS_DATA_DIR = os.environ.get(
+    'LOCATIONS_DATA_DIR', os.path.join(BASE_DIR, 'local', 'osm_data')
+)
+LOCATIONS_CACHE_DIR = os.path.join(BASE_DIR, 'local')
+
+# A country-sized import holds its node index in memory by default. Uncomment
+# to spill it to disk instead -- slower, but roughly 4GB less RAM for Poland.
+# LOCATIONS_DISK_CACHE = True
+
+ROOT_URLCONF = 'local.urls'
+ROOT_URL = os.environ.get('LOCATIONS_ROOT_URL', 'localhost:8000')
+USE_TZ = True
+
+# GeoDjango needs the native libraries; set these when they are not on the
+# loader path (for instance when they come from Python wheels).
+if os.environ.get('GEOS_LIBRARY_PATH'):
+    GEOS_LIBRARY_PATH = os.environ['GEOS_LIBRARY_PATH']
+if os.environ.get('GDAL_LIBRARY_PATH'):
+    GDAL_LIBRARY_PATH = os.environ['GDAL_LIBRARY_PATH']
+
+REST_FRAMEWORK = {}

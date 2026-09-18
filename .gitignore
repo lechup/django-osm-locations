@@ -83,5 +83,7 @@ target/
 
 # locations app runtime dirs
 osm_data/
+local/osm_data/
+local/.disk_cache/
 .disk_cache/
 .file_cache/

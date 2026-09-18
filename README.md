@@ -358,6 +358,44 @@ importer tag predicates) run without the container:
 pytest tests/test_slugify.py tests/test_middleware.py tests/test_importers.py
 ```
 
+### Running a real import locally
+
+The test stack keeps PostgreSQL's data in `tmpfs` so tests start from nothing
+every time. That is wrong for importing an actual country — several gigabytes of
+rows would sit in RAM, on top of the memory the parse already needs. Use the
+persistent stack instead:
+
+```bash
+docker compose -f docker-compose.local.yml up -d
+export DJANGO_SETTINGS_MODULE=local.settings
+
+python -m django migrate
+python -m django loaddata locations_country.json
+python -m django locations_import poland
+python -m django locations_recalculate_all
+python -m django locations_reindex
+```
+
+It runs under its own compose project name and its own ports (55433 and 59201),
+so it coexists with the test stack. `down` keeps the data in named volumes;
+`down -v` deletes it.
+
+`local/settings.py` is a development harness, not a deployment example. It
+reads `LOCATIONS_LOCAL_DB_*` and `LOCATIONS_LOCAL_OPENSEARCH_*` from the
+environment, and puts extracts in `local/osm_data/`.
+
+**Memory.** Parsing holds the node index in RAM. Measured on the real Geofabrik
+extracts:
+
+| Extract | Size | Peak RSS parsing |
+|---|---|---|
+| Isle of Man | 6 MB | 0.16 GB |
+| Poland | 2.0 GB | 5.75 GB |
+| Germany | 4.6 GB | ~13 GB (extrapolated) |
+
+Set `LOCATIONS_DISK_CACHE = True` to spill the node index to disk instead, which
+trades roughly 4 GB of RAM for the same in disk on a Poland-sized extract.
+
 ### The end-to-end import test
 
 One test parses a real OSM extract and runs the whole pipeline into PostGIS.

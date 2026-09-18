@@ -6,3 +6,8 @@ recursive-include src/django_osm_locations/migrations *.py
 # never ship OSM extracts or local caches
 global-exclude *.pbf
 global-exclude *.py[cod]
+
+# development harness, not part of the distribution
+prune local
+exclude docker-compose.local.yml
+exclude docker-compose.test.yml

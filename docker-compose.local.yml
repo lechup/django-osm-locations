@@ -1,0 +1,70 @@
+# A persistent local stack for real work: importing a whole country, trying
+# queries against real data, measuring.
+#
+# Unlike docker-compose.test.yml this keeps its data in named volumes rather
+# than tmpfs, uses its own project name and its own ports, so both stacks can
+# run side by side without colliding.
+#
+#   docker compose -f docker-compose.local.yml up -d
+#   ...
+#   docker compose -f docker-compose.local.yml down      # keeps the data
+#   docker compose -f docker-compose.local.yml down -v   # deletes it
+name: locations-local
+
+services:
+  postgis:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: locations
+      POSTGRES_USER: locations
+      POSTGRES_PASSWORD: locations
+    ports:
+      - "${LOCATIONS_LOCAL_DB_PORT:-55433}:5432"
+    volumes:
+      - postgis-data:/var/lib/postgresql/data
+    # Tuned for bulk loading rather than for a busy server. synchronous_commit
+    # is off because an interrupted import is re-run, not recovered -- it costs
+    # the last few transactions on a crash, never consistency.
+    command: >
+      postgres
+      -c shared_buffers=1GB
+      -c work_mem=64MB
+      -c maintenance_work_mem=1GB
+      -c max_wal_size=4GB
+      -c checkpoint_timeout=30min
+      -c synchronous_commit=off
+      -c random_page_cost=1.1
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U locations -d locations"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+    shm_size: 1gb
+
+  opensearch:
+    image: opensearchproject/opensearch:2.18.0
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      # a country's worth of geo_shape documents needs more than the test heap
+      OPENSEARCH_JAVA_OPTS: "-Xms2g -Xmx2g"
+      bootstrap.memory_lock: "true"
+    ports:
+      - "${LOCATIONS_LOCAL_OPENSEARCH_PORT:-59201}:9200"
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+    ulimits:
+      memlock: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+
+volumes:
+  postgis-data:
+  opensearch-data:
