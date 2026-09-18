@@ -1,65 +1,105 @@
-from rest_framework import viewsets
-from rest_framework_gis.filters import InBBoxFilter
-from rest_framework.settings import api_settings
+"""
+Read-only API served from OpenSearch.
+
+PostGIS remains the source of truth, but nothing here queries it: the index
+carries the geometry as well as the searchable fields, so a request is one
+OpenSearch round trip.
+"""
+from rest_framework import status
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from ..search.client import get_client, get_index_prefix
+from ..search.indexes import INDEXES
+from .queries import QueryError, build_body, parse_types
 
 
-from .filters import (
-    CountryFilterSet, CountrySubareaFilterSet, PlaceFilterSet, PlaceSubareaFilterSet, StreetFilterSet
-)
-from .serializers import (CountryDefaultSerializer, CountryRetrieveSerializer, CountrySubareaDefaultSerializer,
-                          CountrySubareaRetrieveSerializer, PlaceDefaultSerializer, PlaceRetrieveSerializer,
-                          PlaceSubareaDefaultSerializer, PlaceSubareaRetrieveSerializer, StreetDefaultSerializer,
-                          StreetRetrieveSerializer)
-from ..models import Country, CountrySubarea, Place, PlaceSubarea, Street
+def format_hit(hit):
+    """One OpenSearch hit as an API result."""
+    source = dict(hit.get('_source') or {})
+    source['score'] = hit.get('_score')
+    return source
 
 
-class BaseLocationViewSet(viewsets.ReadOnlyModelViewSet):
-    filter_backends = api_settings.DEFAULT_FILTER_BACKENDS + [InBBoxFilter]
-    retrieve_serialize_class = None
-    lookup_field = 'slug'
-    ordering_fields = ('name',)
-    bbox_filter_field = 'center'
-
-    def get_serializer_class(self):
-        if self.action == 'retrieve':
-            return self.retrieve_serialize_class
-        return self.serializer_class
-
-
-class BaseBorderLocationViewSet(BaseLocationViewSet):
-    ordering_fields = BaseLocationViewSet.ordering_fields + ('area',)
+def format_response(result, page, page_size):
+    total = result.get('hits', {}).get('total', {})
+    total = total.get('value', 0) if isinstance(total, dict) else int(total or 0)
+    hits = result.get('hits', {}).get('hits', [])
+    return {
+        'total': total,
+        'page': page,
+        'page_size': page_size,
+        'results': [format_hit(hit) for hit in hits],
+    }
 
 
-class CountryViewSet(BaseBorderLocationViewSet):
-    filterset_class = CountryFilterSet
-    queryset = Country.objects.all()
-    serializer_class = CountryDefaultSerializer
-    retrieve_serialize_class = CountryRetrieveSerializer
+class SearchView(APIView):
+    """
+    Search across every location type, or a subset of them.
+
+    Parameters:
+
+    * ``q`` -- free text, prefix matched against the name and ancestry
+    * ``type`` -- comma separated: countries, country-subareas, places,
+      place-subareas, streets
+    * ``within`` -- comma separated ancestor slugs, e.g. ``within=douglas``
+    * ``bbox`` -- ``minlon,minlat,maxlon,maxlat``
+    * ``near`` + ``radius`` -- ``near=-4.48,54.15&radius=5km``
+    * ``order`` -- ``relevance`` (default with ``q``), ``name``, or ``size``
+    * ``geometry=true`` -- include the full geometry in each result
+    * ``page``, ``page_size``
+    """
+
+    location_types = None
+
+    def get(self, request):
+        params = request.query_params
+        try:
+            names = self.location_types or parse_types(params.get('type'))
+            body, page, page_size = build_body(params)
+        except QueryError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        prefix = get_index_prefix()
+        indexes = ','.join(INDEXES[name].alias(prefix) for name in names)
+
+        client = get_client()
+        result = client.search(index=indexes, body=body, ignore_unavailable=True)
+        return Response(format_response(result, page, page_size))
 
 
-class CountrySubareaViewSet(BaseBorderLocationViewSet):
-    filterset_class = CountrySubareaFilterSet
-    queryset = CountrySubarea.objects.all()
-    serializer_class = CountrySubareaDefaultSerializer
-    retrieve_serialize_class = CountrySubareaRetrieveSerializer
+def type_view(name):
+    """A SearchView pinned to one location type."""
+    return type(
+        '{}SearchView'.format(name.title().replace('-', '')),
+        (SearchView,),
+        {'location_types': [name], '__doc__': SearchView.__doc__},
+    )
 
 
-class PlaceViewSet(BaseBorderLocationViewSet):
-    filterset_class = PlaceFilterSet
-    queryset = Place.objects.all()
-    serializer_class = PlaceDefaultSerializer
-    retrieve_serialize_class = PlaceRetrieveSerializer
+class DetailView(APIView):
+    """
+    One location by slug, with its full geometry.
 
+    Slugs are unique per type, so the type is part of the URL.
+    """
 
-class PlaceSubareaViewSet(BaseBorderLocationViewSet):
-    filterset_class = PlaceSubareaFilterSet
-    queryset = PlaceSubarea.objects.all()
-    serializer_class = PlaceSubareaDefaultSerializer
-    retrieve_serialize_class = PlaceSubareaRetrieveSerializer
+    def get(self, request, location_type, slug):
+        if location_type not in INDEXES:
+            return Response(
+                {'detail': 'Unknown type: {}. Known types: {}'.format(
+                    location_type, ', '.join(sorted(INDEXES)))},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
-
-class StreetViewSet(BaseBorderLocationViewSet):
-    filterset_class = StreetFilterSet
-    queryset = Street.objects.all()
-    serializer_class = StreetDefaultSerializer
-    retrieve_serialize_class = StreetRetrieveSerializer
+        alias = INDEXES[location_type].alias(get_index_prefix())
+        client = get_client()
+        result = client.search(
+            index=alias,
+            body={'query': {'term': {'slug': slug}}, 'size': 1},
+            ignore_unavailable=True,
+        )
+        hits = result.get('hits', {}).get('hits', [])
+        if not hits:
+            return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+        return Response(format_hit(hits[0]))

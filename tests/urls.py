@@ -1,8 +1,5 @@
 from django.urls import include, path
-from rest_framework import routers
 
-from django_osm_locations.api.urls import update_router_with_locations
+from django_osm_locations.api.urls import urlpatterns as locations_urls
 
-router = update_router_with_locations(routers.DefaultRouter())
-
-urlpatterns = [path('api/', include(router.urls))]
+urlpatterns = [path('api/', include(locations_urls))]

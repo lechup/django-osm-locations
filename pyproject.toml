@@ -39,11 +39,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# REST API layer (django_osm_locations.api).
+# Search index built from PostGIS.
+search = [
+    "opensearch-py>=2.4",
+]
+
+# REST API layer (django_osm_locations.api), which reads the search index.
 api = [
+    "django-osm-locations[search]",
     "djangorestframework>=3.14",
-    "djangorestframework-gis>=1.0",
-    "django-filter>=2.0",
 ]
 
 # OSM import pipeline (the locations_import management command).
@@ -54,7 +58,7 @@ importers = [
 ]
 
 dev = [
-    "django-osm-locations[api,importers]",
+    "django-osm-locations[api,search,importers]",
     "pytest>=7.0",
     "pytest-django>=4.5",
 ]
@@ -70,8 +74,11 @@ filterwarnings = ["error::SyntaxWarning"]
 # The .pbf integration test parses a real extract and takes ~20s, needs a
 # Python 3 build of imposm.parser and the extract itself, so it is opt-in:
 #   pytest -m pbf
-markers = ["pbf: parses a real OSM extract (slow, opt-in)"]
-addopts = "-m 'not pbf'"
+markers = [
+    "pbf: parses a real OSM extract (slow, opt-in)",
+    "search: needs the OpenSearch container (opt-in)",
+]
+addopts = "-m 'not pbf and not search'"
 
 [tool.setuptools.packages.find]
 where = ["src"]

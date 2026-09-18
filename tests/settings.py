@@ -12,7 +12,6 @@ INSTALLED_APPS = [
     'django.contrib.postgres',
     'django_osm_locations',
     'rest_framework',
-    'django_filters',
 ]
 
 DATABASES = {
@@ -41,9 +40,15 @@ MIDDLEWARE = [
     'django_osm_locations.middleware.PlaceSubdomainMiddleware',
 ]
 
-REST_FRAMEWORK = {
-    'DEFAULT_FILTER_BACKENDS': [
-        'django_filters.rest_framework.DjangoFilterBackend',
-        'rest_framework.filters.OrderingFilter',
-    ],
-}
+REST_FRAMEWORK = {}
+
+LOCATIONS_OPENSEARCH_HOSTS = [
+    'http://%s:%s' % (
+        os.environ.get('LOCATIONS_TEST_OPENSEARCH_HOST', '127.0.0.1'),
+        os.environ.get('LOCATIONS_TEST_OPENSEARCH_PORT', '59200'),
+    )
+]
+# each test run owns its own indexes
+LOCATIONS_OPENSEARCH_INDEX_PREFIX = os.environ.get(
+    'LOCATIONS_TEST_INDEX_PREFIX', 'test-locations'
+)

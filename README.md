@@ -1,12 +1,21 @@
 # django-osm-locations
 
-A Django app that imports OpenStreetMap extracts into a PostGIS location
-hierarchy and serves them over a REST API.
+A Django app that imports OpenStreetMap extracts into PostGIS, builds an
+OpenSearch index from it, and serves search over that index.
 
 It turns a `.pbf` country extract into five related models — countries, country
 subareas, places, place subareas and streets — each carrying a border or
-centreline geometry, a bounding box, a slug and denormalised ancestry, with
-full-text search vectors for prefix matching.
+centreline geometry, a bounding box, a slug and denormalised ancestry.
+
+**PostGIS is the source of truth.** The import writes there and nothing else
+does; the search index is derived from it and rebuilt on demand. Nothing in this
+package deletes rows from the database — a rebuild that finds fewer rows than
+expected refuses to go live rather than quietly serving less data.
+
+```
+ .pbf ──import──▶ PostGIS ──reindex──▶ OpenSearch ──▶ REST API
+                 (truth)              (alias swap)
+```
 
 ## Requirements
 
@@ -14,12 +23,14 @@ full-text search vectors for prefix matching.
 - Django 4.2+
 - PostgreSQL with PostGIS (the app relies on `django.contrib.postgres` and
   GeoDjango; no other database backend will work)
+- OpenSearch 2.x, to serve the API
 
 ## Installation
 
 ```bash
-pip install django-osm-locations          # models, admin, middleware
-pip install 'django-osm-locations[api]'   # + the REST API layer
+pip install django-osm-locations             # models, admin, middleware
+pip install 'django-osm-locations[search]'   # + the OpenSearch index
+pip install 'django-osm-locations[api]'      # + the REST API over it
 ```
 
 Add it to your project:
@@ -82,47 +93,93 @@ city and region without a join.
 
 ## REST API
 
-Requires the `api` extra. Register the viewsets on your own router:
+Requires the `api` extra and a populated index. Wire it in:
 
 ```python
-from rest_framework import routers
-from django_osm_locations.api.urls import update_router_with_locations
+from django_osm_locations.api.urls import urlpatterns as locations_urls
 
-router = update_router_with_locations(routers.DefaultRouter())
-urlpatterns = [path("api/", include(router.urls))]
+urlpatterns = [path("api/", include(locations_urls))]
 ```
 
-This exposes `countries`, `country-subareas`, `places`, `place-subareas` and
-`streets`, all read-only and looked up by slug. List responses omit the heavy
-geometry; detail responses include it.
+```python
+LOCATIONS_OPENSEARCH_HOSTS = ["http://opensearch:9200"]
+```
 
-Filtering:
+### Endpoints
 
-- `?search_vector_name=krak` — prefix search on the name
-- `?search_vector=krak,mal` — prefix search across denormalised ancestry
-- `?place=<slug>` / `?country_subarea=<slug>` — restrict to a parent's border
-- `?in_bbox=<minx>,<miny>,<maxx>,<maxy>` — bounding-box filter
-
-## Search normalisation
-
-Three things have to agree or prefix search silently returns nothing:
-
-| What | Produced by |
+| Endpoint | Purpose |
 |---|---|
-| the stored `slug` column | `django.utils.text.slugify(anyascii(name))` |
-| `search_vector` / `search_vector_name` | the database `slugify()` function |
-| the incoming query in `?search_vector_name=` | `django_osm_locations.utils.slugify` |
+| `/api/search/` | search across every location type |
+| `/api/places/`, `/api/streets/`, … | the same, restricted to one type |
+| `/api/<type>/<slug>/` | one location, with full geometry |
 
-All three transliterate through **anyascii**, so `München` is stored, indexed
-and searched as `munchen`. The database function is generated from the anyascii
-table over Latin-1 Supplement and Latin Extended-A rather than maintained by
-hand, so the two sides cannot drift apart.
+Types are `countries`, `country-subareas`, `places`, `place-subareas`, `streets`.
 
-Currency and typographic symbols (`¢ £ ° © µ`) are stripped rather than spelled
-out; every letter in that range round-trips identically.
+### Parameters
 
-If you change one side, change all three and rerun
-`locations_recalculate_denormalized_fields`.
+| Parameter | Example | Meaning |
+|---|---|---|
+| `q` | `?q=krak` | prefix search on name and ancestry |
+| `type` | `?type=places,streets` | restrict to types (search endpoint) |
+| `within` | `?within=douglas` | only inside that ancestor slug |
+| `bbox` | `?bbox=-5,54,-4,55` | `minlon,minlat,maxlon,maxlat` |
+| `near` + `radius` | `?near=-4.4,54.1&radius=5km` | within a distance of a point |
+| `order` | `?order=name` | `relevance` (default with `q`), `name`, `size` |
+| `geometry` | `?geometry=true` | include full geometry in list results |
+| `page`, `page_size` | `?page=2&page_size=50` | paging, max 200 per page |
+
+### Responses
+
+```json
+{
+  "total": 42,
+  "page": 1,
+  "page_size": 20,
+  "results": [
+    {
+      "type": "places",
+      "id": 17,
+      "name": "Douglas",
+      "slug": "douglas",
+      "score": 8.4,
+      "center": {"lon": -4.48, "lat": 54.15},
+      "bbox": [-4.5, 54.1, -4.4, 54.2],
+      "area": 0.0031,
+      "population": 26218,
+      "osm": {"node_id": null, "way_id": null, "relation_id": 1234},
+      "ancestry": [{"level": "country", "slug": "isle-of-man", "name": "Isle of Man"}],
+      "ancestry_slugs": ["isle-of-man"]
+    }
+  ]
+}
+```
+
+Geometry is stored in the index as `geo_shape` and returned by the detail
+endpoint, or by any list request with `?geometry=true`. It is excluded from
+lists by default because a country border per hit is a lot of JSON.
+
+Prefix matching is done with an edge n-gram analyser at index time, with
+`asciifolding`, so `munch` and `münch` both find *München*.
+
+## Building the index
+
+```bash
+python manage.py locations_index_status      # what the DB has vs what is live
+python manage.py locations_reindex           # rebuild and swap
+```
+
+`locations_reindex` builds a fresh timestamped index per type, counts what it
+wrote, compares that against the database, and only then moves the alias. If it
+comes up short it refuses to promote and exits non-zero, leaving the previous
+index serving. The superseded index is kept as a rollback path.
+
+```bash
+python manage.py locations_reindex --dry-run          # report only
+python manage.py locations_reindex places streets     # selected types
+python manage.py locations_reindex --no-promote       # build, inspect, swap later
+python manage.py locations_reindex --tolerance 10     # allow a small shortfall
+python manage.py locations_index_cleanup --keep 1     # drop older indexes
+```
 
 ## Subdomain middleware
 
@@ -195,9 +252,15 @@ country's `admin_level` conventions — see `poland.py` and `germany.py`.
 | `locations_recalculate_areas_and_lengths` | Recompute `area` / `length` |
 | `locations_recalculate_slugs` | Recompute slugs |
 | `locations_recalculate_denormalized_fields` | Rebuild ancestry arrays and search vectors |
-| `locations_clear_merged` | Delete rows flagged as merged |
-| `locations_clear_not_in_country` | Delete rows outside the country border |
-| `locations_clear_place_not_defined` | Delete orphans with no parent place |
+| `locations_reindex` | Rebuild the search index and swap the alias |
+| `locations_index_status` | Compare database row counts with the live index |
+| `locations_index_cleanup` | Remove superseded indexes no alias points at |
+
+Nothing here removes rows from the database. Earlier versions shipped
+`locations_clear_merged`, `locations_clear_not_in_country` and
+`locations_clear_place_not_defined`, which deleted rows the import had flagged;
+those are gone. Rows flagged as merged simply stay in PostGIS and are left out
+of the index.
 
 ## Settings
 
@@ -209,6 +272,9 @@ country's `admin_level` conventions — see `poland.py` and `germany.py`.
 | `LOCATIONS_DISK_CACHE` | `False` | Shorthand for a disk-backed location index |
 | `LOCATIONS_RESERVED_SUBDOMAINS` | `www`, `api`, `admin`, … | Subdomains never treated as a place slug |
 | `LOCATIONS_WRITE_BATCH_SIZE` | `1000` | Rows per bulk insert/update during import |
+| `LOCATIONS_OPENSEARCH_HOSTS` | `['http://localhost:9200']` | Where OpenSearch lives |
+| `LOCATIONS_OPENSEARCH_INDEX_PREFIX` | `locations` | Prefix for every index and alias |
+| `LOCATIONS_OPENSEARCH_CLIENT_KWARGS` | `{}` | Extra client args: auth, TLS, timeouts |
 
 ### Memory during import
 
@@ -232,8 +298,9 @@ The models need PostGIS, so the suite ships a database:
 
 ```bash
 pip install -e '.[dev]'
-docker compose -f docker-compose.test.yml up -d
-pytest
+docker compose -f docker-compose.test.yml up -d   # PostGIS + OpenSearch
+pytest                 # unit and database tests
+pytest -m search       # index and API integration tests
 docker compose -f docker-compose.test.yml down -v
 ```
 
