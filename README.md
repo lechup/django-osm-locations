@@ -163,16 +163,34 @@ Prefix matching is done with an edge n-gram analyser at index time, with
 
 ## Updating to newer OSM data
 
-The whole cycle, from a fresh extract to serving it:
+One command does the whole cycle:
 
 ```bash
-# 1. fetch and import the new extract; --update re-downloads it
-python manage.py locations_import --update isle-of-man
+python manage.py locations_update isle-of-man
+```
 
-# 2. recompute derived fields (slugs, ancestry, areas)
+It reads the replication sequence recorded in the extract's own header, asks
+the server how far ahead it is, downloads **only the change files since**,
+merges them into the extract, reimports into PostGIS, recalculates the derived
+fields and rebuilds the search index.
+
+```bash
+python manage.py locations_update isle-of-man --dry-run   # how far behind?
+python manage.py locations_update isle-of-man --no-reindex
+python manage.py locations_update isle-of-man --max-size 20480
+```
+
+A `.pbf` extract is a snapshot, not a changelog, so refreshing from the extract
+alone means re-downloading all of it — 5.8 MB for the Isle of Man, several GB
+for Germany. The daily diffs are 1–17 kB, and an unchanged day is 104 bytes.
+`--max-size` caps how much is buffered per run, so an extract that is a long way
+behind catches up over several runs.
+
+The individual steps are still available if you want them separately:
+
+```bash
+python manage.py locations_import --update isle-of-man   # re-download in full
 python manage.py locations_recalculate_all
-
-# 3. rebuild the index and swap the aliases over
 python manage.py locations_reindex
 ```
 
@@ -280,6 +298,7 @@ country's `admin_level` conventions — see `poland.py` and `germany.py`.
 | `locations_recalculate_areas_and_lengths` | Recompute `area` / `length` |
 | `locations_recalculate_slugs` | Recompute slugs |
 | `locations_recalculate_denormalized_fields` | Rebuild ancestry arrays and search vectors |
+| `locations_update` | Fetch OSM diffs, reimport, recalculate and reindex |
 | `locations_reindex` | Rebuild the search index and swap the alias |
 | `locations_index_status` | Compare database row counts with the live index |
 | `locations_index_cleanup` | Remove superseded indexes no alias points at |

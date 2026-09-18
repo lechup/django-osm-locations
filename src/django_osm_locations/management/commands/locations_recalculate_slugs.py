@@ -1,6 +1,6 @@
 from django.core.management.base import BaseCommand
 from django.db import transaction
-from django.db.models import Count, F, Func, CharField, Value
+from django.db.models import BigIntegerField, Count, F, Func, CharField, Value
 from django.db.models.functions import Concat, Coalesce
 from tqdm import tqdm
 
@@ -42,7 +42,13 @@ class Command(BaseCommand):
                 new_slug=Concat(
                     'slug',
                     Value('-'),
-                    Coalesce('relation_osm_id', 'way_osm_id', 'node_osm_id', 'id'),
+                    # the OSM ids are BigIntegerField and the pk is AutoField;
+                    # Coalesce cannot infer a type across the two and raises
+                    # "Expression contains mixed types" without being told
+                    Coalesce(
+                        'relation_osm_id', 'way_osm_id', 'node_osm_id', 'id',
+                        output_field=BigIntegerField(),
+                    ),
                     output_field=CharField()
                 )
             ).update(
