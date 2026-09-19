@@ -488,6 +488,19 @@ class BaseImporter(object):
     # tag keys that can make an untagged-by-relation way interesting on its own
     way_keys_of_interest = ('highway', 'place')
 
+    @staticmethod
+    def _admin_level(tags):
+        """
+        The admin_level tag as an integer, or None.
+
+        Kept on the row because it is what distinguishes a constituent country
+        from a county from a gmina once several countries share a database.
+        """
+        try:
+            return int(tags['admin_level'])
+        except (KeyError, TypeError, ValueError):
+            return None
+
     def _is_country_boundary(self, tags):
         """
         Whether this relation is the border of the country being imported.
@@ -913,6 +926,7 @@ class BaseImporter(object):
                 countrysubarea_defaults = {
                     'name': tags.get('name'),
                     'border': border,
+                    'admin_level': self._admin_level(tags),
                     'population': tags.get('population')
                 }
                 center_node_id = self._get_center_node_id_from_members(members)
@@ -947,6 +961,7 @@ class BaseImporter(object):
                 place_defaults = {
                     'name': tags.get('name'),
                     'border': border,
+                    'admin_level': self._admin_level(tags),
                     'population': population
                 }
                 if center_node_id is not None:
@@ -1001,6 +1016,7 @@ class BaseImporter(object):
                 placesubarea_defaults = {
                     'name': tags.get('name'),
                     'border': border,
+                    'admin_level': self._admin_level(tags),
                     'population': tags.get('population')
                 }
                 center_node_id = self._get_center_node_id_from_members(members)

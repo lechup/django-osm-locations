@@ -104,7 +104,21 @@ def parse_page(page, page_size):
     return page, min(page_size, MAX_PAGE_SIZE)
 
 
-def build_query(q=None, within=None, bbox=None, near=None, radius=None):
+def parse_admin_level(value):
+    """``?admin_level=4`` or ``?admin_level=4,6`` -> a terms filter."""
+    if not value:
+        return None
+    try:
+        levels = [int(part) for part in str(value).split(',') if part.strip()]
+    except ValueError:
+        raise QueryError('admin_level must be a number, or several separated by commas')
+    if not levels:
+        return None
+    return {'terms': {'admin_level': levels}}
+
+
+def build_query(q=None, within=None, bbox=None, near=None, radius=None,
+                admin_level=None):
     """
     Assemble the bool query.
 
@@ -135,6 +149,10 @@ def build_query(q=None, within=None, bbox=None, near=None, radius=None):
     near_clause = parse_near(near, radius)
     if near_clause:
         filters.append(near_clause)
+
+    level_clause = parse_admin_level(admin_level)
+    if level_clause:
+        filters.append(level_clause)
 
     if not must and not filters:
         return {'match_all': {}}
@@ -252,6 +270,7 @@ def build_body(params):
         bbox=params.get('bbox'),
         near=params.get('near'),
         radius=params.get('radius'),
+        admin_level=params.get('admin_level'),
     )
     if q:
         # only meaningful when something is being scored; without a query the

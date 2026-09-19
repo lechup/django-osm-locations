@@ -74,6 +74,10 @@ BASE_PROPERTIES = {
             'relation_id': {'type': 'long'},
         }
     },
+    # Which OSM admin_level this came from. Without it a constituent country, a
+    # county and a gmina are indistinguishable once several countries share an
+    # index, since they all land in country-subareas.
+    'admin_level': {'type': 'short'},
     # denormalised ancestry, searchable and filterable by slug
     'ancestry': {
         'type': 'nested',
@@ -187,6 +191,7 @@ class LocationIndex:
                 'way_id': getattr(obj, 'way_osm_id', None),
                 'relation_id': getattr(obj, 'relation_osm_id', None),
             },
+            'admin_level': getattr(obj, 'admin_level', None),
             'ancestry': entries,
             'ancestry_slugs': slugs,
             'ancestry_names': names,

@@ -146,6 +146,18 @@ class LocationOSMBase(gis_models.Model):
     node_osm_id = models.BigIntegerField(default=None, null=True, db_index=True)
     way_osm_id = models.BigIntegerField(default=None, null=True, db_index=True)
     relation_osm_id = models.BigIntegerField(default=None, null=True, db_index=True)
+    admin_level = models.SmallIntegerField(
+        default=None,
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text='OSM admin_level this location was imported from. Which model '
+                  'a boundary becomes depends on it, and it used to be discarded '
+                  'afterwards -- leaving a Danish region, a Polish voivodeship '
+                  'and a Polish gmina indistinguishable in one table. Null for '
+                  'anything not derived from an administrative boundary, such '
+                  'as a place node or a street.',
+    )
 
     class Meta:
         abstract = True

@@ -124,6 +124,7 @@ Types are `countries`, `country-subareas`, `places`, `place-subareas`, `streets`
 | `within` | `?within=douglas` | only inside that ancestor slug |
 | `bbox` | `?bbox=-5,54,-4,55` | `minlon,minlat,maxlon,maxlat` |
 | `near` + `radius` | `?near=-4.4,54.1&radius=5km` | within a distance of a point |
+| `admin_level` | `?admin_level=4,6` | only these OSM admin levels |
 | `order` | `?order=name` | `relevance` (default with `q`), `name`, `size` |
 | `geometry` | `?geometry=true` | include full geometry in list results |
 | `page`, `page_size` | `?page=2&page_size=50` | paging, max 200 per page |
@@ -368,6 +369,12 @@ Those numbers are `admin_level` values, and they differ by country: a
 municipality is level 7 in Denmark and Norway but level 8 in Finland and the
 Netherlands. Each was read from that country's own extract rather than from the
 wiki.
+
+The level is **kept on the row** and indexed, because once several countries
+share a database the model alone stops being enough to say what something is:
+country subareas then hold English constituent countries, English counties,
+Danish regions and Polish gminy all at once. `?admin_level=4` separates them,
+and ordering by it walks the hierarchy from the top down.
 
 ### Adding a country
 
