@@ -3,7 +3,7 @@
 from itertools import chain
 
 from django.db import migrations
-from tqdm import tqdm
+from ..utils.progress import progress
 
 
 def set_bbox(apps, schema_editor):
@@ -15,12 +15,12 @@ def set_bbox(apps, schema_editor):
 
         if model_name in border_model_names:
             count = Model.objects.exclude(border=None).count()
-            for obj in tqdm(Model.objects.exclude(border=None).iterator(), desc=model_name, leave=False, total=count):
+            for obj in progress(Model.objects.exclude(border=None).iterator(), desc=model_name, leave=False, total=count):
                 obj.bbox = list(obj.border.extent)
                 obj.save(update_fields=['bbox'])
         else:
             count = Model.objects.exclude(lines=None).count()
-            for obj in tqdm(Model.objects.exclude(lines=None).iterator(), desc=model_name, leave=False, total=count):
+            for obj in progress(Model.objects.exclude(lines=None).iterator(), desc=model_name, leave=False, total=count):
                 obj.bbox = list(obj.lines.extent)
                 obj.save(update_fields=['bbox'])
 

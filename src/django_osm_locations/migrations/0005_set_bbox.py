@@ -3,7 +3,7 @@
 from itertools import chain
 
 from django.db import migrations
-from tqdm import tqdm
+from ..utils.progress import progress
 
 
 def get_bbox_from_center(center):
@@ -23,7 +23,7 @@ def set_bbox(apps, schema_editor):
         Model = apps.get_model("locations", model_name)
 
         count = Model.objects.filter(border=None).count()
-        for obj in tqdm(Model.objects.filter(border=None).iterator(), desc=model_name, leave=False, total=count):
+        for obj in progress(Model.objects.filter(border=None).iterator(), desc=model_name, leave=False, total=count):
             obj.bbox = get_bbox_from_center(obj.center)
             obj.save(update_fields=['bbox'])
 

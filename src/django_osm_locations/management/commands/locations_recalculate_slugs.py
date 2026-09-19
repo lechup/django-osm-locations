@@ -2,7 +2,7 @@ from django.contrib.gis.db.models.functions import Distance
 from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.db.models import Count, F, Func, Q
-from tqdm import tqdm
+from ...utils.progress import progress
 
 from .. import Country, CountrySubarea, Place, PlaceSubarea, Street
 from ...utils.slugify import slugify
@@ -159,7 +159,7 @@ class Command(BaseCommand):
         if not duplicated:
             return
 
-        for base_slug in tqdm(duplicated, desc=model_class.__name__, leave=False):
+        for base_slug in progress(duplicated, desc=model_class.__name__, leave=False):
             objects = list(
                 model_class.objects.filter(slug=base_slug).order_by(*cls._rank(model_class))
             )

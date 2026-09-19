@@ -8,8 +8,9 @@ database, and only then moves the alias across.
 """
 from datetime import datetime, timezone
 
-from tqdm import tqdm
+from django.conf import settings
 
+from ..utils.progress import progress
 from .client import get_client, get_index_prefix
 from .indexes import INDEXES
 
@@ -40,13 +41,18 @@ class Reindexer:
         reindexer.promote()    # point the alias at it
     """
 
-    def __init__(self, index, client=None, prefix=None, suffix=None, batch_size=500):
+    def __init__(self, index, client=None, prefix=None, suffix=None, batch_size=500,
+                 show_progress=None):
         self.index = index
         self.client = client or get_client()
         self.prefix = prefix or get_index_prefix()
         self.suffix = suffix or new_index_suffix()
         self.batch_size = batch_size
         self.indexed = 0
+        # None leaves it to terminal detection, matching the importer
+        if show_progress is None:
+            show_progress = getattr(settings, 'LOCATIONS_SHOW_PROGRESS', None)
+        self.show_progress = show_progress
 
     @property
     def alias(self):
@@ -85,14 +91,12 @@ class Reindexer:
         Indexing a country is hundreds of thousands of documents and several
         minutes; the bar goes to stderr so piping stdout still works.
         """
-        rows = tqdm(
+        rows = progress(
             self.index.queryset().iterator(chunk_size=self.batch_size),
             total=total,
             desc=self.index.name,
             unit='doc',
-            unit_scale=True,
-            leave=False,
-            dynamic_ncols=True,
+            show=self.show_progress,
         )
         for obj in rows:
             yield {

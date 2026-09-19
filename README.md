@@ -227,6 +227,29 @@ python manage.py locations_reindex --tolerance 10     # allow a small shortfall
 python manage.py locations_index_cleanup --keep 1     # drop older indexes
 ```
 
+## Progress output
+
+Long phases — reading a `.pbf`, importing, reindexing — draw a progress bar on
+stderr, so the command's stdout stays pipeable and carries only the phase
+summary.
+
+Bars are drawn **only when stderr is a terminal**. Redirected to a log file or
+run from cron they are silent, because a bar is a stream of carriage returns:
+unreadable in a file, and in cron it is stderr output from a job that had
+nothing to say, which is how a nightly import starts sending mail.
+
+To override the detection:
+
+```bash
+python manage.py locations_import poland --no-progress   # never draw
+python manage.py locations_import poland -v 0            # same
+```
+
+```python
+LOCATIONS_SHOW_PROGRESS = True    # draw even when redirected
+LOCATIONS_SHOW_PROGRESS = False   # never draw
+```
+
 ## Slugs
 
 Slugs are public — places are served as subdomains — so duplicates are resolved
@@ -348,6 +371,7 @@ of the index.
 | `LOCATIONS_DISK_CACHE` | `False` | Shorthand for a disk-backed location index |
 | `LOCATIONS_RESERVED_SUBDOMAINS` | `www`, `api`, `admin`, … | Subdomains never treated as a place slug |
 | `LOCATIONS_WRITE_BATCH_SIZE` | `1000` | Rows per bulk insert/update during import |
+| `LOCATIONS_SHOW_PROGRESS` | auto | Force progress bars on or off |
 | `LOCATIONS_OPENSEARCH_HOSTS` | `['http://localhost:9200']` | Where OpenSearch lives |
 | `LOCATIONS_OPENSEARCH_INDEX_PREFIX` | `locations` | Prefix for every index and alias |
 | `LOCATIONS_OPENSEARCH_CLIENT_KWARGS` | `{}` | Extra client args: auth, TLS, timeouts |

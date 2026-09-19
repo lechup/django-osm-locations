@@ -55,6 +55,13 @@ class Command(BaseCommand):
             help='Make merge only, do not run import. We do import and merge by default. See --import-only.'
         )
         parser.add_argument(
+            '--no-progress',
+            action='store_true',
+            help='Never draw progress bars. They are drawn only on an '
+                 'interactive terminal anyway, so this is for forcing them off '
+                 'when one is attached.',
+        )
+        parser.add_argument(
             'country',
             nargs='+'
         )
@@ -148,12 +155,23 @@ class Command(BaseCommand):
                 )
                 importer_class = getattr(importer_module, self._get_class_name(osm_repository_country))
                 country_slug = self.osm_repository_country_to_slug_mapping[osm_repository_country]
-                importer = importer_class(country_slug, self._get_osm_file_path(osm_repository_country))
+                importer = importer_class(
+                    country_slug,
+                    self._get_osm_file_path(osm_repository_country),
+                    show_progress=self.show_progress(options),
+                )
 
                 if (not options['merge_only'] and not options['import_only']) or options['import_only']:
                     importer.do_import()
                 if (not options['merge_only'] and not options['import_only']) or options['merge_only']:
                     importer.do_merge()
+
+    @staticmethod
+    def show_progress(options):
+        """False when asked to be quiet, otherwise leave it to detection."""
+        if options.get('no_progress') or not options.get('verbosity', 1):
+            return False
+        return None
 
     @staticmethod
     def _get_class_name(country):

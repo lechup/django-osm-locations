@@ -50,8 +50,9 @@ class TestProgressBars:
         assert 'total=len(self.nodes)' in text
 
     def test_reindex_reports_progress(self):
-        assert 'tqdm' in source(indexer)
-        assert "unit='doc'" in source(indexer)
+        text = source(indexer)
+        assert 'progress(' in text
+        assert "unit='doc'" in text
 
     def test_progress_helper_leaves_stdout_alone(self):
         """

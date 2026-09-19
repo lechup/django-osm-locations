@@ -2,7 +2,7 @@ from django.contrib.gis.db.models.functions import Distance
 from django.core.management.base import BaseCommand
 from django.db import transaction, connection
 from django.utils.text import slugify
-from tqdm import tqdm
+from ...utils.progress import progress
 
 from .. import Country, CountrySubarea, Place, PlaceSubarea, Street
 
@@ -88,9 +88,9 @@ class Command(BaseCommand):
         """
         objects = model_class_to_update.objects.exclude(border=None).only('name', 'slug', 'border').iterator()
         objects_count = model_class_to_update.objects.exclude(border=None).count()
-        for obj in tqdm(objects, total=objects_count, desc=model_class_to_update.__name__):
+        for obj in progress(objects, total=objects_count, desc=model_class_to_update.__name__):
             model_name = model_class_to_update.__name__
-            denormalized_model_classes = tqdm(
+            denormalized_model_classes = progress(
                 cls.DENORMALIZED_MODEL_CLASSES_TO_UPDATE_DICT[model_name],
                 leave=False,
                 desc=slugify(
@@ -141,7 +141,7 @@ class Command(BaseCommand):
     @transaction.atomic
     def update_street_place_field(cls):
         streets = Street.objects.filter(place__len=0).only('place', 'center')
-        for street in tqdm(
+        for street in progress(
             streets.iterator(),
             total=streets.count(),
             desc="Updating Streets not belonging to Places"

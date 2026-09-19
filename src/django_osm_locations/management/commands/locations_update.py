@@ -53,6 +53,11 @@ class Command(BaseCommand):
                  'An extract far behind is caught up over several runs.',
         )
         parser.add_argument(
+            '--no-progress',
+            action='store_true',
+            help='Never draw progress bars.',
+        )
+        parser.add_argument(
             '--no-recalculate',
             action='store_true',
             help='Skip recalculating slugs, ancestry and derived geometry.',
@@ -133,7 +138,7 @@ class Command(BaseCommand):
             os.replace(outfile, path)
             self.stdout.write('  extract now at sequence {}'.format(sequence))
 
-            self._reimport(country, path)
+            self._reimport(country, path, show_progress=ImportCommand.show_progress(options))
             updated.append(country)
 
         if not updated or options['dry_run']:
@@ -147,7 +152,7 @@ class Command(BaseCommand):
             self.stdout.write('Rebuilding the search index ...')
             call_command('locations_reindex')
 
-    def _reimport(self, country, path):
+    def _reimport(self, country, path, show_progress=None):
         """
         Run the country's importer over the updated extract.
 
@@ -163,6 +168,6 @@ class Command(BaseCommand):
         )
         importer_class = getattr(module, ImportCommand._get_class_name(country))
         slug = ImportCommand.osm_repository_country_to_slug_mapping[country]
-        importer = importer_class(slug, path)
+        importer = importer_class(slug, path, show_progress=show_progress)
         importer.do_import()
         importer.do_merge()

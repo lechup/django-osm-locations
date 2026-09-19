@@ -1,6 +1,6 @@
 from django.contrib.gis.geos import MultiPolygon
 from django.db.models import Q
-from tqdm import tqdm
+from ....utils.progress import progress
 
 from .base import BaseImporter
 from .. import CountrySubarea, Place
@@ -12,7 +12,7 @@ class PolandImporter(BaseImporter):
         # miasto Warszawa / gmina miejska Warszawa / miasto stołeczne Warszawa
         country_subareas = self.country.subareas.exclude(border=None).iterator()
         country_subarea_count = self.country.subareas.exclude(border=None).count()
-        for country_subarea in tqdm(
+        for country_subarea in progress(
                 country_subareas, total=country_subarea_count, desc='Doing merge of CountrySubareas...', leave=False):
             self._merge_country_subareas(country_subarea)
         # do usual stuff

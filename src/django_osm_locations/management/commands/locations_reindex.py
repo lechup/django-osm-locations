@@ -36,18 +36,37 @@ class Command(BaseCommand):
                  'row count before the swap is refused. Default 0.',
         )
         parser.add_argument(
+            '--no-progress',
+            action='store_true',
+            help='Never draw progress bars. They are drawn only on an '
+                 'interactive terminal anyway, so this is for forcing them off '
+                 'when one is attached.',
+        )
+        parser.add_argument(
             '--batch-size',
             type=int,
             default=500,
             help='Documents per bulk request. Default 500.',
         )
 
+    @staticmethod
+    def _show_progress(options):
+        """False when asked to be quiet, otherwise leave it to detection."""
+        if options.get('no_progress') or not options.get('verbosity', 1):
+            return False
+        return None
+
     def handle(self, *args, **options):
         # one suffix for the whole run, so a rebuild is identifiable as a set
         suffix = new_index_suffix()
         selected = options['types'] or None
         try:
-            targets = reindexers(selected, suffix=suffix, batch_size=options['batch_size'])
+            targets = reindexers(
+                selected,
+                suffix=suffix,
+                batch_size=options['batch_size'],
+                show_progress=self._show_progress(options),
+            )
         except ValueError as exc:
             raise CommandError(str(exc))
 

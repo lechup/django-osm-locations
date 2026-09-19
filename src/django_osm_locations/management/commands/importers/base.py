@@ -12,6 +12,7 @@ from django.db.models import Count, Min
 from tqdm import tqdm
 
 from .. import Country, CountrySubarea, Place, PlaceSubarea, Street, MergeMultiline, array_agg_ordered
+from ....utils.progress import progress, show_progress_default  # noqa: F401
 
 
 # pyosmium and shapely are only needed to parse a .pbf extract. Import them
@@ -56,26 +57,6 @@ def _location_storage():
         return 'sparse_file_array'
     return 'flex_mem'
 
-
-
-def progress(iterable=None, total=None, desc=None, unit='obj'):
-    """
-    A progress bar for the long phases of an import.
-
-    Writes to stderr, so piping the command's output somewhere keeps working.
-    Phases whose size is not known in advance -- reading a .pbf, where the
-    object count is not in the header -- still get a counter and a rate, which
-    is the difference between "it is working" and "it has hung".
-    """
-    return tqdm(
-        iterable,
-        total=total,
-        desc=desc,
-        unit=unit,
-        unit_scale=True,
-        leave=False,
-        dynamic_ncols=True,
-    )
 
 
 class CoordinateView:
@@ -196,11 +177,13 @@ class BaseImporter(object):
     location_models_not_mergable = []
     location_models = location_models_mergable + location_models_not_mergable
 
-    def __init__(self, country_slug, file_path, verbose=0):
+    def __init__(self, country_slug, file_path, verbose=0, show_progress=None):
         self.country = Country.objects.get(slug=country_slug)
 
         self.file_path = file_path
         self.verbose = verbose
+        # None leaves it to terminal detection; a command with -v 0 passes False
+        self.show_progress = show_progress
 
         # Relations and ways we keep are a small subset of the extract, so plain
         # dicts are fine. Node coordinates are *not* kept here at all: libosmium
@@ -279,7 +262,7 @@ class BaseImporter(object):
         # streets (one street can be saved as more than one line in OSM)
         places = self.country.places.not_merged().exclude(border=None).iterator()
         places_count = self.country.places.not_merged().exclude(border=None).count()
-        for place in tqdm(places, total=places_count,
+        for place in progress(places, total=places_count,
                 desc='Doing merge of Places...', leave=False):
             self._merge_place_subareas(place)
             self._merge_place_streets(place)
@@ -334,6 +317,10 @@ class BaseImporter(object):
         # bbox_polygon, the whole merge phase silently matched nothing.
         country.save(update_fields=['border', 'bbox', 'center', 'area'])
 
+    def _progress(self, iterable=None, total=None, desc=None, unit='obj'):
+        return progress(iterable, total=total, desc=desc, unit=unit,
+                        show=self.show_progress)
+
     def _upsert(self, model, lookup_field, lookup_value, defaults):
         self.writers[(model, lookup_field)].add(lookup_value, defaults)
 
@@ -380,7 +367,7 @@ class BaseImporter(object):
             osmium.FileProcessor(self.file_path, osmium.osm.RELATION)
             .with_filter(osmium.filter.EmptyTagFilter())
         )
-        for relation in progress(processor, desc='relations', unit='rel'):
+        for relation in self._progress(processor, desc='relations', unit='rel'):
             members = [
                 (member.ref, member.type, member.role)
                 for member in relation.members
@@ -417,7 +404,7 @@ class BaseImporter(object):
             .with_locations(_location_storage())
             .with_filter(osmium.filter.EntityFilter(osmium.osm.WAY))
         )
-        for way in progress(processor, desc='ways', unit='way'):
+        for way in self._progress(processor, desc='ways', unit='way'):
             self._keep_way(way)
 
         end = datetime.now()
@@ -439,7 +426,7 @@ class BaseImporter(object):
             osmium.FileProcessor(self.file_path, osmium.osm.NODE)
             .with_filter(osmium.filter.EmptyTagFilter())
         )
-        for node in progress(processor, desc='nodes', unit='node'):
+        for node in self._progress(processor, desc='nodes', unit='node'):
             self._keep_node(node)
 
         missing = [
@@ -450,7 +437,7 @@ class BaseImporter(object):
                 osmium.FileProcessor(self.file_path, osmium.osm.NODE)
                 .with_filter(osmium.filter.IdFilter(missing))
             )
-            for node in progress(by_id, total=len(missing), desc='centre nodes', unit='node'):
+            for node in self._progress(by_id, total=len(missing), desc='centre nodes', unit='node'):
                 self._keep_node(node, force=True)
 
         end = datetime.now()
@@ -664,22 +651,22 @@ class BaseImporter(object):
         return None
 
     def _import_relations(self):
-        items = progress(self.relations.items(), total=len(self.relations),
-                         desc='relations', unit='rel')
+        items = self._progress(self.relations.items(), total=len(self.relations),
+                               desc='relations', unit='rel')
         for osm_id, (tags, members) in items:
             self._import_relation(osm_id, tags, members)
 
     def _import_ways(self):
-        items = progress(self.ways.items(), total=len(self.ways),
-                         desc='ways', unit='way')
+        items = self._progress(self.ways.items(), total=len(self.ways),
+                               desc='ways', unit='way')
         for osm_id, (tags, coords) in items:
             self._import_way(osm_id, tags, CoordinateView(coords))
 
     def _import_nodes(self):
         # Only nodes that carry tags can become a Place; the rest were kept
         # solely to position relation centres.
-        items = progress(self.nodes.items(), total=len(self.nodes),
-                         desc='nodes', unit='node')
+        items = self._progress(self.nodes.items(), total=len(self.nodes),
+                               desc='nodes', unit='node')
         for osm_id, (tags, coords) in items:
             if tags:
                 self._import_node(osm_id, tags, coords)
@@ -712,7 +699,7 @@ class BaseImporter(object):
 
     @classmethod
     def _merge_place_subareas(cls, place):
-        duplicated_subarea_names = tqdm(
+        duplicated_subarea_names = progress(
             cls._get_duplicated_placesubarea_names(place),
             desc='Doing merge of PlaceSubareas for {}...'.format(place),
             leave=False
@@ -748,7 +735,7 @@ class BaseImporter(object):
 
     @classmethod
     def _merge_place_streets(cls, place):
-        streets_to_merge = tqdm(
+        streets_to_merge = progress(
             list(cls._get_duplicated_street_tuples(place)),
             desc='Doing merge of Streets for {}...'.format(place),
             leave=False
@@ -778,7 +765,7 @@ class BaseImporter(object):
         # number of groups and materialising them all just to show a progress
         # bar held the whole result set in memory alongside the caches.
         duplicated_places = cls._get_duplicated_place_tuples()
-        places_to_merge = tqdm(
+        places_to_merge = progress(
             duplicated_places.iterator(),
             total=duplicated_places.count(),
             desc='Doing merge of Places...',

@@ -1,5 +1,3 @@
-from tqdm import tqdm
-
 from .base import BaseImporter
 from .. import Place
 
