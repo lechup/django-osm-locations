@@ -14,11 +14,19 @@ class Command(BaseCommand):
         'poland': 'europe/',
         'germany': 'europe/',
         'isle-of-man': 'europe/',
+        'denmark': 'europe/',
+        'finland': 'europe/',
+        'norway': 'europe/',
+        'netherlands': 'europe/',
     }
     osm_repository_country_to_slug_mapping = {
         'poland': 'polska',
         'germany': 'deutschland',
         'isle-of-man': 'isle-of-man',
+        'denmark': 'danmark',
+        'finland': 'suomi',
+        'norway': 'norge',
+        'netherlands': 'nederland',
     }
     osm_repository_url = '%s%%(country_path)s%%(file_name)s' % (osm_repository,)
 

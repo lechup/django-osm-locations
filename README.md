@@ -352,10 +352,41 @@ if it is not already present, imports relations, ways and nodes, then merges
 duplicates. Use `--import-only` / `--merge-only` to run one half, and `--update`
 to re-download.
 
-Adding a country means adding an importer in
-`django_osm_locations/management/commands/importers/` that subclasses
-`BaseImporter` and overrides the `_is_relation_place`-style predicates for that
-country's `admin_level` conventions — see `poland.py` and `germany.py`.
+### Supported countries
+
+| Country | Divisions | Places | Below a place |
+|---|---|---|---|
+| Poland | 4, 6, 7 | 8 | 9, 10, 11 |
+| Germany | 4–7 | 8 | 9, 10 |
+| Denmark | 4 regions | 7 kommuner | 9, 10 |
+| Norway | 4 fylker | 7 kommuner | 9 bydeler |
+| Finland | 4 maakunnat, 7 seutukunnat | 8 kunnat | 9, 10, 11 |
+| Netherlands | 4 provincies | 8 gemeenten | 9, 10 |
+| Isle of Man | 6 sheadings | 8 parishes | — |
+
+Those numbers are `admin_level` values, and they differ by country: a
+municipality is level 7 in Denmark and Norway but level 8 in Finland and the
+Netherlands. Each was read from that country's own extract rather than from the
+wiki.
+
+Adding another means adding an importer in
+`django_osm_locations/management/commands/importers/`. For most countries that
+is a subclass of `AdminLevelImporter` declaring three tuples of levels — see
+`denmark.py`. Countries with quirks get their own class: Germany has to read
+`de:place` to tell a city from a region, and Poland merges a city with the
+county of the same name.
+
+### Extracts contain their neighbours
+
+A Geofabrik extract is a rectangle, so Denmark's holds German Kreise and
+Swedish kommuner, and Norway's reaches into Finland and Russia. The importer
+finds the country's own `admin_level=2` relation — matched on its ISO code,
+since names in an extract are local and often multilingual — and rejects
+anything whose centre falls outside it. The country border is taken from that
+relation too.
+
+If the extract has no usable level-2 relation, nothing is filtered and
+everything in the file is imported, which is the behaviour this replaced.
 
 ### Management commands
 

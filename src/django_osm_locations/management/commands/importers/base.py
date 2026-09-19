@@ -172,7 +172,8 @@ class BatchUpserter:
 
 
 class BaseImporter(object):
-    whitelist_tags = ['name', 'admin_level', 'boundary', 'place', 'highway', 'population']
+    whitelist_tags = ['name', 'admin_level', 'boundary', 'place', 'highway', 'population',
+                      'ISO3166-1', 'ISO3166-1:alpha2']
     location_models_mergable = [CountrySubarea, Place, PlaceSubarea, Street]
     location_models_not_mergable = []
     location_models = location_models_mergable + location_models_not_mergable
@@ -196,6 +197,14 @@ class BaseImporter(object):
         # ids referenced by relations we kept, so pass two knows what to retain
         self.needed_way_ids = set()
         self.needed_node_ids = set()
+
+        # An extract is a rectangle, not a country: Denmark's reaches into
+        # Germany and Sweden, Norway's into Finland and Russia. The country's
+        # own admin_level=2 relation is in there too, so it is used to reject
+        # everything that is not actually in the country.
+        self.country_boundary_members = None
+        self.country_boundary = None      # prepared, for membership tests
+        self.country_border = None        # the geometry itself
 
         # Writes are buffered: one update_or_create per object dominated import
         # time. Keyed by the OSM id field each import path looks up on.
@@ -271,11 +280,22 @@ class BaseImporter(object):
         """
         Rebuild the border of the country this importer was constructed for.
 
+        The extract's own admin_level=2 relation is used when it was found,
+        which is both more accurate and safe in a database holding several
+        countries. Unioning the subareas, the older approach, took every
+        CountrySubarea in the database regardless of which country it belonged
+        to -- with Poland and Denmark both imported that gave Denmark a border
+        stretching to the Bug.
+
         Instance method so that ``do_import`` can call it as
         ``self.do_update_country_border()`` and country importers can override
-        it (see ``PolandImporter``). Use ``update_country_border`` when you only
-        have a slug and no importer instance.
+        it (see ``PolandImporter``).
         """
+        if self.country_border is not None:
+            self.country.border = self._merge_multipolygon(self.country_border)
+            self.country.save(update_fields=['border', 'bbox', 'center', 'area'])
+            print("Border of %s taken from the extract.\n" % self.country)
+            return
         self._rebuild_country_border(self.country)
 
     @classmethod
@@ -347,6 +367,7 @@ class BaseImporter(object):
 
         self._parse_relations()
         self._parse_ways()
+        self._build_country_boundary()
         self._parse_nodes()
 
         end = datetime.now()
@@ -373,6 +394,11 @@ class BaseImporter(object):
                 for member in relation.members
             ]
             tags = self._tags_to_dict(relation)
+            if self._is_country_boundary(tags):
+                self.country_boundary_members = members
+                for ref, kind, _role in members:
+                    if kind == 'w':
+                        self.needed_way_ids.add(ref)
             if not self._is_relation_to_cache(relation.id, tags, members):
                 continue
             self.relations[relation.id] = (tags, members)
@@ -446,6 +472,57 @@ class BaseImporter(object):
 
     # tag keys that can make an untagged-by-relation way interesting on its own
     way_keys_of_interest = ('highway', 'place')
+
+    def _is_country_boundary(self, tags):
+        """
+        Whether this relation is the border of the country being imported.
+
+        Matched on the ISO code rather than the name, because the name in the
+        extract is the local one and can carry several languages at once --
+        "Suomi / Finland", "België / Belgique / Belgien".
+        """
+        if tags.get('admin_level') != '2':
+            return False
+        code = tags.get('ISO3166-1') or tags.get('ISO3166-1:alpha2')
+        return bool(code) and code.upper() == (self.country.iso2 or '').upper()
+
+    def _build_country_boundary(self):
+        """
+        Turn the captured relation into a polygon to test membership against.
+
+        Prepared, because this is asked once per imported object and a plain
+        contains() over a country outline with tens of thousands of points is
+        far too slow for that.
+        """
+        if not self.country_boundary_members:
+            print("No admin_level=2 relation for %s in this extract; "
+                  "importing everything it contains.\n" % self.country)
+            return
+        multiline = self._get_multiline_from_members(self.country_boundary_members)
+        border = self._get_multipolygon_from_multiline(multiline)
+        if border is None:
+            print("Could not assemble a border for %s; "
+                  "importing everything this extract contains.\n" % self.country)
+            return
+        self.country_border = border
+        self.country_boundary = border.prepared
+        print("Country boundary assembled for %s.\n" % self.country)
+
+    def _within_country(self, geometry):
+        """
+        Whether a location belongs to the country being imported.
+
+        Anything is accepted when no boundary could be established, so a missing
+        or broken level-2 relation degrades to the old behaviour rather than
+        importing nothing at all.
+        """
+        if self.country_boundary is None or geometry is None:
+            return True
+        try:
+            point = geometry if geometry.geom_type == 'Point' else geometry.point_on_surface
+        except Exception:
+            return True
+        return self.country_boundary.contains(point)
 
     def _keep_way(self, way):
         needed = way.id in self.needed_way_ids
@@ -815,6 +892,8 @@ class BaseImporter(object):
         if self._is_relation_countrysubarea(osm_id, tags, members) and self._are_all_members_cached(members):
             multiline = self._get_multiline_from_members(members)
             border = self._get_multipolygon_from_multiline(multiline)
+            if border and not self._within_country(border):
+                return
             if border:
                 countrysubarea_defaults = {
                     'name': tags.get('name'),
@@ -839,6 +918,8 @@ class BaseImporter(object):
         if self._is_relation_place(osm_id, tags, members) and self._are_all_members_cached(members):
             multiline = self._get_multiline_from_members(members)
             border = self._get_multipolygon_from_multiline(multiline)
+            if border and not self._within_country(border):
+                return
             if border:
                 population = tags.get('population', None)
                 center_node_id = self._get_center_node_id_from_members(members)
@@ -869,6 +950,8 @@ class BaseImporter(object):
         if self._is_way_place(osm_id, tags, coords):
             multiline = self._get_multiline_from_coords(coords)
             border = self._get_multipolygon_from_multiline(multiline)
+            if border and not self._within_country(border):
+                return
             if border:
                 self._upsert(Place, 'way_osm_id', osm_id, {
                     'name': tags.get('name'),
@@ -885,6 +968,8 @@ class BaseImporter(object):
 
     def _import_place_from_node(self, osm_id, tags, coords):
         if osm_id not in self.already_imported_places_node_ids and self._is_node_place(osm_id, tags, coords):
+            if not self._within_country(Point(coords)):
+                return
             self._upsert(Place, 'node_osm_id', osm_id, {
                 'name': tags.get('name'),
                 'center': Point(coords),
@@ -895,6 +980,8 @@ class BaseImporter(object):
         if self._is_relation_placesubarea(osm_id, tags, members) and self._are_all_members_cached(members):
             multiline = self._get_multiline_from_members(members)
             border = self._get_multipolygon_from_multiline(multiline)
+            if border and not self._within_country(border):
+                return
             if border:
                 placesubarea_defaults = {
                     'name': tags.get('name'),
@@ -917,16 +1004,22 @@ class BaseImporter(object):
 
     def _import_street_from_relation(self, osm_id, tags, members):
         if self._is_relation_street(osm_id, tags, members) and self._are_all_members_cached(members):
+            lines = self._get_merged_multiline_from_members(members)
+            if not self._within_country(lines):
+                return
             self._upsert(Street, 'relation_osm_id', osm_id, {
                 'name': tags.get('name'),
-                'lines': self._get_merged_multiline_from_members(members),
+                'lines': lines,
             })
 
     def _import_street_from_way(self, osm_id, tags, coords):
         if self._is_way_street(osm_id, tags, coords):
+            lines = self._get_multiline_from_coords(coords)
+            if not self._within_country(lines):
+                return
             self._upsert(Street, 'way_osm_id', osm_id, {
                 'name': tags.get('name'),
-                'lines': self._get_multiline_from_coords(coords),
+                'lines': lines,
             })
 
     def _import_relation(self, osm_id, tags, members):
