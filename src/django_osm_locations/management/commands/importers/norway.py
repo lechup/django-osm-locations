@@ -13,6 +13,11 @@ class NorwayImporter(AdminLevelImporter):
     them here), which is why only city/town/village/hamlet are imported.
     """
 
+    geofabrik_name = 'norway'
+    country_name = 'Norge'
+    country_slug = 'norge'
+    iso2, iso3, un = 'NO', 'NOR', 578
+
     countrysubarea_levels = ('4',)
     place_levels = ('7',)
     placesubarea_levels = ('9',)

@@ -20,6 +20,11 @@ class IsleOfManImporter(BaseImporter):
     from nothing and stay empty.
     """
 
+    geofabrik_name = 'isle-of-man'
+    country_name = 'Isle of Man'
+    country_slug = 'isle-of-man'
+    iso2, iso3, un = 'IM', 'IMN', 833
+
     @classmethod
     def _is_relation_countrysubarea(cls, osm_id, tags, members):
         return (

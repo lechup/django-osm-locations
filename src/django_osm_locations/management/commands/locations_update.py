@@ -1,9 +1,9 @@
-import importlib
 import os
 
 from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError
 
+from .importers import get_importer
 from .locations_import import Command as ImportCommand
 
 
@@ -162,12 +162,9 @@ class Command(BaseCommand):
         duplicates.
         """
         self.stdout.write('  importing {} ...'.format(os.path.basename(path)))
-        module = importlib.import_module(
-            ImportCommand._get_module_name(country),
-            ImportCommand._get_package_name(),
+        importer_class = get_importer(country)
+        importer = importer_class(
+            importer_class.country_slug, path, show_progress=show_progress,
         )
-        importer_class = getattr(module, ImportCommand._get_class_name(country))
-        slug = ImportCommand.osm_repository_country_to_slug_mapping[country]
-        importer = importer_class(slug, path, show_progress=show_progress)
         importer.do_import()
         importer.do_merge()

@@ -1,33 +1,15 @@
-import importlib
 import os
 
 from django.core.management.base import BaseCommand, CommandError
 
 from .. import Country
 from ...conf import get_data_dir
+from .importers import get_importer, known_countries
 
 
 class Command(BaseCommand):
     osm_repository = 'http://download.geofabrik.de/'
     osm_repository_file_name = '%(country)s-latest.osm.pbf'
-    osm_repository_country_to_geofabric_path_mapping = {
-        'poland': 'europe/',
-        'germany': 'europe/',
-        'isle-of-man': 'europe/',
-        'denmark': 'europe/',
-        'finland': 'europe/',
-        'norway': 'europe/',
-        'netherlands': 'europe/',
-    }
-    osm_repository_country_to_slug_mapping = {
-        'poland': 'polska',
-        'germany': 'deutschland',
-        'isle-of-man': 'isle-of-man',
-        'denmark': 'danmark',
-        'finland': 'suomi',
-        'norway': 'norge',
-        'netherlands': 'nederland',
-    }
     osm_repository_url = '%s%%(country_path)s%%(file_name)s' % (osm_repository,)
 
     help = "Way of importing locations data. We are looking for files in locations/data/ directory. " \
@@ -91,7 +73,7 @@ class Command(BaseCommand):
 
     def _get_osm_url(self, country):
         return self.osm_repository_url % {
-            'country_path': self.osm_repository_country_to_geofabric_path_mapping[country],
+            'country_path': get_importer(country).geofabrik_path,
             'file_name': self._get_osm_file_name(country)
         }
 
@@ -121,9 +103,7 @@ class Command(BaseCommand):
 
     @classmethod
     def is_country_defined(cls, country):
-        is_country_gofabric_mapping = country in cls.osm_repository_country_to_geofabric_path_mapping
-        is_country_slug_mapping = country in cls.osm_repository_country_to_slug_mapping
-        return is_country_gofabric_mapping and is_country_slug_mapping
+        return get_importer(country) is not None
 
     def handle(self, *args, **options):
         self.osm_repository = options['repo']
@@ -143,25 +123,17 @@ class Command(BaseCommand):
             if unknown:
                 raise CommandError(
                     "Unknown country: {}. Known countries: {}".format(
-                        ', '.join(unknown),
-                        ', '.join(sorted(self.osm_repository_country_to_slug_mapping)),
+                        ', '.join(unknown), ', '.join(known_countries()),
                     )
                 )
 
-            # Check the Country rows exist before downloading anything, since an
-            # extract can be gigabytes and the failure would otherwise arrive
-            # after it, as a bare DoesNotExist.
-            missing = [
-                name for name in countries
-                if not Country.objects.filter(
-                    slug=self.osm_repository_country_to_slug_mapping[name]
-                ).exists()
-            ]
-            if missing:
-                raise CommandError(
-                    "No Country row for: {}. They are created by migration "
-                    "0031/0032, so run: manage.py migrate".format(', '.join(missing))
-                )
+            # Make sure the country exists before downloading anything: an
+            # extract can be gigabytes, and finding out afterwards through a
+            # bare DoesNotExist is an expensive way to be told. The row comes
+            # from what the importer declares, so a new country needs no
+            # migration.
+            for name in countries:
+                self.ensure_country(get_importer(name))
 
             for osm_repository_country in countries:
                 is_osm_file_downloaded = os.path.exists(
@@ -172,15 +144,9 @@ class Command(BaseCommand):
                 if not is_osm_file_downloaded or options['update']:
                     self._download_osm_file(osm_repository_country)
 
-                # dynamic import of specific country importer
-                importer_module = importlib.import_module(
-                    self._get_module_name(osm_repository_country),
-                    self._get_package_name()
-                )
-                importer_class = getattr(importer_module, self._get_class_name(osm_repository_country))
-                country_slug = self.osm_repository_country_to_slug_mapping[osm_repository_country]
+                importer_class = get_importer(osm_repository_country)
                 importer = importer_class(
-                    country_slug,
+                    importer_class.country_slug,
                     self._get_osm_file_path(osm_repository_country),
                     show_progress=self.show_progress(options),
                 )
@@ -191,21 +157,26 @@ class Command(BaseCommand):
                     importer.do_merge()
 
     @staticmethod
+    def ensure_country(importer_class):
+        """
+        Create the Country row from what the importer declares about itself.
+
+        Matched on the uniqueness constraint, so a row seeded by a migration or
+        loaded from the fixture is reused rather than duplicated.
+        """
+        Country.objects.get_or_create(
+            iso2=importer_class.iso2,
+            iso3=importer_class.iso3,
+            un=importer_class.un,
+            defaults={
+                'name': importer_class.country_name,
+                'slug': importer_class.country_slug,
+            },
+        )
+
+    @staticmethod
     def show_progress(options):
         """False when asked to be quiet, otherwise leave it to detection."""
         if options.get('no_progress') or not options.get('verbosity', 1):
             return False
         return None
-
-    @staticmethod
-    def _get_class_name(country):
-        return ''.join([x.title() for x in country.split('-')]) + 'Importer'
-
-    @staticmethod
-    def _get_module_name(country):
-        return '.importers.%s' % country.replace('-', '_')
-
-    @staticmethod
-    def _get_package_name():
-        package_path = __name__.split('.')
-        return '.'.join(package_path[:-1])

@@ -13,6 +13,11 @@ class NetherlandsImporter(AdminLevelImporter):
     van Delfland and the rest -- which are administrative but not places.
     """
 
+    geofabrik_name = 'netherlands'
+    country_name = 'Nederland'
+    country_slug = 'nederland'
+    iso2, iso3, un = 'NL', 'NLD', 528
+
     countrysubarea_levels = ('4',)
     place_levels = ('8',)
     placesubarea_levels = ('9', '10')

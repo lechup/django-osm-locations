@@ -30,10 +30,11 @@ class TestSeededRows:
         locations_import looks these up by slug, so every country in its slug
         mapping has to exist.
         """
-        from django_osm_locations.management.commands.locations_import import Command
+        from django_osm_locations.management.commands.importers import registry
 
-        for slug in Command.osm_repository_country_to_slug_mapping.values():
-            assert Country.objects.filter(slug=slug).exists(), slug
+        for importer in registry().values():
+            assert Country.objects.filter(slug=importer.country_slug).exists(), \
+                importer.country_slug
 
     @pytest.mark.parametrize('slug,iso2,iso3,un', [
         ('polska', 'PL', 'POL', 616),

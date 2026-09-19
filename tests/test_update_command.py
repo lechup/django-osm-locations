@@ -193,18 +193,60 @@ class TestImportRefusals:
             assert known in message
 
     def test_one_bad_name_stops_the_whole_run(self, db):
-        """Rather than importing the good ones and quietly skipping the rest."""
+        """
+        Rather than importing the good ones and quietly skipping the rest.
+        Checked before anything is downloaded, so naming a real country
+        alongside a bad one costs nothing.
+        """
         with pytest.raises(CommandError):
             call_command('locations_import', 'poland', 'atlantis')
 
-    def test_a_missing_country_row_is_reported_before_downloading(self, db):
-        """
-        An extract can be gigabytes; finding out afterwards that the Country row
-        is absent, via a bare DoesNotExist, is an expensive way to be told.
-        """
+
+class TestCountryRows:
+    """
+    The Country row is created from what the importer declares, which is why
+    adding a country needs no migration.
+    """
+
+    def test_a_missing_row_is_created_rather_than_failing(self, db):
+        from django_osm_locations.management.commands.importers import get_importer
+        from django_osm_locations.management.commands.locations_import import Command
         from django_osm_locations.models import Country
 
         Country.objects.filter(slug='polska').delete()
-        with pytest.raises(CommandError) as exc:
-            call_command('locations_import', 'poland')
-        assert 'migrate' in str(exc.value)
+        Command.ensure_country(get_importer('poland'))
+
+        poland = Country.objects.get(slug='polska')
+        assert (poland.name, poland.iso2, poland.iso3, poland.un) == ('Polska', 'PL', 'POL', 616)
+
+    def test_an_existing_row_is_left_alone(self, db):
+        """It may already carry an imported border."""
+        from django.contrib.gis.geos import MultiPolygon
+
+        from django_osm_locations.management.commands.importers import get_importer
+        from django_osm_locations.management.commands.locations_import import Command
+        from django_osm_locations.models import Country
+
+        from .conftest import square
+
+        poland = Country.objects.get(slug='polska')
+        poland.name = 'Renamed'
+        poland.border = MultiPolygon(square(0, 0, 5))
+        poland.save()
+
+        Command.ensure_country(get_importer('poland'))
+
+        poland.refresh_from_db()
+        assert poland.name == 'Renamed'
+        assert poland.border is not None
+        assert Country.objects.filter(slug='polska').count() == 1
+
+    def test_a_country_with_no_row_yet_gets_one(self, db):
+        """A newly added importer needs no migration to become usable."""
+        from django_osm_locations.management.commands.importers import get_importer
+        from django_osm_locations.management.commands.locations_import import Command
+        from django_osm_locations.models import Country
+
+        Country.objects.filter(slug='nederland').delete()
+        Command.ensure_country(get_importer('netherlands'))
+        assert Country.objects.filter(slug='nederland').exists()

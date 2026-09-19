@@ -133,3 +133,51 @@ class TestSharedBase:
     def test_the_base_matches_nothing_on_its_own(self):
         """Levels are empty until a country declares them."""
         assert AdminLevelImporter._is_relation_place(1, admin('8'), []) is False
+
+
+class TestRegistry:
+    """
+    Adding a country is one file. The class says which extract it reads and
+    which country it is, and everything else follows from that -- no download
+    table, no slug table, no migration.
+    """
+
+    def test_every_country_is_discovered(self):
+        from django_osm_locations.management.commands.importers import known_countries
+
+        assert known_countries() == [
+            'denmark', 'finland', 'germany', 'isle-of-man',
+            'netherlands', 'norway', 'poland',
+        ]
+
+    def test_shared_machinery_is_not_mistaken_for_a_country(self):
+        from django_osm_locations.management.commands.importers import registry
+
+        assert 'base' not in registry()
+        assert 'nordic' not in registry()
+
+    def test_every_importer_declares_what_it_needs(self):
+        from django_osm_locations.management.commands.importers import registry
+
+        for name, importer in registry().items():
+            for attribute in ('country_name', 'country_slug', 'iso2', 'iso3', 'un'):
+                assert getattr(importer, attribute), '{} has no {}'.format(name, attribute)
+
+    def test_identifiers_are_unique(self):
+        from django_osm_locations.management.commands.importers import registry
+
+        importers = list(registry().values())
+        for attribute in ('country_slug', 'iso2', 'iso3', 'un'):
+            values = [getattr(i, attribute) for i in importers]
+            assert len(values) == len(set(values)), attribute
+
+    def test_the_download_url_comes_from_the_class(self):
+        from django_osm_locations.management.commands.locations_import import Command
+
+        url = Command()._get_osm_url('denmark')
+        assert url.endswith('europe/denmark-latest.osm.pbf')
+
+    def test_an_unknown_name_is_simply_absent(self):
+        from django_osm_locations.management.commands.importers import get_importer
+
+        assert get_importer('atlantis') is None

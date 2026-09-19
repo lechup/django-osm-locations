@@ -3,6 +3,11 @@ from .. import Place
 
 
 class GermanyImporter(BaseImporter):
+
+    geofabrik_name = 'germany'
+    country_name = 'Deutschland'
+    country_slug = 'deutschland'
+    iso2, iso3, un = 'DE', 'DEU', 276
     whitelist_tags = BaseImporter.whitelist_tags + ['de:place']
 
     @classmethod

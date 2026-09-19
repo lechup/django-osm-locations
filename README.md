@@ -369,12 +369,37 @@ municipality is level 7 in Denmark and Norway but level 8 in Finland and the
 Netherlands. Each was read from that country's own extract rather than from the
 wiki.
 
-Adding another means adding an importer in
-`django_osm_locations/management/commands/importers/`. For most countries that
-is a subclass of `AdminLevelImporter` declaring three tuples of levels — see
-`denmark.py`. Countries with quirks get their own class: Germany has to read
-`de:place` to tell a city from a region, and Poland merges a city with the
-county of the same name.
+### Adding a country
+
+One file in `django_osm_locations/management/commands/importers/`, and nothing
+else — no download table, no slug table, no migration, no Makefile edit:
+
+```python
+from .nordic import AdminLevelImporter
+
+
+class SwedenImporter(AdminLevelImporter):
+    geofabrik_name = 'sweden'          # the name in the URL, and on the command line
+    country_name = 'Sverige'
+    country_slug = 'sverige'
+    iso2, iso3, un = 'SE', 'SWE', 752
+
+    countrysubarea_levels = ('4',)     # län
+    place_levels = ('7',)              # kommuner
+    placesubarea_levels = ('9', '10')
+```
+
+`make import sweden` then works: the importer is discovered by walking the
+package, the download URL comes from `geofabrik_name` and `geofabrik_path`, and
+the `Country` row is created from the rest on first import.
+
+Countries with quirks get their own class instead of subclassing
+`AdminLevelImporter`: Germany has to read `de:place` to tell a city from a
+region, and Poland merges a city with the county of the same name.
+
+Read the levels from the country's own extract rather than the wiki. The survey
+that produced the table above is a dozen lines of pyosmium over the relations,
+and the conventions genuinely differ between neighbours.
 
 ### Extracts contain their neighbours
 

@@ -7,6 +7,11 @@ from .. import CountrySubarea, Place
 
 
 class PolandImporter(BaseImporter):
+
+    geofabrik_name = 'poland'
+    country_name = 'Polska'
+    country_slug = 'polska'
+    iso2, iso3, un = 'PL', 'POL', 616
     def do_merge(self):
         # remove duplicates from country subareas
         # miasto Warszawa / gmina miejska Warszawa / miasto stołeczne Warszawa

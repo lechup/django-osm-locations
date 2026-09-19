@@ -15,6 +15,11 @@ class DenmarkImporter(AdminLevelImporter):
     out.
     """
 
+    geofabrik_name = 'denmark'
+    country_name = 'Danmark'
+    country_slug = 'danmark'
+    iso2, iso3, un = 'DK', 'DNK', 208
+
     countrysubarea_levels = ('4',)
     place_levels = ('7',)
     placesubarea_levels = ('9', '10')

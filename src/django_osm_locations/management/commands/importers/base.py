@@ -172,6 +172,21 @@ class BatchUpserter:
 
 
 class BaseImporter(object):
+    #: How this country identifies itself. Declaring it here rather than in a
+    #: table somewhere else is what makes adding a country a one-file job: the
+    #: registry finds the class, the download path and the Country row both
+    #: come from these, and nothing else has to be edited.
+    #:
+    #: ``geofabrik_name`` is the stem Geofabrik uses in the download URL, and
+    #: doubles as the name typed on the command line.
+    geofabrik_name = None
+    geofabrik_path = 'europe/'
+    country_name = None
+    country_slug = None
+    iso2 = None
+    iso3 = None
+    un = None
+
     whitelist_tags = ['name', 'admin_level', 'boundary', 'place', 'highway', 'population',
                       'ISO3166-1', 'ISO3166-1:alpha2']
     location_models_mergable = [CountrySubarea, Place, PlaceSubarea, Street]
