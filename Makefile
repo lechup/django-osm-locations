@@ -8,6 +8,24 @@
 PYTHON      ?= python
 COUNTRY     ?= poland
 PBF         ?=
+
+# `make import poland norway` reads better than COUNTRY="poland norway", but
+# make treats bare words as goals to build, not as arguments. So when the first
+# goal is one of the country commands, everything after it is taken as its
+# argument list and given an empty rule so make stops looking for targets by
+# those names.
+#
+# Scoped to these targets on purpose: doing it for every goal would break
+# ordinary invocations like `make clean build`, where "build" is a real target
+# and not an argument.
+COUNTRY_TARGETS := import update merge process
+ifneq ($(filter $(firstword $(MAKECMDGOALS)),$(COUNTRY_TARGETS)),)
+  COUNTRY_ARGS := $(filter-out $(firstword $(MAKECMDGOALS)),$(MAKECMDGOALS))
+  ifneq ($(COUNTRY_ARGS),)
+    COUNTRY := $(COUNTRY_ARGS)
+    $(eval $(COUNTRY_ARGS):;@:)
+  endif
+endif
 TEST_COMPOSE  := docker compose -f docker-compose.test.yml
 LOCAL_COMPOSE := docker compose -f docker-compose.local.yml
 LOCAL_ENV     := DJANGO_SETTINGS_MODULE=local.settings
@@ -70,13 +88,13 @@ local-reset:  ## Stop the persistent stack and DELETE its data
 migrate: local-up  ## Apply migrations to the persistent database
 	$(LOCAL_ENV) $(PYTHON) -m django migrate
 
-import: local-up  ## Import an extract (COUNTRY=poland)
+import: local-up  ## Import extracts: make import poland norway
 	$(LOCAL_ENV) $(PYTHON) -m django locations_import $(COUNTRY)
 
-update: local-up  ## Fetch OSM diffs and reimport (COUNTRY=poland)
+update: local-up  ## Fetch OSM diffs and reimport: make update poland
 	$(LOCAL_ENV) $(PYTHON) -m django locations_update $(COUNTRY)
 
-merge: local-up  ## Merge duplicates only (COUNTRY=poland)
+merge: local-up  ## Merge duplicates only: make merge poland
 	$(LOCAL_ENV) $(PYTHON) -m django locations_import --merge-only $(COUNTRY)
 
 recalculate: local-up  ## Recompute slugs, ancestry, areas and lengths
@@ -91,7 +109,7 @@ index-status: local-up  ## Compare database counts with the live index
 index-cleanup: local-up  ## Drop superseded indexes
 	$(LOCAL_ENV) $(PYTHON) -m django locations_index_cleanup
 
-process: migrate import recalculate reindex  ## Full pipeline for COUNTRY
+process: migrate import recalculate reindex  ## Full pipeline: make process poland
 	@echo "$(COUNTRY): imported, recalculated and indexed"
 
 ## development

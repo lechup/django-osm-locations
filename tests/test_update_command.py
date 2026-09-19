@@ -170,3 +170,41 @@ class TestUpdate:
     def test_no_recalculate_flag(self, extract, replication, chained):
         run('isle-of-man', '--no-recalculate')
         assert self.names(chained) == ['locations_reindex']
+
+
+class TestImportRefusals:
+    """
+    locations_import used to print a line and exit 0 for an unknown country, so
+    a typo reported success having done nothing -- easy to miss in a Makefile or
+    a CI step, and easier still now that countries are positional arguments.
+    """
+
+    def test_unknown_country_is_an_error(self, db):
+        out = io.StringIO()
+        with pytest.raises(CommandError) as exc:
+            call_command('locations_import', 'norwya', stdout=out)
+        assert 'norwya' in str(exc.value)
+
+    def test_the_error_lists_what_is_available(self, db):
+        with pytest.raises(CommandError) as exc:
+            call_command('locations_import', 'atlantis')
+        message = str(exc.value)
+        for known in ('poland', 'denmark', 'norway', 'finland', 'netherlands'):
+            assert known in message
+
+    def test_one_bad_name_stops_the_whole_run(self, db):
+        """Rather than importing the good ones and quietly skipping the rest."""
+        with pytest.raises(CommandError):
+            call_command('locations_import', 'poland', 'atlantis')
+
+    def test_a_missing_country_row_is_reported_before_downloading(self, db):
+        """
+        An extract can be gigabytes; finding out afterwards that the Country row
+        is absent, via a bare DoesNotExist, is an expensive way to be told.
+        """
+        from django_osm_locations.models import Country
+
+        Country.objects.filter(slug='polska').delete()
+        with pytest.raises(CommandError) as exc:
+            call_command('locations_import', 'poland')
+        assert 'migrate' in str(exc.value)

@@ -1,9 +1,9 @@
 import importlib
-
 import os
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 
+from .. import Country
 from ...conf import get_data_dir
 
 
@@ -134,14 +134,36 @@ class Command(BaseCommand):
             if options['merge_only'] and options['import_only']:
                 exit("Set one option: --merge-only or --import-only, or remove both. By default we do import + merge.")
 
-            # for each country from arguments ...
-            for osm_repository_country in options['country']:
-                osm_repository_country = osm_repository_country.lower()
-                # check if we have mapping for it
-                if not self.is_country_defined(osm_repository_country):
-                    print("'%s' is not known country - skipping import..." % osm_repository_country)
-                    continue
+            countries = [name.lower() for name in options['country']]
 
+            # Refuse the whole run rather than skipping quietly: a typo used to
+            # print a line and exit 0, so `make import norwya` reported success
+            # having done nothing.
+            unknown = [name for name in countries if not self.is_country_defined(name)]
+            if unknown:
+                raise CommandError(
+                    "Unknown country: {}. Known countries: {}".format(
+                        ', '.join(unknown),
+                        ', '.join(sorted(self.osm_repository_country_to_slug_mapping)),
+                    )
+                )
+
+            # Check the Country rows exist before downloading anything, since an
+            # extract can be gigabytes and the failure would otherwise arrive
+            # after it, as a bare DoesNotExist.
+            missing = [
+                name for name in countries
+                if not Country.objects.filter(
+                    slug=self.osm_repository_country_to_slug_mapping[name]
+                ).exists()
+            ]
+            if missing:
+                raise CommandError(
+                    "No Country row for: {}. They are created by migration "
+                    "0031/0032, so run: manage.py migrate".format(', '.join(missing))
+                )
+
+            for osm_repository_country in countries:
                 is_osm_file_downloaded = os.path.exists(
                     self._get_osm_file_path(osm_repository_country)
                 )

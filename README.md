@@ -457,7 +457,8 @@ wiped every run, the local one is persistent and tuned for bulk imports:
 
 ```bash
 make local-up                      # persistent PostGIS + OpenSearch
-make process COUNTRY=poland        # migrate, import, recalculate, reindex
+make process poland                # migrate, import, recalculate, reindex
+make import denmark norway         # several at once
 make index-status                  # database counts against the live index
 make demo                          # the Leaflet page on :8000
 make local-down                    # stop, keeping the data
