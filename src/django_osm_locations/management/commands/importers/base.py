@@ -707,7 +707,12 @@ class BaseImporter(object):
         for duplicated_subarea_name in duplicated_subarea_names:
             with transaction.atomic():
                 duplicated_subareas = place.subareas.filter(name=duplicated_subarea_name).order_by('id').iterator()
-                merge_base = duplicated_subareas.next()
+                # next(it), not it.next(): the Python 2 spelling survived here
+                # because no extract in the test set had duplicate place
+                # subareas to merge
+                merge_base = next(duplicated_subareas, None)
+                if merge_base is None:
+                    continue
                 for duplicated_subarea in duplicated_subareas:
                     merge_base.border += duplicated_subarea.border
                     duplicated_subarea.mark_as_merged()

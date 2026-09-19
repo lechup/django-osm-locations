@@ -3,6 +3,8 @@ Translating request parameters into OpenSearch queries.
 
 Kept apart from the views so the query shape can be tested without a server.
 """
+from django.conf import settings
+
 from ..search.indexes import INDEXES
 
 MAX_PAGE_SIZE = 200
@@ -154,6 +156,74 @@ SIZE_SORT = [
 ]
 
 
+# How much each type is worth relative to the others on an equal text match.
+# Without this, searching "warszawa" over a country's worth of data returns the
+# three districts named Warszawa before the city of 1.8 million people, because
+# nothing in a text score knows that a place matters more than a subdivision of
+# one. Override with LOCATIONS_TYPE_BOOSTS.
+DEFAULT_TYPE_BOOSTS = {
+    'countries': 8.0,
+    # A place outranks the administrative area sharing its name: Poland has a
+    # city of Gdańsk and a county of Gdańsk, and someone typing "gdansk" means
+    # the city.
+    'places': 5.0,
+    'country-subareas': 4.0,
+    'place-subareas': 2.0,
+    'streets': 1.0,
+}
+
+
+def type_boosts():
+    configured = getattr(settings, 'LOCATIONS_TYPE_BOOSTS', None)
+    return dict(configured) if configured else dict(DEFAULT_TYPE_BOOSTS)
+
+
+def apply_scoring(query):
+    """
+    Scale each hit's score by what kind of location it is, and by its size.
+
+    Both are multiplicative rather than additive: an additive boost competes
+    with the text score and its effect depends on how well the text matched,
+    while a weight multiplies whatever the text scored, so the ordering between
+    types holds for a strong match and a weak one alike.
+
+    The size factor is what separates hits that match the text equally well. A
+    prefix search for "krak" matches Kraków, Krakowiany and Krakuszowice
+    identically -- nothing in the text says which one anybody meant -- so the
+    city of 800,000 should come first. Population is sparse in OSM, hence the
+    fallback to area, and both are damped by a logarithm so that size nudges
+    the order rather than dictating it.
+    """
+    functions = [
+        {'filter': {'term': {'type': name}}, 'weight': weight}
+        for name, weight in sorted(type_boosts().items())
+    ]
+    functions.append({
+        'field_value_factor': {
+            'field': 'population',
+            'modifier': 'log2p',
+            'factor': 1.0,
+            'missing': 0,
+        }
+    })
+    functions.append({
+        'field_value_factor': {
+            'field': 'area',
+            'modifier': 'log2p',
+            'factor': 1.0,
+            'missing': 0,
+        }
+    })
+    return {
+        'function_score': {
+            'query': query,
+            'functions': functions,
+            'score_mode': 'multiply',
+            'boost_mode': 'multiply',
+        }
+    }
+
+
 def build_sort(order, has_query):
     """
     ``?order=`` -> a sort clause.
@@ -176,14 +246,20 @@ def build_body(params):
     page, page_size = parse_page(params.get('page'), params.get('page_size'))
     include_geometry = str(params.get('geometry', '')).lower() in ('1', 'true', 'yes')
 
+    query = build_query(
+        q=q,
+        within=params.get('within'),
+        bbox=params.get('bbox'),
+        near=params.get('near'),
+        radius=params.get('radius'),
+    )
+    if q:
+        # only meaningful when something is being scored; without a query the
+        # results are sorted by size anyway
+        query = apply_scoring(query)
+
     body = {
-        'query': build_query(
-            q=q,
-            within=params.get('within'),
-            bbox=params.get('bbox'),
-            near=params.get('near'),
-            radius=params.get('radius'),
-        ),
+        'query': query,
         'sort': build_sort(params.get('order'), bool(q)),
         'from': (page - 1) * page_size,
         'size': page_size,

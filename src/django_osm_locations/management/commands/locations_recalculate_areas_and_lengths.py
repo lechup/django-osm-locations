@@ -1,4 +1,4 @@
-from django.contrib.gis.db.models import MultiLineStringField
+from django.contrib.gis.db.models import MultiLineStringField, MultiPolygonField
 from django.contrib.gis.db.models.functions import Area, Length, PointOnSurface
 from django.core.management.base import BaseCommand
 from django.db import transaction
@@ -13,8 +13,20 @@ class Command(BaseCommand):
 
     @classmethod
     def set_area(cls, model_class):
+        """
+        Area in square kilometres.
+
+        ``Area()`` over a plain geometry column returns the SRID's own units --
+        square degrees for 4326 -- so dividing by a million produced a number
+        that meant nothing: Warszawa came out as 6.8e-08 rather than 517 km².
+        Casting to geography first makes PostGIS compute real square metres,
+        which is what the division was always for. ``set_length`` below has
+        always done the same cast.
+        """
         model_class.objects.exclude(border=None).annotate(
-            gis_area=Area('border')
+            border_as_geography=Cast('border', MultiPolygonField(geography=True)),
+        ).annotate(
+            gis_area=Area('border_as_geography')
         ).update(area=F('gis_area') / 1000000)
         model_class.objects.filter(border=None).update(area=0)
 

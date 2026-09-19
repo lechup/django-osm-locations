@@ -161,6 +161,22 @@ lists by default because a country border per hit is a lot of JSON.
 Prefix matching is done with an edge n-gram analyser at index time, with
 `asciifolding`, so `munch` and `münch` both find *München*.
 
+### Relevance
+
+A text score alone does not know what kind of thing it matched or how big it
+is, which on a country's worth of data puts the three districts named Warszawa
+above the city of 1.8 million, and ties Kraków with the village of
+Krakuszowice. Two multiplicative factors fix that:
+
+- **type** — a place outranks a subdivision of one, and outranks the county
+  sharing its name (Poland has both a city and a county called Gdańsk).
+  Override with `LOCATIONS_TYPE_BOOSTS`.
+- **size** — population where OSM provides it, area otherwise, both damped by a
+  logarithm so size nudges the order rather than dictating it.
+
+Both apply only when there is a `q`; without one, results are sorted by size
+anyway.
+
 ## Updating to newer OSM data
 
 One command does the whole cycle:
@@ -372,6 +388,7 @@ of the index.
 | `LOCATIONS_RESERVED_SUBDOMAINS` | `www`, `api`, `admin`, … | Subdomains never treated as a place slug |
 | `LOCATIONS_WRITE_BATCH_SIZE` | `1000` | Rows per bulk insert/update during import |
 | `LOCATIONS_SHOW_PROGRESS` | auto | Force progress bars on or off |
+| `LOCATIONS_TYPE_BOOSTS` | places > subareas > streets | Relative search weight per location type |
 | `LOCATIONS_OPENSEARCH_HOSTS` | `['http://localhost:9200']` | Where OpenSearch lives |
 | `LOCATIONS_OPENSEARCH_INDEX_PREFIX` | `locations` | Prefix for every index and alias |
 | `LOCATIONS_OPENSEARCH_CLIENT_KWARGS` | `{}` | Extra client args: auth, TLS, timeouts |

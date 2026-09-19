@@ -170,9 +170,29 @@ class LocationBorderBase(LocationBase):
         if self.border and not self.center:
             self.center = self.border.point_on_surface
 
+    #: Equal-area projection used to measure borders. Whatever is stored must
+    #: agree with locations_recalculate_areas_and_lengths, which asks PostGIS
+    #: for square metres and divides them down.
+    AREA_SRID = 6933
+
     def _presave_area(self, *args, **kwargs):
+        """
+        Area in square kilometres.
+
+        ``border.area`` is in the SRID's units -- square degrees for 4326 --
+        which is neither a usable figure nor what the recalculate command
+        writes, so it is projected first.
+        """
         if self.border and not self.area:
-            self.area = self.border.area
+            projected = self.border.clone()
+            try:
+                projected.transform(self.AREA_SRID)
+            except Exception:
+                # no GDAL, or a geometry it will not project: leave it to
+                # locations_recalculate_areas_and_lengths
+                self.area = 0
+            else:
+                self.area = projected.area / 1_000_000
 
     def _presave_bbox(self, *args, **kwargs):
         # use border to count bounding_box

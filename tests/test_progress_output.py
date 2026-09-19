@@ -69,3 +69,24 @@ class TestProgressBars:
     def test_progress_handles_an_unknown_total(self):
         """Reading a .pbf has no count in the header, so there is no total."""
         assert list(importer_base.progress(iter('abc'))) == ['a', 'b', 'c']
+
+
+class TestNoPython2Leftovers:
+    """
+    Two Python 2 idioms have already reached production here: itertools.count
+    .next() in the cache backends, and generator .next() in the place-subarea
+    merge. Both survived because no extract in the test set exercised them.
+    """
+
+    def test_no_dot_next_calls(self):
+        import pathlib
+
+        import django_osm_locations
+
+        root = pathlib.Path(django_osm_locations.__file__).parent
+        offenders = []
+        for path in root.rglob('*.py'):
+            for number, line in enumerate(path.read_text(encoding='utf-8').splitlines(), 1):
+                if '.next()' in line and not line.strip().startswith('#'):
+                    offenders.append('{}:{}'.format(path.relative_to(root), number))
+        assert not offenders, 'Python 2 iterator protocol: {}'.format(offenders)
