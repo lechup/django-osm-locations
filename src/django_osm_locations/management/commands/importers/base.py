@@ -58,6 +58,26 @@ def _location_storage():
 
 
 
+def progress(iterable=None, total=None, desc=None, unit='obj'):
+    """
+    A progress bar for the long phases of an import.
+
+    Writes to stderr, so piping the command's output somewhere keeps working.
+    Phases whose size is not known in advance -- reading a .pbf, where the
+    object count is not in the header -- still get a counter and a rate, which
+    is the difference between "it is working" and "it has hung".
+    """
+    return tqdm(
+        iterable,
+        total=total,
+        desc=desc,
+        unit=unit,
+        unit_scale=True,
+        leave=False,
+        dynamic_ncols=True,
+    )
+
+
 class CoordinateView:
     """
     A read-only ``(lon, lat)`` sequence over a flat ``array('d')``.
@@ -360,7 +380,7 @@ class BaseImporter(object):
             osmium.FileProcessor(self.file_path, osmium.osm.RELATION)
             .with_filter(osmium.filter.EmptyTagFilter())
         )
-        for relation in processor:
+        for relation in progress(processor, desc='relations', unit='rel'):
             members = [
                 (member.ref, member.type, member.role)
                 for member in relation.members
@@ -397,7 +417,7 @@ class BaseImporter(object):
             .with_locations(_location_storage())
             .with_filter(osmium.filter.EntityFilter(osmium.osm.WAY))
         )
-        for way in processor:
+        for way in progress(processor, desc='ways', unit='way'):
             self._keep_way(way)
 
         end = datetime.now()
@@ -419,7 +439,7 @@ class BaseImporter(object):
             osmium.FileProcessor(self.file_path, osmium.osm.NODE)
             .with_filter(osmium.filter.EmptyTagFilter())
         )
-        for node in processor:
+        for node in progress(processor, desc='nodes', unit='node'):
             self._keep_node(node)
 
         missing = [
@@ -430,7 +450,7 @@ class BaseImporter(object):
                 osmium.FileProcessor(self.file_path, osmium.osm.NODE)
                 .with_filter(osmium.filter.IdFilter(missing))
             )
-            for node in by_id:
+            for node in progress(by_id, total=len(missing), desc='centre nodes', unit='node'):
                 self._keep_node(node, force=True)
 
         end = datetime.now()
@@ -644,17 +664,23 @@ class BaseImporter(object):
         return None
 
     def _import_relations(self):
-        for osm_id, (tags, members) in self.relations.items():
+        items = progress(self.relations.items(), total=len(self.relations),
+                         desc='relations', unit='rel')
+        for osm_id, (tags, members) in items:
             self._import_relation(osm_id, tags, members)
 
     def _import_ways(self):
-        for osm_id, (tags, coords) in self.ways.items():
+        items = progress(self.ways.items(), total=len(self.ways),
+                         desc='ways', unit='way')
+        for osm_id, (tags, coords) in items:
             self._import_way(osm_id, tags, CoordinateView(coords))
 
     def _import_nodes(self):
         # Only nodes that carry tags can become a Place; the rest were kept
         # solely to position relation centres.
-        for osm_id, (tags, coords) in self.nodes.items():
+        items = progress(self.nodes.items(), total=len(self.nodes),
+                         desc='nodes', unit='node')
+        for osm_id, (tags, coords) in items:
             if tags:
                 self._import_node(osm_id, tags, coords)
 
@@ -695,7 +721,6 @@ class BaseImporter(object):
             with transaction.atomic():
                 duplicated_subareas = place.subareas.filter(name=duplicated_subarea_name).order_by('id').iterator()
                 merge_base = duplicated_subareas.next()
-                tqdm.write('{}, PlaceSubarea {} is duplicated - merging!' .format(place, duplicated_subarea_name))
                 for duplicated_subarea in duplicated_subareas:
                     merge_base.border += duplicated_subarea.border
                     duplicated_subarea.mark_as_merged()
@@ -729,7 +754,6 @@ class BaseImporter(object):
             leave=False
         )
         for name, id_min, ids_array, merged_lines in streets_to_merge:
-            tqdm.write('{}, Street {} is duplicated - merging!'.format(place, name))
             ids_array.remove(id_min)
             with transaction.atomic():
                 # mark as merged
@@ -781,10 +805,8 @@ class BaseImporter(object):
                                     duplicated_place = duplicated_places.first()
                                     place.center = duplicated_place.center
                                     place.save(update_fields=['center'])
-                                    tqdm.write('{} merged with {}!'.format(duplicated_place, place))
 
                                 for duplicated_place in duplicated_places:
-                                    tqdm.write('{} merged with {}!'.format(duplicated_place, place))
                                     duplicated_place.mark_as_merged()
                         else:
                             duplicated_places = Place.objects.filter(
@@ -795,7 +817,6 @@ class BaseImporter(object):
                                 is_merged=False
                             )
                             for duplicated_place in duplicated_places:
-                                tqdm.write('{} merged with {}!'.format(duplicated_place, place))
                                 duplicated_place.mark_as_merged()
 
     def _import_countrysubarea_from_relation(self, osm_id, tags, members):
@@ -803,7 +824,6 @@ class BaseImporter(object):
             multiline = self._get_multiline_from_members(members)
             border = self._get_multipolygon_from_multiline(multiline)
             if border:
-                print('CountrySubarea:', tags.get('name'), 'http://openstreetmap.org/relation/{}'.format(osm_id))
                 countrysubarea_defaults = {
                     'name': tags.get('name'),
                     'border': border,
@@ -817,7 +837,7 @@ class BaseImporter(object):
                 self._upsert(CountrySubarea, 'relation_osm_id', osm_id, countrysubarea_defaults)
             else:
                 if multiline:
-                    print(
+                    tqdm.write(
                         "CountrySubarea not valid (doesn't have border but have multiline):",
                         tags.get('name'),
                         'http://openstreetmap.org/relation/{}'.format(osm_id)
@@ -828,7 +848,6 @@ class BaseImporter(object):
             multiline = self._get_multiline_from_members(members)
             border = self._get_multipolygon_from_multiline(multiline)
             if border:
-                print('Place:', tags.get('name'), 'http://openstreetmap.org/relation/{}'.format(osm_id))
                 population = tags.get('population', None)
                 center_node_id = self._get_center_node_id_from_members(members)
                 center_node_coords = None
@@ -848,7 +867,7 @@ class BaseImporter(object):
                 self._upsert(Place, 'relation_osm_id', osm_id, place_defaults)
             else:
                 if multiline:
-                    print(
+                    tqdm.write(
                         "Place not valid (doesn't have border but have multiline):",
                         tags.get('name'),
                         'http://openstreetmap.org/relation/{}'.format(osm_id)
@@ -859,7 +878,6 @@ class BaseImporter(object):
             multiline = self._get_multiline_from_coords(coords)
             border = self._get_multipolygon_from_multiline(multiline)
             if border:
-                print('Place:', tags.get('name'), 'http://openstreetmap.org/way/{}'.format(osm_id))
                 self._upsert(Place, 'way_osm_id', osm_id, {
                     'name': tags.get('name'),
                     'border': border,
@@ -867,7 +885,7 @@ class BaseImporter(object):
                 })
             else:
                 if multiline:
-                    print(
+                    tqdm.write(
                         "Place not valid (doesn't have border but have multiline):",
                         tags.get('name'),
                         'http://openstreetmap.org/way/{}'.format(osm_id)
@@ -875,7 +893,6 @@ class BaseImporter(object):
 
     def _import_place_from_node(self, osm_id, tags, coords):
         if osm_id not in self.already_imported_places_node_ids and self._is_node_place(osm_id, tags, coords):
-            print('Place:', tags.get('name'), 'http://openstreetmap.org/node/{}'.format(osm_id))
             self._upsert(Place, 'node_osm_id', osm_id, {
                 'name': tags.get('name'),
                 'center': Point(coords),
@@ -887,7 +904,6 @@ class BaseImporter(object):
             multiline = self._get_multiline_from_members(members)
             border = self._get_multipolygon_from_multiline(multiline)
             if border:
-                print('PlaceSubarea:', tags.get('name'), 'http://openstreetmap.org/relation/{}'.format(osm_id))
                 placesubarea_defaults = {
                     'name': tags.get('name'),
                     'border': border,
@@ -901,7 +917,7 @@ class BaseImporter(object):
                 self._upsert(PlaceSubarea, 'relation_osm_id', osm_id, placesubarea_defaults)
             else:
                 if multiline:
-                    print(
+                    tqdm.write(
                         "PlaceSubarea not valid (doesn't have border but have multiline):",
                         tags.get('name'),
                         'http://openstreetmap.org/relation/{}'.format(osm_id)
@@ -909,7 +925,6 @@ class BaseImporter(object):
 
     def _import_street_from_relation(self, osm_id, tags, members):
         if self._is_relation_street(osm_id, tags, members) and self._are_all_members_cached(members):
-            print('Street:', tags.get('name'), 'http://openstreetmap.org/relation/{}'.format(osm_id))
             self._upsert(Street, 'relation_osm_id', osm_id, {
                 'name': tags.get('name'),
                 'lines': self._get_merged_multiline_from_members(members),
@@ -917,7 +932,6 @@ class BaseImporter(object):
 
     def _import_street_from_way(self, osm_id, tags, coords):
         if self._is_way_street(osm_id, tags, coords):
-            print('Street:', tags.get('name'), 'http://openstreetmap.org/way/{}'.format(osm_id))
             self._upsert(Street, 'way_osm_id', osm_id, {
                 'name': tags.get('name'),
                 'lines': self._get_multiline_from_coords(coords),

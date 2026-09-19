@@ -8,6 +8,8 @@ database, and only then moves the alias across.
 """
 from datetime import datetime, timezone
 
+from tqdm import tqdm
+
 from .client import get_client, get_index_prefix
 from .indexes import INDEXES
 
@@ -76,19 +78,34 @@ class Reindexer:
         self.client.indices.create(index=self.index_name, body=self.index.body())
         return self.index_name
 
-    def _actions(self):
-        for obj in self.index.queryset().iterator(chunk_size=self.batch_size):
+    def _actions(self, total=None):
+        """
+        Documents to index, with a progress bar.
+
+        Indexing a country is hundreds of thousands of documents and several
+        minutes; the bar goes to stderr so piping stdout still works.
+        """
+        rows = tqdm(
+            self.index.queryset().iterator(chunk_size=self.batch_size),
+            total=total,
+            desc=self.index.name,
+            unit='doc',
+            unit_scale=True,
+            leave=False,
+            dynamic_ncols=True,
+        )
+        for obj in rows:
             yield {
                 '_index': self.index_name,
                 '_id': obj.id,
                 '_source': self.index.document(obj),
             }
 
-    def populate(self):
+    def populate(self, total=None):
         bulk = _load_bulk()
         success, errors = bulk(
             self.client,
-            self._actions(),
+            self._actions(total=total),
             chunk_size=self.batch_size,
             raise_on_error=True,
         )

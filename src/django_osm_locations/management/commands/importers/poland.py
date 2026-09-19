@@ -32,7 +32,6 @@ class PolandImporter(BaseImporter):
     def _merge_country_subareas(cls, country_subarea):
         is_country_subarea_place = Place.objects.filter(border=country_subarea.border).exists()
         if is_country_subarea_place:
-            tqdm.write('{}, is also a Place - merged!'.format(country_subarea))
             country_subarea.mark_as_merged()
 
     @classmethod

@@ -62,7 +62,7 @@ class Command(BaseCommand):
 
             reindexer.create()
             self.stdout.write('  building {}'.format(reindexer.index_name))
-            reindexer.populate()
+            reindexer.populate(total=expected)
 
             actual = reindexer.indexed_count()
             self.stdout.write('  indexed {} of {}'.format(actual, expected))
