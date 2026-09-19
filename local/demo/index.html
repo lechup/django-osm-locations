@@ -6,13 +6,26 @@
 <title>django-osm-locations — demo</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <link rel="stylesheet" href="app.css">
+<script>
+  /* Applied before first paint. Doing this in app.js would show the system
+     palette for a frame before an explicit choice replaced it. */
+  try {
+    var saved = localStorage.getItem('osm-locations-theme');
+    if (saved === 'light' || saved === 'dark') {
+      document.documentElement.setAttribute('data-theme', saved);
+    }
+  } catch (e) { /* private window, blocked site data */ }
+</script>
 </head>
 <body>
 <div id="layout">
   <aside id="panel">
     <header>
-      <h1>osm-locations</h1>
-      <p id="dataset">connecting…</p>
+      <div>
+        <h1>osm-locations</h1>
+        <p id="dataset">connecting…</p>
+      </div>
+      <button id="theme" type="button" title="Theme">◐</button>
     </header>
 
     <div id="controls">

@@ -512,8 +512,13 @@ bounding box, OSM id, and the ancestry it was indexed with.
 Selecting something puts it in the URL, so a view can be linked to directly:
 `#places/krakow`, `#streets/florianska-3989492`.
 
-Basemap tiles come straight from OpenStreetMap, which needs no API key; the CSS
-inverts them so the map matches the panel.
+The page follows the operating system's light or dark setting. The button in
+the corner cycles through follow-system, light and dark and remembers the
+choice; an explicit choice wins over the system in either direction.
+
+Basemap tiles come straight from OpenStreetMap, which needs no API key. In dark
+mode the CSS inverts them so the map matches the panel, which avoids depending
+on a dark basemap that does need one.
 
 ### The end-to-end import test
 

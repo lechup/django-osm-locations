@@ -1,4 +1,41 @@
+/*
+ * Light palette on :root, dark redefined in two places: under the OS
+ * preference (guarded so an explicit light choice still wins) and under an
+ * explicit dark choice. No colour is defined only inside a media query, so
+ * the toggle works in both directions.
+ */
 :root {
+  color-scheme: light;
+  --bg: #f4f6f8;
+  --panel: #ffffff;
+  --line: #dde3ea;
+  --text: #1b2430;
+  --muted: #64748b;
+  --accent: #1d74c4;
+  --accent-dim: #cfe3f7;
+  --accent-text: #0d4b85;
+  --hover: #eef3f8;
+  --tiles: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #11151a;
+    --panel: #171d24;
+    --line: #273140;
+    --text: #dfe6ee;
+    --muted: #8e9cae;
+    --accent: #5fb3f5;
+    --accent-dim: #2f5f85;
+    --accent-text: #ffffff;
+    --hover: #1d2530;
+    --tiles: invert(1) grayscale(.85) brightness(.85) contrast(1.05);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
   --bg: #11151a;
   --panel: #171d24;
   --line: #273140;
@@ -6,7 +43,11 @@
   --muted: #8e9cae;
   --accent: #5fb3f5;
   --accent-dim: #2f5f85;
+  --accent-text: #ffffff;
+  --hover: #1d2530;
+  --tiles: invert(1) grayscale(.85) brightness(.85) contrast(1.05);
 }
+
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 body {
@@ -18,28 +59,41 @@ body {
   width: 380px; flex: 0 0 380px; display: flex; flex-direction: column;
   background: var(--panel); border-right: 1px solid var(--line); overflow: hidden;
 }
-#map { flex: 1; background: #0c1014; }
-/* OSM tiles are light; invert them so the map matches the panel without
-   needing a keyed dark basemap. The overlays are drawn above this filter. */
-#map .leaflet-tile-pane { filter: invert(1) grayscale(.85) brightness(.85) contrast(1.05); }
+#map { flex: 1; background: var(--bg); }
+/* OSM tiles are light; in dark mode they are inverted so the map matches the
+   panel, which avoids depending on a basemap that needs an API key. */
+#map .leaflet-tile-pane { filter: var(--tiles); }
 
-header { padding: 14px 16px 10px; border-bottom: 1px solid var(--line); }
+header {
+  padding: 14px 16px 10px; border-bottom: 1px solid var(--line);
+  display: flex; align-items: flex-start; gap: 10px;
+}
+header div { flex: 1; }
 header h1 { margin: 0; font-size: 15px; letter-spacing: .02em; }
 #dataset { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+
+#theme {
+  flex: 0 0 auto; width: 30px; height: 30px; border-radius: 7px; cursor: pointer;
+  border: 1px solid var(--line); background: transparent; color: var(--muted);
+  font-size: 14px; line-height: 1;
+}
+#theme:hover { color: var(--text); border-color: var(--accent); }
 
 #controls { padding: 12px 16px; border-bottom: 1px solid var(--line); }
 #q {
   width: 100%; padding: 9px 11px; border-radius: 7px;
-  border: 1px solid var(--line); background: #0e1319; color: var(--text); font-size: 14px;
+  border: 1px solid var(--line); background: var(--bg); color: var(--text); font-size: 14px;
 }
-#q:focus { outline: none; border-color: var(--accent-dim); }
+#q:focus { outline: none; border-color: var(--accent); }
 
 #types { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
 .chip {
   font-size: 11px; padding: 3px 9px; border-radius: 999px; cursor: pointer;
   border: 1px solid var(--line); background: transparent; color: var(--muted);
 }
-.chip[aria-pressed="true"] { background: var(--accent-dim); border-color: var(--accent-dim); color: #fff; }
+.chip[aria-pressed="true"] {
+  background: var(--accent-dim); border-color: var(--accent); color: var(--accent-text);
+}
 
 #viewport { display: flex; align-items: center; gap: 6px; margin-top: 9px; font-size: 12px; color: var(--muted); }
 
@@ -50,8 +104,8 @@ header h1 { margin: 0; font-size: 15px; letter-spacing: .02em; }
   padding: 9px 16px; border-bottom: 1px solid var(--line); cursor: pointer;
   display: flex; align-items: baseline; gap: 8px;
 }
-#results li:hover { background: #1d2530; }
-#results li[aria-selected="true"] { background: var(--accent-dim); }
+#results li:hover { background: var(--hover); }
+#results li[aria-selected="true"] { background: var(--accent-dim); color: var(--accent-text); }
 .name { flex: 1; }
 .badge { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
 .score { font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -62,9 +116,14 @@ header h1 { margin: 0; font-size: 15px; letter-spacing: .02em; }
 #detail dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 12px; }
 #detail dt { color: var(--muted); }
 #detail dd { margin: 0; font-variant-numeric: tabular-nums; }
+#detail a { color: var(--accent); }
 #detail .crumbs { margin-top: 10px; font-size: 12px; color: var(--muted); }
 #detail .crumbs span::after { content: " › "; }
 #detail .crumbs span:last-child::after { content: ""; }
 
-.leaflet-container { background: #0c1014; }
+.leaflet-container { background: var(--bg); }
 .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--panel); color: var(--text); }
+.leaflet-bar a { background: var(--panel); color: var(--text); border-color: var(--line); }
+.leaflet-bar a:hover { background: var(--hover); color: var(--text); }
+.leaflet-control-attribution { background: var(--panel); color: var(--muted); }
+.leaflet-control-attribution a { color: var(--accent); }

@@ -30,6 +30,54 @@ L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 19,
 }).addTo(map);
 
+
+/* ----------------------------------------------------------------- theme */
+
+/*
+ * Three states, not two: "auto" follows the operating system and is the
+ * default, and the two explicit choices override it. A two-state toggle would
+ * mean the first click silently opts out of the OS setting for good.
+ */
+const THEMES = ['auto', 'light', 'dark'];
+const THEME_KEY = 'osm-locations-theme';
+const THEME_GLYPH = { auto: '\u25D0', light: '\u2600', dark: '\u263E' };
+const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
+
+function storedTheme() {
+  try {
+    const value = localStorage.getItem(THEME_KEY);
+    return THEMES.includes(value) ? value : 'auto';
+  } catch (error) {
+    return 'auto';   // private windows and blocked site data
+  }
+}
+
+function applyTheme(theme) {
+  if (theme === 'auto') {
+    document.documentElement.removeAttribute('data-theme');
+  } else {
+    document.documentElement.setAttribute('data-theme', theme);
+  }
+  const button = el('theme');
+  if (button) {
+    button.textContent = THEME_GLYPH[theme];
+    const effective = theme === 'auto' ? (darkQuery.matches ? 'dark' : 'light') : theme;
+    button.title = theme === 'auto' ? `Theme: follow system (${effective})` : `Theme: ${theme}`;
+    button.setAttribute('aria-label', button.title);
+  }
+}
+
+function cycleTheme() {
+  const next = THEMES[(THEMES.indexOf(storedTheme()) + 1) % THEMES.length];
+  try { localStorage.setItem(THEME_KEY, next); } catch (error) { /* not essential */ }
+  applyTheme(next);
+}
+
+// while on auto, follow the system if it changes under us
+darkQuery.addEventListener('change', () => {
+  if (storedTheme() === 'auto') applyTheme('auto');
+});
+
 /* ---------------------------------------------------------------- helpers */
 
 function formatNumber(value, digits = 0) {
@@ -236,6 +284,9 @@ async function openFromHash() {
 }
 
 window.addEventListener('hashchange', openFromHash);
+
+applyTheme(storedTheme());
+el('theme').addEventListener('click', cycleTheme);
 
 buildChips();
 announceDataset();
