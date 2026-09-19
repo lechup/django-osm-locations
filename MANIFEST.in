@@ -11,3 +11,5 @@ global-exclude *.py[cod]
 prune local
 exclude docker-compose.local.yml
 exclude docker-compose.test.yml
+exclude Makefile
+prune benchmarks

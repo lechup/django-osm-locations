@@ -411,6 +411,33 @@ the file, because the tag filters run inside libosmium.
 
 ## Development
 
+A `Makefile` wraps the common tasks; `make` on its own lists them.
+
+```bash
+make install            # pip install -e '.[dev]'
+make test               # start the test stack, wait for it, run the suite
+make test-search        # the OpenSearch integration tier
+make test-pbf PBF=...   # the end-to-end import test
+make check              # build the wheel and sdist, then twine check
+```
+
+The two stacks are separate and can run at once — the test one is tmpfs and
+wiped every run, the local one is persistent and tuned for bulk imports:
+
+```bash
+make local-up                      # persistent PostGIS + OpenSearch
+make process COUNTRY=poland        # migrate, import, recalculate, reindex
+make index-status                  # database counts against the live index
+make demo                          # the Leaflet page on :8000
+make local-down                    # stop, keeping the data
+make local-reset                   # stop and DELETE the data
+```
+
+Individual steps are available too: `make import`, `make update`, `make merge`,
+`make recalculate`, `make reindex`, `make index-cleanup`, `make shell`,
+`make dbshell`, `make bench`.
+
+
 The models need PostGIS, so the suite ships a database:
 
 ```bash
