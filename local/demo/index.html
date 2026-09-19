@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>django-osm-locations — demo</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="layout">
+  <aside id="panel">
+    <header>
+      <h1>osm-locations</h1>
+      <p id="dataset">connecting…</p>
+    </header>
+
+    <div id="controls">
+      <input id="q" type="search" placeholder="Search places, streets…" autocomplete="off" autofocus>
+      <div id="types"></div>
+      <label id="viewport">
+        <input type="checkbox" id="use-bbox">
+        restrict to the visible map
+      </label>
+    </div>
+
+    <div id="status"></div>
+    <ul id="results"></ul>
+    <section id="detail" hidden></section>
+  </aside>
+
+  <main id="map"></main>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

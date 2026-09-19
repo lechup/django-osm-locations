@@ -466,6 +466,28 @@ extracts:
 Set `LOCATIONS_DISK_CACHE = True` to spill the node index to disk instead, which
 trades roughly 4 GB of RAM for the same in disk on a Poland-sized extract.
 
+### Looking at the data
+
+`local/demo/` is a small Leaflet page for seeing what is actually in the index.
+Django serves it from the same origin as the API, so there is no CORS to
+configure and no extra container:
+
+```bash
+docker compose -f docker-compose.local.yml up -d
+DJANGO_SETTINGS_MODULE=local.settings python -m django runserver
+```
+
+Then open <http://127.0.0.1:8000/>. Type to search, filter by type, tick
+"restrict to the visible map" to drive the query from the viewport, and click a
+result to draw its geometry and read its attributes — area, population, centre,
+bounding box, OSM id, and the ancestry it was indexed with.
+
+Selecting something puts it in the URL, so a view can be linked to directly:
+`#places/krakow`, `#streets/florianska-3989492`.
+
+Basemap tiles come straight from OpenStreetMap, which needs no API key; the CSS
+inverts them so the map matches the panel.
+
 ### The end-to-end import test
 
 One test parses a real OSM extract and runs the whole pipeline into PostGIS.
