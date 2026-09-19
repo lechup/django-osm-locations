@@ -25,14 +25,26 @@ def seed():
 
 
 class TestSeededRows:
-    def test_the_importers_can_find_every_mapped_country(self):
+    def test_the_originally_seeded_countries_are_present(self):
         """
-        locations_import looks these up by slug, so every country in its slug
-        mapping has to exist.
+        These are the ones migrations 0031 and 0032 create. Countries added
+        since are created on first import from what their importer declares,
+        so a new one does not need a migration and will not be here.
+        """
+        for slug in ('polska', 'deutschland', 'isle-of-man',
+                     'danmark', 'suomi', 'norge', 'nederland'):
+            assert Country.objects.filter(slug=slug).exists(), slug
+
+    def test_every_importer_can_have_its_row_created(self):
+        """
+        What replaced the per-country migration: whatever the registry knows
+        about, locations_import can bring into existence before downloading.
         """
         from django_osm_locations.management.commands.importers import registry
+        from django_osm_locations.management.commands.locations_import import Command
 
         for importer in registry().values():
+            Command.ensure_country(importer)
             assert Country.objects.filter(slug=importer.country_slug).exists(), \
                 importer.country_slug
 

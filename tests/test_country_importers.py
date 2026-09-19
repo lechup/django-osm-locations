@@ -8,9 +8,11 @@ one of these also contains slices of its neighbours.
 import pytest
 
 from django_osm_locations.management.commands.importers.denmark import DenmarkImporter
+from django_osm_locations.management.commands.importers.france import FranceImporter
 from django_osm_locations.management.commands.importers.finland import FinlandImporter
 from django_osm_locations.management.commands.importers.netherlands import NetherlandsImporter
 from django_osm_locations.management.commands.importers.norway import NorwayImporter
+from django_osm_locations.management.commands.importers.united_kingdom import UnitedKingdomImporter
 from django_osm_locations.management.commands.importers.nordic import AdminLevelImporter
 
 ADMIN = {'boundary': 'administrative', 'name': 'Somewhere'}
@@ -30,6 +32,11 @@ class TestLevelsPerCountry:
         (FinlandImporter, ('4', '7'), ('8',), ('9', '10', '11')),
         # Netherlands: 12 provinces, 432 gemeenten, wijken and buurten
         (NetherlandsImporter, ('4',), ('8',), ('9', '10')),
+        # UK: nations, metropolitan counties and counties are all divisions;
+        # districts are 8 except in Northern Ireland, where they are 7
+        (UnitedKingdomImporter, ('4', '5', '6'), ('7', '8'), ('9', '10')),
+        # France: regions and departements, then 35,099 communes
+        (FranceImporter, ('4', '6'), ('8',), ('9', '10', '11')),
     ])
     def test_levels(self, importer, subareas, places, subplaces):
         assert importer.countrysubarea_levels == subareas
@@ -38,6 +45,7 @@ class TestLevelsPerCountry:
 
     @pytest.mark.parametrize('importer', [
         DenmarkImporter, NorwayImporter, FinlandImporter, NetherlandsImporter,
+        UnitedKingdomImporter, FranceImporter,
     ])
     def test_a_level_is_never_two_things_at_once(self, importer):
         levels = (importer.countrysubarea_levels + importer.place_levels
@@ -146,8 +154,8 @@ class TestRegistry:
         from django_osm_locations.management.commands.importers import known_countries
 
         assert known_countries() == [
-            'denmark', 'finland', 'germany', 'isle-of-man',
-            'netherlands', 'norway', 'poland',
+            'denmark', 'finland', 'france', 'germany', 'isle-of-man',
+            'netherlands', 'norway', 'poland', 'united-kingdom',
         ]
 
     def test_shared_machinery_is_not_mistaken_for_a_country(self):
@@ -181,3 +189,50 @@ class TestRegistry:
         from django_osm_locations.management.commands.importers import get_importer
 
         assert get_importer('atlantis') is None
+
+
+class TestUnitedKingdom:
+    """
+    The UK is admin_level 2 with ISO3166-1 GB, while England, Scotland, Wales
+    and Northern Ireland are admin_level 4 with subdivision codes -- countries
+    constitutionally, subdivisions in the data.
+    """
+
+    def test_the_four_nations_are_divisions_not_countries(self):
+        england = admin('4', **{'ISO3166-2': 'GB-ENG'})
+        assert UnitedKingdomImporter._is_relation_countrysubarea(1, england, []) is True
+        assert UnitedKingdomImporter._is_relation_place(1, england, []) is False
+
+    def test_three_tiers_of_division(self):
+        """Nations at 4, metropolitan counties at 5, counties at 6."""
+        for level in ('4', '5', '6'):
+            assert UnitedKingdomImporter._is_relation_countrysubarea(1, admin(level), []) is True
+
+    def test_northern_irish_districts_are_places_too(self):
+        """
+        They sit at 7 while English, Scottish and Welsh districts sit at 8.
+        Leaving 7 out would drop Northern Ireland entirely.
+        """
+        assert UnitedKingdomImporter._is_relation_place(1, admin('7'), []) is True
+        assert UnitedKingdomImporter._is_relation_place(1, admin('8'), []) is True
+
+    def test_civil_parishes_are_below_a_place(self):
+        assert UnitedKingdomImporter._is_relation_placesubarea(1, admin('10'), []) is True
+
+
+class TestFrance:
+    def test_regions_and_departements_are_divisions(self):
+        for level in ('4', '6'):
+            assert FranceImporter._is_relation_countrysubarea(1, admin(level), []) is True
+
+    def test_communes_are_places(self):
+        assert FranceImporter._is_relation_place(1, admin('8'), []) is True
+
+    def test_german_tiers_along_the_rhine_are_left_out(self):
+        """
+        Levels 5 and 7 in the France extract are Regierungsbezirke and
+        Verbandsgemeinden, not anything French.
+        """
+        for level in ('5', '7'):
+            assert FranceImporter._is_relation_countrysubarea(1, admin(level), []) is False
+            assert FranceImporter._is_relation_place(1, admin(level), []) is False

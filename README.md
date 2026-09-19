@@ -364,11 +364,20 @@ to re-download.
 | Finland | 4 maakunnat, 7 seutukunnat | 8 kunnat | 9, 10, 11 |
 | Netherlands | 4 provincies | 8 gemeenten | 9, 10 |
 | Isle of Man | 6 sheadings | 8 parishes | — |
+| United Kingdom | 4 nations, 5 metropolitan counties, 6 counties | 7 NI districts, 8 districts | 9, 10 civil parishes |
+| France | 4 régions, 6 départements | 8 communes | 9, 10, 11 |
 
 Those numbers are `admin_level` values, and they differ by country: a
 municipality is level 7 in Denmark and Norway but level 8 in Finland and the
 Netherlands. Each was read from that country's own extract rather than from the
 wiki.
+
+The United Kingdom is the clearest case for keeping the level. The UK is
+`admin_level` 2 with `ISO3166-1` `GB`, while England, Scotland, Wales and
+Northern Ireland are `admin_level` 4 with subdivision codes `GB-ENG`, `GB-SCT`,
+`GB-WLS` and `GB-NIR` — countries constitutionally, subdivisions in the data.
+They belong in country subareas, and so do Greater London and Herefordshire,
+three tiers below them.
 
 The level is **kept on the row** and indexed, because once several countries
 share a database the model alone stops being enough to say what something is:
