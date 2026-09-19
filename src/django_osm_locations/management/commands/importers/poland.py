@@ -1,37 +1,39 @@
-from django.contrib.gis.geos import MultiPolygon
-from django.db.models import Q
 from ....utils.progress import progress
 
 from .base import BaseImporter
-from .. import CountrySubarea, Place
+from .. import Place
 
 
 class PolandImporter(BaseImporter):
+    """
+    Poland.
+
+    The border used to be assembled here by unioning every country subarea
+    whose name contained "województwo" or "powiat". The base class now takes it
+    from the extract's own admin_level=2 relation, which is both more accurate
+    and does not depend on Polish words, so that override is gone.
+    """
 
     geofabrik_name = 'poland'
     country_name = 'Polska'
     country_slug = 'polska'
     iso2, iso3, un = 'PL', 'POL', 616
-    def do_merge(self):
-        # remove duplicates from country subareas
-        # miasto Warszawa / gmina miejska Warszawa / miasto stołeczne Warszawa
-        country_subareas = self.country.subareas.exclude(border=None).iterator()
-        country_subarea_count = self.country.subareas.exclude(border=None).count()
-        for country_subarea in progress(
-                country_subareas, total=country_subarea_count, desc='Doing merge of CountrySubareas...', leave=False):
-            self._merge_country_subareas(country_subarea)
-        # do usual stuff
-        super().do_merge()
+    def before_merge(self):
+        """
+        Collapse a county that is really just the city inside it.
 
-    def do_update_country_border(self):
-        country_border = MultiPolygon([])
-        countrysubareas = CountrySubarea.objects.filter(
-            Q(name__icontains='województwo ') | Q(name__icontains='powiat ')
-        )
-        for country_subarea in countrysubareas:
-            country_border = self._merge_multipolygon(country_border + country_subarea.border)
-        self.country.border = country_border
-        self.country.save()
+        Warszawa appears as miasto Warszawa, gmina miejska Warszawa and miasto
+        stołeczne Warszawa; where a country subarea has exactly the border of a
+        place, the subarea is the redundant one.
+
+        This used to be an override of do_merge that called super() at the end.
+        It is the same work, at a named point, without the chaining.
+        """
+        subareas = self.country.subareas.exclude(border=None)
+        for country_subarea in progress(
+                subareas.iterator(), total=subareas.count(),
+                desc='Doing merge of CountrySubareas...', leave=False):
+            self._merge_country_subareas(country_subarea)
 
     @classmethod
     def _merge_country_subareas(cls, country_subarea):

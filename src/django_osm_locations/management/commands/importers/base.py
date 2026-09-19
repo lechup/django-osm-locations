@@ -239,12 +239,49 @@ class BaseImporter(object):
         # see: https://www.openstreetmap.org/relation/3267973
         self.already_imported_places_node_ids = set()
 
+    # ------------------------------------------------------------------ hooks
+    #
+    # Country importers differ in more than which admin_level means what. Poland
+    # has to collapse a city and the county sharing its name; the UK's four
+    # constituent countries are level-4 subdivisions that arguably belong
+    # somewhere else entirely. Rather than each such country overriding
+    # do_import or do_merge wholesale and remembering to call super(), they hook
+    # in at a named point.
+    #
+    # All four are no-ops. Override what you need; there is no need to chain.
+
+    def before_import(self):
+        """
+        Run after the extract is parsed, before anything is written.
+
+        Everything parsed is available -- self.relations, self.ways, self.nodes
+        and the country boundary -- so this is where to inspect or adjust what
+        is about to be imported.
+        """
+
+    def after_import(self):
+        """
+        Run once every relation, way and node has been written.
+
+        The rows exist and the country border is set, so this is where to
+        reshape them: promote something, split something, fix a country's own
+        idea of itself.
+        """
+
+    def before_merge(self):
+        """Run at the start of do_merge, before any duplicate is resolved."""
+
+    def after_merge(self):
+        """Run once merging has finished."""
+
     def do_import(self):
         self._parse_and_cache()
 
         # save cache to db
         start_all = datetime.now()
         print("Import started %s.\n" % start_all)
+
+        self.before_import()
 
         start = datetime.now()
         print("Importing Relations %s ..." % start)
@@ -271,6 +308,7 @@ class BaseImporter(object):
         print("Importing Coords and Nodes ended: %s, took: %s!\n" % (end, end - start))
 
         self.do_update_country_border()
+        self.after_import()
 
         end = datetime.now()
         print("Importing ended: %s, took: %s." % (end, end - start_all))
@@ -278,7 +316,12 @@ class BaseImporter(object):
     def do_merge(self):
         """
         Use this method in child class to merge locations (eg. multiple entries of same street or city subarea)
+
+        Country-specific work belongs in before_merge or after_merge rather than
+        in an override of this method.
         """
+        self.before_merge()
+
         # remove duplicates from places
         self._merge_places()
 
@@ -290,6 +333,8 @@ class BaseImporter(object):
                 desc='Doing merge of Places...', leave=False):
             self._merge_place_subareas(place)
             self._merge_place_streets(place)
+
+        self.after_merge()
 
     def do_update_country_border(self):
         """

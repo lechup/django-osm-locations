@@ -413,6 +413,27 @@ Countries with quirks get their own class instead of subclassing
 `AdminLevelImporter`: Germany has to read `de:place` to tell a city from a
 region, and Poland merges a city with the county of the same name.
 
+### Hooks
+
+Work that is specific to one country hangs off four hooks rather than an
+override of the pipeline:
+
+| hook | runs |
+|---|---|
+| `before_import` | after the extract is parsed, before anything is written |
+| `after_import` | once every row exists and the country border is set |
+| `before_merge` | at the start of the merge |
+| `after_merge` | once merging has finished |
+
+All four are no-ops, so there is nothing to chain and no `super()` to forget.
+`before_import` sees everything parsed — relations, ways, nodes, the country
+boundary — and `after_import` sees the rows, which is where to reshape them.
+
+`PolandImporter.before_merge` is the worked example: Warszawa appears as *miasto
+Warszawa*, *gmina miejska Warszawa* and *miasto stołeczne Warszawa*, and where a
+country subarea has exactly the border of a place, the subarea is the redundant
+one.
+
 Read the levels from the country's own extract rather than the wiki. The survey
 that produced the table above is a dozen lines of pyosmium over the relations,
 and the conventions genuinely differ between neighbours.
