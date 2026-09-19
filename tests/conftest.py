@@ -11,10 +11,15 @@ def square(x, y, size=1.0):
 @pytest.fixture
 def country(db):
     from django_osm_locations.models import Country
-    return Country.objects.create(
-        name='Polska', iso2='PL', iso3='POL', un=616,
-        border=MultiPolygon(square(0, 0, 10)),
+    # migration 0031 seeds this row, so take it rather than making a second one
+    # that would violate the (iso2, iso3, un) constraint
+    country, _ = Country.objects.get_or_create(
+        iso2='PL', iso3='POL', un=616,
+        defaults={'name': 'Polska', 'slug': 'polska'},
     )
+    country.border = MultiPolygon(square(0, 0, 10))
+    country.save()
+    return country
 
 
 @pytest.fixture

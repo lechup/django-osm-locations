@@ -466,8 +466,7 @@ persistent stack instead:
 docker compose -f docker-compose.local.yml up -d
 export DJANGO_SETTINGS_MODULE=local.settings
 
-python -m django migrate
-python -m django loaddata locations_country.json
+python -m django migrate          # also seeds the country rows
 python -m django locations_import poland
 python -m django locations_recalculate_all
 python -m django locations_reindex

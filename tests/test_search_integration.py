@@ -44,10 +44,13 @@ def prefix(opensearch):
 
 @pytest.fixture
 def populated(db):
-    poland = Country.objects.create(
-        name='Polska', iso2='PL', iso3='POL', un=616,
-        border=MultiPolygon(square(0, 0, 10)),
+    # seeded by migration 0031; take it rather than creating a duplicate
+    poland, _ = Country.objects.get_or_create(
+        iso2='PL', iso3='POL', un=616,
+        defaults={'name': 'Polska', 'slug': 'polska'},
     )
+    poland.border = MultiPolygon(square(0, 0, 10))
+    poland.save()
     krakow = Place.objects.create(name='Kraków', border=MultiPolygon(square(1, 1)))
     munchen = Place.objects.create(name='München', border=MultiPolygon(square(3, 3)))
     merged = Place.objects.create(name='Duplicate', border=MultiPolygon(square(5, 5)))

@@ -110,4 +110,10 @@ class TestQueryset:
         assert Place.objects.count() == 1, 'merging must not delete anything'
 
     def test_countries_have_no_merged_flag(self, country):
-        assert INDEXES['countries'].queryset().count() == 1
+        """
+        Country has no is_merged column, so the queryset is simply every row --
+        including the ones migration 0031 seeds.
+        """
+        from django_osm_locations.models import Country
+        assert INDEXES['countries'].queryset().count() == Country.objects.count()
+        assert INDEXES['countries'].queryset().filter(pk=country.pk).exists()

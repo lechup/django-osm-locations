@@ -43,13 +43,12 @@ if not EXTRACT or not os.path.exists(EXTRACT):
 def imported(django_db_setup, django_db_blocker):
     """Run the import once and let the assertions share it."""
     with django_db_blocker.unblock():
-        from django.core.management import call_command
-
         from django_osm_locations.management.commands.importers.isle_of_man import (
             IsleOfManImporter,
         )
 
-        call_command('loaddata', 'locations_country.json', verbosity=0)
+        # the country rows come from migration 0031; loading the fixture here
+        # would overwrite them and take any border with it
         importer = IsleOfManImporter('isle-of-man', EXTRACT)
         with contextlib.redirect_stdout(io.StringIO()):
             importer.do_import()

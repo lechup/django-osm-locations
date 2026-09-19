@@ -14,7 +14,7 @@ LOCAL_ENV     := DJANGO_SETTINGS_MODULE=local.settings
 
 .DEFAULT_GOAL := help
 .PHONY: help install test-up test-down test-reset test test-search test-pbf test-all \
-        local-up local-down local-reset migrate fixtures import update merge \
+        local-up local-down local-reset migrate import update merge \
         recalculate reindex index-status index-cleanup process demo shell dbshell \
         build check bench clean
 
@@ -70,9 +70,6 @@ local-reset:  ## Stop the persistent stack and DELETE its data
 migrate: local-up  ## Apply migrations to the persistent database
 	$(LOCAL_ENV) $(PYTHON) -m django migrate
 
-fixtures: local-up  ## Load the country fixture
-	$(LOCAL_ENV) $(PYTHON) -m django loaddata locations_country.json
-
 import: local-up  ## Import an extract (COUNTRY=poland)
 	$(LOCAL_ENV) $(PYTHON) -m django locations_import $(COUNTRY)
 
@@ -94,7 +91,7 @@ index-status: local-up  ## Compare database counts with the live index
 index-cleanup: local-up  ## Drop superseded indexes
 	$(LOCAL_ENV) $(PYTHON) -m django locations_index_cleanup
 
-process: migrate fixtures import recalculate reindex  ## Full pipeline for COUNTRY
+process: migrate import recalculate reindex  ## Full pipeline for COUNTRY
 	@echo "$(COUNTRY): imported, recalculated and indexed"
 
 ## development

@@ -3,9 +3,7 @@ import importlib
 import os
 
 from django.core.management.base import BaseCommand
-from django.core.management import call_command
 
-from .. import Country
 from ...conf import get_data_dir
 
 
@@ -127,10 +125,6 @@ class Command(BaseCommand):
         else:
             if options['merge_only'] and options['import_only']:
                 exit("Set one option: --merge-only or --import-only, or remove both. By default we do import + merge.")
-
-            # populate countries
-            if Country.objects.count() == 0:
-                call_command('loaddata', 'locations_country.json')
 
             # for each country from arguments ...
             for osm_repository_country in options['country']:
