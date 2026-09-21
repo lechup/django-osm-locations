@@ -47,8 +47,9 @@ services:
       discovery.type: single-node
       DISABLE_SECURITY_PLUGIN: "true"
       DISABLE_INSTALL_DEMO_CONFIG: "true"
-      # a country's worth of geo_shape documents needs more than the test heap
-      OPENSEARCH_JAVA_OPTS: "-Xms2g -Xmx2g"
+      # a country's worth of geo_shape documents needs more than the test heap;
+      # 3g leaves headroom for Poland and the UK in the same cluster
+      OPENSEARCH_JAVA_OPTS: "-Xms3g -Xmx3g"
       bootstrap.memory_lock: "true"
     ports:
       - "${LOCATIONS_LOCAL_OPENSEARCH_PORT:-59201}:9200"

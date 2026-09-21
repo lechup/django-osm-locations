@@ -50,6 +50,14 @@ LOCATIONS_DATA_DIR = os.environ.get(
 )
 LOCATIONS_CACHE_DIR = os.path.join(BASE_DIR, 'local')
 
+# Coastline for locations_clip_borders_to_land. OSM administrative boundaries
+# run out to sea, so a coastal border claims open water: Gdansk is 262 km2 of
+# land but its gmina relation measures 396. Load land-polygons-complete-4326
+# from osmdata.openstreetmap.de into this table to trim them back.
+LOCATIONS_LAND_POLYGONS_TABLE = os.environ.get(
+    'LOCATIONS_LAND_POLYGONS_TABLE', 'locations_land'
+)
+
 # A country-sized import holds its node index in memory by default. Uncomment
 # to spill it to disk instead -- slower, but roughly 4GB less RAM for Poland.
 # LOCATIONS_DISK_CACHE = True
