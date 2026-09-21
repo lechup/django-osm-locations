@@ -4,8 +4,7 @@ from django.contrib.postgres.fields.array import ArrayField
 from django.contrib.postgres.search import SearchVectorField
 from django.db import models
 from django.utils.functional import cached_property
-from django.utils.text import slugify
-from anyascii import anyascii
+from ..utils.slugify import slugify
 
 from .managers import MergableManager
 
@@ -40,7 +39,16 @@ class LocationBase(gis_models.Model):
 
     @cached_property
     def slugify(self):
-        return slugify(anyascii(self.name))
+        """
+        The stored slug.
+
+        Goes through the shared helper rather than calling Django's slugify
+        on anyascii output directly: this has to agree exactly with the
+        database's slugify(), which builds the search vectors, and with what
+        the API normalises a query to. Two Python spellings of the same idea
+        is one too many for something that fails silently when they diverge.
+        """
+        return slugify(self.name)
 
     @classmethod
     def get_polygon_from_bbox(cls, bbox):

@@ -18,6 +18,14 @@ used "u"/"o", so no umlaut place could ever be found by name.
 from anyascii import anyascii
 from django.template.defaultfilters import slugify as django_slugify
 
+#: Characters that separate words rather than joining them. Neither anyascii
+#: nor Django's slugify knows this: a slash is simply not slug-safe, so it is
+#: dropped and the words on either side fuse. "Derry/Londonderry" became
+#: "derrylondonderry", and the Polish "k/" for koło -- "Nad Kanalem k/Krynki"
+#: -- became "nad-kanalem-kkrynki". Replacing them first makes the hyphen
+#: appear where the reader expects one.
+WORD_SEPARATORS = '/'
+
 
 def slugify(string, do_slugify=True, overwrite_char_map=None):
     """
@@ -32,6 +40,9 @@ def slugify(string, do_slugify=True, overwrite_char_map=None):
     if overwrite_char_map:
         for replace_from, replace_to in overwrite_char_map.items():
             string = string.replace(replace_from, replace_to)
+
+    for separator in WORD_SEPARATORS:
+        string = string.replace(separator, ' ')
 
     string = anyascii(string)
 
