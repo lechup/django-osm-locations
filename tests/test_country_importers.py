@@ -32,9 +32,9 @@ class TestLevelsPerCountry:
         (FinlandImporter, ('4', '7'), ('8',), ('9', '10', '11')),
         # Netherlands: 12 provinces, 432 gemeenten, wijken and buurten
         (NetherlandsImporter, ('4',), ('8',), ('9', '10')),
-        # UK: nations, metropolitan counties and counties are all divisions;
-        # districts are 8 except in Northern Ireland, where they are 7
-        (UnitedKingdomImporter, ('4', '5', '6'), ('7', '8'), ('9', '10')),
+        # UK: nations, metropolitan counties, counties and Northern
+        # Ireland's districts are all divisions; districts elsewhere are 8
+        (UnitedKingdomImporter, ('4', '5', '6', '7'), ('8',), ('9', '10')),
         # France: regions and departements, then 35,099 communes
         (FranceImporter, ('4', '6'), ('8',), ('9', '10', '11')),
     ])
@@ -208,12 +208,21 @@ class TestUnitedKingdom:
         for level in ('4', '5', '6'):
             assert UnitedKingdomImporter._is_relation_countrysubarea(1, admin(level), []) is True
 
-    def test_northern_irish_districts_are_places_too(self):
+    def test_northern_irish_districts_are_divisions_not_places(self):
         """
-        They sit at 7 while English, Scottish and Welsh districts sit at 8.
-        Leaving 7 out would drop Northern Ireland entirely.
+        Level 7 is Northern Ireland's eleven districts and nothing else, and a
+        district is a division in the same sense as an English county.
+
+        They were places until Belfast showed what that cost: Belfast City
+        District, a boundary with no population, stood beside Belfast, a node
+        with 333,000 people and no border, and no merge rule could join them
+        because the names differ. Northern Irish settlements come from
+        ``place=*`` nodes regardless, so nothing is lost by moving 7.
         """
-        assert UnitedKingdomImporter._is_relation_place(1, admin('7'), []) is True
+        assert UnitedKingdomImporter._is_relation_countrysubarea(1, admin('7'), []) is True
+        assert UnitedKingdomImporter._is_relation_place(1, admin('7'), []) is False
+
+    def test_districts_elsewhere_in_the_uk_are_places(self):
         assert UnitedKingdomImporter._is_relation_place(1, admin('8'), []) is True
 
     def test_civil_parishes_are_below_a_place(self):
@@ -236,3 +245,61 @@ class TestFrance:
         for level in ('5', '7'):
             assert FranceImporter._is_relation_countrysubarea(1, admin(level), []) is False
             assert FranceImporter._is_relation_place(1, admin(level), []) is False
+
+
+@pytest.mark.django_db
+class TestUnitedKingdomAfterImport:
+    """
+    Level 7 moved from places to divisions, and nothing is deleted on import.
+
+    A relation that was a place under the old levels and is a country subarea
+    under the new ones therefore has a row in both tables. The subarea is the
+    live one.
+    """
+
+    @pytest.fixture
+    def importer(self):
+        from unittest import mock
+
+        from django_osm_locations.models import Country
+
+        instance = UnitedKingdomImporter.__new__(UnitedKingdomImporter)
+        instance.country = Country.objects.create(
+            name='United Kingdom', slug='united-kingdom', iso2='GB', iso3='GBR', un=826,
+        )
+        instance.show_progress = False
+        return instance
+
+    def test_a_place_left_over_from_the_old_levels_is_retired(self, importer):
+        from django_osm_locations.models import CountrySubarea, Place
+
+        CountrySubarea.objects.create(name='Belfast City District', relation_osm_id=19414244)
+        stale = Place.objects.create(name='Belfast City District', relation_osm_id=19414244)
+
+        importer.after_import()
+
+        stale.refresh_from_db()
+        assert stale.is_merged is True
+
+    def test_the_settlement_itself_is_untouched(self, importer):
+        """Belfast the node stays: it is the place people search for."""
+        from django_osm_locations.models import CountrySubarea, Place
+
+        CountrySubarea.objects.create(name='Belfast City District', relation_osm_id=19414244)
+        belfast = Place.objects.create(name='Belfast', node_osm_id=1418701024, population=333000)
+
+        importer.after_import()
+
+        belfast.refresh_from_db()
+        assert belfast.is_merged is False
+
+    def test_places_sharing_no_relation_are_untouched(self, importer):
+        from django_osm_locations.models import CountrySubarea, Place
+
+        CountrySubarea.objects.create(name='Belfast City District', relation_osm_id=19414244)
+        other = Place.objects.create(name='Lisburn', relation_osm_id=999)
+
+        importer.after_import()
+
+        other.refresh_from_db()
+        assert other.is_merged is False

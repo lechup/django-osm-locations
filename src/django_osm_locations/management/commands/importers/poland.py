@@ -37,7 +37,24 @@ class PolandImporter(BaseImporter):
 
     @classmethod
     def _merge_country_subareas(cls, country_subarea):
-        is_country_subarea_place = Place.objects.filter(border=country_subarea.border).exists()
+        """
+        A subarea is redundant when the place of the same name fills it.
+
+        This used to ask for an identical border, which holds only inland.
+        Gdansk's county boundary takes in the bay and the port -- 682 km2
+        against the 396 km2 of the place -- so the city survived as four rows:
+        the place, the level 6 city-county, the level 7 gmina, and only
+        powiat gdanski legitimately beside them.
+
+        Containment plus the name is what separates those. The name is doing
+        real work: without it every county that happens to contain a town
+        would match, and powiat gdanski -- which contains no place called
+        powiat gdanski -- correctly does not.
+        """
+        is_country_subarea_place = Place.objects.filter(
+            name=country_subarea.name,
+            border__within=country_subarea.border,
+        ).exists()
         if is_country_subarea_place:
             country_subarea.mark_as_merged()
 
