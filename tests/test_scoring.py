@@ -19,9 +19,19 @@ class TestTypeBoosts:
     def test_a_place_outranks_a_subdivision_of_one(self):
         assert DEFAULT_TYPE_BOOSTS['places'] > DEFAULT_TYPE_BOOSTS['place-subareas']
 
-    def test_a_place_outranks_the_county_sharing_its_name(self):
-        """Poland has a city of Gdańsk and a county of Gdańsk."""
-        assert DEFAULT_TYPE_BOOSTS['places'] > DEFAULT_TYPE_BOOSTS['country-subareas']
+    def test_a_division_outranks_the_places_inside_it(self):
+        """
+        Searching a region's name should reach the region: "ireland" offers
+        Northern Ireland before Belfast.
+
+        This is the deliberate reverse of what it was. Poland has a city of
+        Gdańsk and a county of Gdańsk, and the city used to win; it no longer
+        does. LOCATIONS_TYPE_BOOSTS is how a deployment puts that back.
+        """
+        assert DEFAULT_TYPE_BOOSTS['country-subareas'] > DEFAULT_TYPE_BOOSTS['places']
+
+    def test_a_place_still_outranks_a_subdivision_of_one(self):
+        assert DEFAULT_TYPE_BOOSTS['places'] > DEFAULT_TYPE_BOOSTS['place-subareas']
 
     def test_streets_rank_lowest(self):
         assert DEFAULT_TYPE_BOOSTS['streets'] == min(DEFAULT_TYPE_BOOSTS.values())
@@ -90,3 +100,39 @@ class TestWhenScoringApplies:
     def test_not_applied_to_a_pure_filter(self):
         body, _, _ = build_body({'within': 'krakow'})
         assert 'function_score' not in body['query']
+
+
+class TestSizeFallback:
+    """
+    Population where there is one, area otherwise -- never both.
+
+    Appending the two unfiltered made them compound, so a hit with both signals
+    beat one with a single larger signal. Against the real index Belfast (a
+    node, 333,000 people, no polygon) scored 8.3 while Fermanagh and Omagh
+    District (13,757 people, 3,021 km²) scored 72.0, purely because the
+    district had an area to multiply by. Most places are nodes -- 97.9% of the
+    imported UK ones have no border -- so this decided the common case.
+    """
+
+    @pytest.fixture
+    def size_functions(self):
+        functions = apply_scoring({'match_all': {}})['function_score']['functions']
+        return [f for f in functions if 'field_value_factor' in f]
+
+    def test_population_and_area_are_both_offered(self, size_functions):
+        assert {f['field_value_factor']['field'] for f in size_functions} == {'population', 'area'}
+
+    def test_each_size_function_is_filtered(self, size_functions):
+        """An unfiltered one would apply to every hit and compound with the other."""
+        for function in size_functions:
+            assert 'filter' in function, function['field_value_factor']['field']
+
+    def test_the_filters_are_complementary(self, size_functions):
+        """Anything else and the two compound, which is the old bug."""
+        by_field = {f['field_value_factor']['field']: f['filter'] for f in size_functions}
+        has_population = {'range': {'population': {'gt': 0}}}
+        assert by_field['population'] == has_population
+        assert by_field['area'] == {'bool': {'must_not': has_population}}
+
+    def test_sizes_still_multiply_with_the_type_boost(self):
+        assert apply_scoring({'match_all': {}})['function_score']['score_mode'] == 'multiply'

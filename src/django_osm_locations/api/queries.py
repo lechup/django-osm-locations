@@ -181,11 +181,17 @@ SIZE_SORT = [
 # one. Override with LOCATIONS_TYPE_BOOSTS.
 DEFAULT_TYPE_BOOSTS = {
     'countries': 8.0,
-    # A place outranks the administrative area sharing its name: Poland has a
-    # city of Gdańsk and a county of Gdańsk, and someone typing "gdansk" means
-    # the city.
-    'places': 5.0,
-    'country-subareas': 4.0,
+    # Divisions rank above the settlements inside them, so that searching a
+    # region's name reaches the region: "ireland" should offer Northern
+    # Ireland before Belfast, and "yorkshire" the county before any town in
+    # it.
+    #
+    # The cost is the case this used to be ordered for. Poland has a city of
+    # Gdańsk and a county of Gdańsk, and someone typing "gdansk" usually means
+    # the city; under these weights the county comes first. Override with
+    # LOCATIONS_TYPE_BOOSTS to put it back.
+    'country-subareas': 5.0,
+    'places': 4.0,
     'place-subareas': 2.0,
     'streets': 1.0,
 }
@@ -216,7 +222,18 @@ def apply_scoring(query):
         {'filter': {'term': {'type': name}}, 'weight': weight}
         for name, weight in sorted(type_boosts().items())
     ]
+    # Population where there is one, area otherwise -- the two filters are
+    # complementary, and function_score skips a function whose filter does not
+    # match, so exactly one of them applies to any hit. Appending both
+    # unfiltered instead made them compound, and a hit carrying both signals
+    # beat one carrying a single larger signal: Belfast, a node with 333,000
+    # people and no polygon, scored 8.3 against 72.0 for Fermanagh and Omagh,
+    # a district of 13,757 whose only advantage was having an area at all.
+    # Most places are nodes -- 97.9% of the imported UK ones have no border --
+    # so this was the common case rather than an edge one.
+    has_population = {'range': {'population': {'gt': 0}}}
     functions.append({
+        'filter': has_population,
         'field_value_factor': {
             'field': 'population',
             'modifier': 'log2p',
@@ -225,6 +242,7 @@ def apply_scoring(query):
         }
     })
     functions.append({
+        'filter': {'bool': {'must_not': has_population}},
         'field_value_factor': {
             'field': 'area',
             'modifier': 'log2p',
