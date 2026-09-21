@@ -40,6 +40,24 @@ class Command(BaseCommand):
         model_class.objects.filter(lines=None).update(length=0)
 
     @classmethod
+    def set_center_inside_border(cls, model_class):
+        """
+        Move a centre that has ended up outside what it marks.
+
+        The importer used to take ``center`` from a relation's admin_centre
+        node, the seat of the administration, which for a ring-shaped county
+        is deliberately outside it: powiat krakowski surrounds Krakow and
+        excludes it. The denormalisation asks which borders contain a row's
+        centre, so those counties came out as being inside the city they
+        encircle -- 102 of them in Poland alone. The seat now has its own
+        field; this repairs rows imported before it did.
+        """
+        outside = model_class.objects.exclude(border=None).exclude(center=None).exclude(
+            center__intersects=F('border')
+        )
+        outside.update(center=PointOnSurface('border'))
+
+    @classmethod
     def set_center_for_lines(cls, model_class):
         model_class.objects.exclude(lines=None).annotate(
             new_center=PointOnSurface('lines')
@@ -51,6 +69,10 @@ class Command(BaseCommand):
             print('{} - calculating areas...'.format(border_model_class.__name__).encode('utf-8'))
             with transaction.atomic():
                 self.set_area(border_model_class)
+            print('{} - moving centres back inside...'.format(
+                border_model_class.__name__).encode('utf-8'))
+            with transaction.atomic():
+                self.set_center_inside_border(border_model_class)
 
         lines_model_classes = [Street]
         for lines_model_class in lines_model_classes:

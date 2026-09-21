@@ -178,9 +178,33 @@ class LocationBorderBase(LocationBase):
     border = gis_models.MultiPolygonField(default=None, null=True, blank=True)
     population = models.IntegerField(default=0, blank=True, db_index=True)
 
+    #: Where the administration sits, which is not always inside what it
+    #: administers. Poland's ring counties are the clear case: powiat
+    #: krakowski surrounds Krakow and excludes it, so its seat is in the hole.
+    #: This used to be written into ``center``, and the denormalisation --
+    #: which asks which borders contain a row's centre -- then concluded that
+    #: the county is inside the city it encircles.
+    seat = gis_models.PointField(default=None, null=True, blank=True)
+    seat_name = models.CharField(max_length=255, blank=True, default='')
+    #: Kept so the seat can be resolved to its Place later. A foreign key
+    #: would force the settlement to be imported before anything naming it,
+    #: which is not an order the importer can promise.
+    seat_osm_node_id = models.BigIntegerField(default=None, null=True, blank=True, db_index=True)
+
     def _presave_center(self, *args, **kwargs):
-        if self.border and not self.center:
-            self.center = self.border.point_on_surface
+        """
+        A point inside the border, always.
+
+        ``center`` is what the denormalisation matches against parent borders
+        and what a map puts a marker on, so a point outside the thing it
+        marks is wrong for both. Where a border exists it therefore wins over
+        a stored centre that has fallen outside it.
+        """
+        if not self.border:
+            return
+        if self.center and self.border.contains(self.center):
+            return
+        self.center = self.border.point_on_surface
 
     #: Equal-area projection used to measure borders. Whatever is stored must
     #: agree with locations_recalculate_areas_and_lengths, which asks PostGIS
@@ -194,8 +218,13 @@ class LocationBorderBase(LocationBase):
         ``border.area`` is in the SRID's units -- square degrees for 4326 --
         which is neither a usable figure nor what the recalculate command
         writes, so it is projected first.
+
+        Recomputed whenever there is a border rather than only when ``area``
+        is unset. The old guard meant a re-import wrote a new border and left
+        the previous area beside it, so the two disagreed until
+        locations_recalculate_areas_and_lengths next ran.
         """
-        if self.border and not self.area:
+        if self.border:
             projected = self.border.clone()
             try:
                 projected.transform(self.AREA_SRID)

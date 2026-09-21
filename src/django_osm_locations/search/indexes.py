@@ -102,6 +102,10 @@ BASE_PROPERTIES = {
 
 BORDER_PROPERTIES = {
     'area': {'type': 'double'},
+    # Where the administration sits, which for a ring-shaped county is
+    # outside the county. Distinct from `center`, which is always inside.
+    'seat': {'type': 'geo_point'},
+    'seat_name': {'type': 'keyword'},
     'population': {'type': 'long'},
     'geometry': {'type': 'geo_shape'},
 }
@@ -200,6 +204,10 @@ class LocationIndex:
         if 'area' in self.properties:
             doc['area'] = obj.area
             doc['population'] = obj.population
+            doc['seat'] = (
+                {'lon': obj.seat[0], 'lat': obj.seat[1]} if obj.seat else None
+            )
+            doc['seat_name'] = obj.seat_name or None
         if 'length' in self.properties:
             doc['length'] = obj.length
         return doc
