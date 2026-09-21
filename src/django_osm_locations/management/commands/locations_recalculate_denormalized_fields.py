@@ -89,14 +89,33 @@ class Command(BaseCommand):
         })
 
     @classmethod
-    def get_sql_for_clean_denorm_fields(cls, model_name, field_name):
+    def get_sql_for_clean_denorm_fields(cls, model_name, field_names):
+        """
+        Strip the placeholder from every denormalised column in one pass.
+
+        This used to be one UPDATE per column. A street has four of them, so
+        cleaning up after a recalculation rewrote all 2.8 million rows four
+        times over -- about twenty minutes each, and the slowest phase of the
+        whole pipeline by a distance. The work per column is trivial; it was
+        the repeated full-table rewrite that cost.
+        """
+        placeholder = "ARRAY[ARRAY['','']]::varchar[]"
+        assignments = ',\n                '.join(
+            "{field} = CASE WHEN {field} @> {placeholder} "
+            "THEN {field}[2:array_upper({field}, 1)] ELSE {field} END".format(
+                field=field, placeholder=placeholder,
+            )
+            for field in field_names
+        )
+        condition = '\n               OR '.join(
+            '{field} @> {placeholder}'.format(field=field, placeholder=placeholder)
+            for field in field_names
+        )
         return """
-            UPDATE "locations_{model_name}" SET {field_name} = {field_name}[2:array_upper({field_name}, 1)] WHERE
-            {field_name} @> ARRAY[ARRAY['','']]::varchar[];
-        """.format(**{
-            'model_name': model_name,
-            'field_name': field_name
-        })
+            UPDATE "locations_{model_name}" SET
+                {assignments}
+            WHERE {condition};
+        """.format(model_name=model_name, assignments=assignments, condition=condition)
 
     @classmethod
     @transaction.atomic
@@ -107,11 +126,12 @@ class Command(BaseCommand):
         """
         for model_class_to_clean in cls.MODEL_CLASSES_TO_CLEAN:
             print("{} - cleaning denorm fields after update...".format(model_class_to_clean.__name__))
-            for field_name in model_class_to_clean.denorm_fields:
-                model_name = model_class_to_clean.__name__.lower()
-                sql = cls.get_sql_for_clean_denorm_fields(model_name, field_name)
-                with connection.cursor() as cursor:
-                    cursor.execute(sql)
+            sql = cls.get_sql_for_clean_denorm_fields(
+                model_class_to_clean.__name__.lower(),
+                model_class_to_clean.denorm_fields,
+            )
+            with connection.cursor() as cursor:
+                cursor.execute(sql)
 
     @classmethod
     def update_denorm_fields_for_model_class(cls, model_class_to_update):

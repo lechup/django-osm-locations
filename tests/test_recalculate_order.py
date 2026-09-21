@@ -167,3 +167,34 @@ class TestSlugsAreWrittenInBatches:
             Slugs.set_unique_slugs(Street)
         # four rows to rewrite, two at a time
         assert [len(call.args[0]) for call in bulk.call_args_list] == [2, 2]
+
+
+class TestCleanupIsOnePassPerTable:
+    """
+    A street has four denormalised columns, and cleaning them one at a time
+    rewrote all 2.8 million rows four times over -- about twenty minutes each,
+    the slowest phase in the pipeline. The work per column is trivial; it was
+    the repeated full-table rewrite that cost.
+    """
+
+    def test_every_column_is_set_in_one_statement(self):
+        from django_osm_locations.models import Street
+
+        sql = Denorm.get_sql_for_clean_denorm_fields('street', Street.denorm_fields)
+
+        assert sql.count('UPDATE') == 1
+        for field in Street.denorm_fields:
+            assert '{} = CASE'.format(field) in sql
+
+    def test_a_column_without_the_placeholder_is_left_alone(self):
+        """Otherwise the CASE would truncate a real first ancestor."""
+        sql = Denorm.get_sql_for_clean_denorm_fields('street', ('country',))
+        assert 'ELSE country END' in sql
+
+    def test_rows_with_no_placeholder_anywhere_are_not_rewritten(self):
+        from django_osm_locations.models import Street
+
+        sql = Denorm.get_sql_for_clean_denorm_fields('street', Street.denorm_fields)
+        where = sql.split('WHERE', 1)[1]
+        for field in Street.denorm_fields:
+            assert field in where
