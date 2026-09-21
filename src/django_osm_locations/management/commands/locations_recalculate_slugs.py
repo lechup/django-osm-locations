@@ -57,6 +57,13 @@ class Command(BaseCommand):
     # that the query stays bounded.
     NEAREST_RADIUS = 1.0
 
+    #: Slugs are written per batch rather than per row.
+    BATCH_SIZE = 1000
+
+    #: Columns the qualifier cascade never reads, deferred so that resolving a
+    #: slug does not drag a street's geometry or a tsvector across the wire.
+    MAYBE_HEAVY = ('border', 'lines', 'search_vector', 'search_vector_name')
+
     def add_arguments(self, parser):
         parser.add_argument(
             'types', nargs='*',
@@ -159,15 +166,36 @@ class Command(BaseCommand):
         if not duplicated:
             return
 
+        pending = []
         for base_slug in progress(duplicated, desc=model_class.__name__, leave=False):
             objects = list(
-                model_class.objects.filter(slug=base_slug).order_by(*cls._rank(model_class))
+                model_class.objects.filter(slug=base_slug)
+                .defer(*cls._heavy_fields(model_class))
+                .order_by(*cls._rank(model_class))
             )
             # the largest keeps the bare slug
             for obj in objects[1:]:
                 obj.slug = cls._unique_slug_for(obj, model_class, base_slug, taken)
-                obj.save(update_fields=['slug'])
                 taken.add(obj.slug)
+                pending.append(obj)
+                if len(pending) >= cls.BATCH_SIZE:
+                    model_class.objects.bulk_update(pending, ['slug'])
+                    pending = []
+        if pending:
+            model_class.objects.bulk_update(pending, ['slug'])
+
+    @classmethod
+    def _heavy_fields(cls, model_class):
+        """
+        Geometry and tsvector columns to leave behind when loading duplicates.
+
+        Uniquification reads names, ranks and denormalised ancestry; it never
+        looks at a border or a line string. Loading them turned every duplicate
+        into a GEOS deserialisation, and 92% of street rows are duplicates.
+        ``center`` stays: Place qualifies by the nearest larger place.
+        """
+        present = {f.name for f in model_class._meta.get_fields()}
+        return tuple(name for name in cls.MAYBE_HEAVY if name in present)
 
     @classmethod
     def _unique_slug_for(cls, obj, model_class, base_slug, taken):

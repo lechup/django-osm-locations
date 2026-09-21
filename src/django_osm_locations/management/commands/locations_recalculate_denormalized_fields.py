@@ -1,5 +1,5 @@
 from django.contrib.gis.db.models.functions import Distance
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction, connection
 from django.utils.text import slugify
 from ...utils.progress import progress
@@ -23,6 +23,10 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument(
+            'types', nargs='*',
+            help='Ancestor models to push down. Defaults to all of them.',
+        )
+        parser.add_argument(
             '-a',
             '--all',
             action='store_true',
@@ -30,6 +34,40 @@ class Command(BaseCommand):
             help='Calculate all fields even those that currently have value. By default we select only those locations'
                  'that have all denorm fields unset (len = 0).'
         )
+        parser.add_argument(
+            '--no-clean-before', action='store_true', default=False,
+            help='Do not blank the denormalised arrays first. For a caller that '
+                 'cleans once around several partial runs.',
+        )
+        parser.add_argument(
+            '--no-clean-after', action='store_true', default=False,
+            help='Leave the placeholder element in place for a later pass to strip.',
+        )
+        parser.add_argument(
+            '--no-search-vector', action='store_true', default=False,
+            help='Skip rebuilding the search vectors, which are only correct '
+                 'once every ancestor has been pushed down.',
+        )
+
+    @classmethod
+    def selected_model_classes(cls, names):
+        """
+        The ancestor models to push down, by name, defaulting to all of them.
+
+        Only the four that have descendants can be selected: nothing sits below
+        a Street, so it is written to but never written from.
+        """
+        if not names:
+            return list(cls.MODEL_CLASSES_TO_UPDATE)
+        wanted = {name.lower() for name in names}
+        chosen = [m for m in cls.MODEL_CLASSES_TO_UPDATE if m.__name__.lower() in wanted]
+        unknown = wanted - {m.__name__.lower() for m in cls.MODEL_CLASSES_TO_UPDATE}
+        if unknown:
+            raise CommandError('not an ancestor model: {}. Choose from {}.'.format(
+                ', '.join(sorted(unknown)),
+                ', '.join(m.__name__ for m in cls.MODEL_CLASSES_TO_UPDATE),
+            ))
+        return chosen
 
     @classmethod
     def get_sql_for_update_denorm_fields(cls, model_name, field_name):
@@ -196,11 +234,14 @@ class Command(BaseCommand):
                 cursor.execute(sql)
 
     def handle(self, *args, **options):
-        # clear
-        self.clean_denorm_fields_before_update()
-        # update
-        self.update_denorm_fields()
-        # clean
-        self.clean_denorm_fields_after_update()
-        # update search vector
-        self.update_search_vector_field()
+        model_classes = self.selected_model_classes(options.get('types'))
+
+        if not options.get('no_clean_before'):
+            self.clean_denorm_fields_before_update()
+        for model_class in model_classes:
+            print("{} - updating denorm fields...".format(model_class.__name__))
+            self.update_denorm_fields_for_model_class(model_class)
+        if not options.get('no_clean_after'):
+            self.clean_denorm_fields_after_update()
+        if not options.get('no_search_vector'):
+            self.update_search_vector_field()
