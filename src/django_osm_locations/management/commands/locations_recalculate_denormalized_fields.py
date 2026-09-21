@@ -1,4 +1,3 @@
-from django.contrib.gis.db.models.functions import Distance
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction, connection
 from django.utils.text import slugify
@@ -175,25 +174,60 @@ class Command(BaseCommand):
             print("{} - updating denorm fields...".format(model_class_to_update.__name__))
             cls.update_denorm_fields_for_model_class(model_class_to_update)
 
+    #: How far a street will reach for a place to belong to. Matches the
+    #: radius Place.near_bbox already uses. Uncapped, a road in open country
+    #: is attributed to whatever town is nearest even at 40km, which says
+    #: less than saying nothing.
+    NEAREST_PLACE_KM = 25
+
+    @classmethod
+    def get_sql_for_street_place_field(cls):
+        """
+        Give a street with no place the nearest one.
+
+        A street only gets a place from the point-in-polygon pass if it falls
+        inside a place's border, and 771,253 of Poland's and the UK's live
+        streets fall inside none -- rural roads, trunk roads between towns.
+        They keep their country and country subarea, so they are findable,
+        but they have no town in their ancestry and nothing to qualify a
+        duplicate slug against.
+
+        This used to be a Python loop doing a nearest-place query and a
+        ``save()`` per street, which measured about three rows a second: some
+        seventy hours for the streets that need it, which is presumably why
+        it was written and never called. One statement with a lateral join
+        does the same work, and ``<->`` on the GiST index over Place.center
+        makes each lookup an index walk rather than a scan.
+        """
+        return """
+            UPDATE "locations_street" AS s SET place = x.pair
+            FROM (
+                SELECT s2.id, ARRAY[ARRAY[p.name, p.slug]]::varchar[] AS pair
+                FROM "locations_street" s2
+                CROSS JOIN LATERAL (
+                    SELECT name, slug, center
+                    FROM "locations_place"
+                    WHERE center IS NOT NULL AND NOT is_merged
+                    ORDER BY center <-> s2.center
+                    LIMIT 1
+                ) p
+                WHERE s2.center IS NOT NULL
+                  AND (s2.place IS NULL OR array_length(s2.place, 1) IS NULL)
+                  AND ST_DWithin(p.center::geography, s2.center::geography, %s)
+            ) AS x
+            WHERE s.id = x.id;
+        """
+
     @classmethod
     @transaction.atomic
     def update_street_place_field(cls):
-        streets = Street.objects.filter(place__len=0).only('place', 'center')
-        for street in progress(
-            streets.iterator(),
-            total=streets.count(),
-            desc="Updating Streets not belonging to Places"
-        ):
-            closest_place = Place.objects.only('slug', 'name').annotate(
-                distance=Distance('center', street.center)
-            ).order_by('distance').first()
-            street.place = [
-                [
-                    closest_place.name,
-                    closest_place.slug
-                ]
-            ]
-            street.save(update_fields=['place'])
+        print("Street - attaching streets that fall inside no place...")
+        with connection.cursor() as cursor:
+            cursor.execute(
+                cls.get_sql_for_street_place_field(),
+                [cls.NEAREST_PLACE_KM * 1000],
+            )
+            print("  {} attached".format(cursor.rowcount))
 
     @classmethod
     def get_sql_for_search_vector(cls, model_class):
@@ -243,5 +277,8 @@ class Command(BaseCommand):
             self.update_denorm_fields_for_model_class(model_class)
         if not options.get('no_clean_after'):
             self.clean_denorm_fields_after_update()
+            # only meaningful once every place has been pushed down, and the
+            # placeholder element stripped
+            self.update_street_place_field()
         if not options.get('no_search_vector'):
             self.update_search_vector_field()

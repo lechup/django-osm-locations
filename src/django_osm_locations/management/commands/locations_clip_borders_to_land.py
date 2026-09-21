@@ -13,9 +13,10 @@ computed from a clipped border *is* the land area.
 
 The coastline is not in a Geofabrik extract in any usable form -- extracts
 carry ``natural=coastline`` ways, and assembling those into land polygons is
-what osmcoastline exists to do -- so this reads polygons somebody else loaded,
-typically land-polygons-complete-4326 from osmdata.openstreetmap.de::
+what osmcoastline exists to do -- so this reads polygons loaded beforehand by
+``locations_load_land_polygons``::
 
+    make coastline                       # download, unpack and load
     LOCATIONS_LAND_POLYGONS_TABLE = 'locations_land'
 
 Two things make it fast enough to be worth running. The dataset's largest

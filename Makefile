@@ -32,7 +32,7 @@ LOCAL_ENV     := DJANGO_SETTINGS_MODULE=local.settings
 
 .DEFAULT_GOAL := help
 .PHONY: help install test-up test-down test-reset test test-search test-pbf test-all \
-        local-up local-down local-reset migrate import update merge \
+        local-up local-down local-reset migrate import update merge coastline clip \
         recalculate reindex index-status index-cleanup process demo shell dbshell \
         build check bench clean
 
@@ -96,6 +96,20 @@ update: local-up  ## Fetch OSM diffs and reimport: make update poland
 
 merge: local-up  ## Merge duplicates only: make merge poland
 	$(LOCAL_ENV) $(PYTHON) -m django locations_import --merge-only $(COUNTRY)
+
+coastline: local-up  ## Download and load land polygons for border clipping
+	@mkdir -p local/osm_data/coastline
+	@test -f local/osm_data/coastline/land_polygons.shp || { \
+		echo "downloading land-polygons-complete-4326 (about 900MB)..."; \
+		curl -sSL -o local/osm_data/coastline/land-polygons.zip \
+			https://osmdata.openstreetmap.de/download/land-polygons-complete-4326.zip; \
+		unzip -o -j -q local/osm_data/coastline/land-polygons.zip \
+			-d local/osm_data/coastline; }
+	$(LOCAL_ENV) $(PYTHON) -m django locations_load_land_polygons \
+		local/osm_data/coastline/land_polygons.shp
+
+clip: local-up  ## Trim borders back to the coastline (needs `make coastline`)
+	$(LOCAL_ENV) $(PYTHON) -m django locations_clip_borders_to_land
 
 recalculate: local-up  ## Recompute slugs, ancestry, areas and lengths
 	$(LOCAL_ENV) $(PYTHON) -m django locations_recalculate_all

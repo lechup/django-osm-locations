@@ -57,8 +57,15 @@ importers = [
     "osmium>=3.6",
 ]
 
+# Loading a coastline for locations_clip_borders_to_land. pyogrio bundles
+# GDAL as a wheel, so the shapefile can be read without apt-installing
+# gdal-bin for the sake of one ogr2ogr invocation.
+coastline = [
+    "pyogrio>=0.7",
+]
+
 dev = [
-    "django-osm-locations[api,search,importers]",
+    "django-osm-locations[api,search,importers,coastline]",
     "pytest>=7.0",
     "pytest-django>=4.5",
 ]
