@@ -683,13 +683,45 @@ class BaseImporter(object):
 
     @classmethod
     def _get_center_node_id_from_members(cls, members):
+        """
+        A node to take the centre from, preferring one that is inside.
+
+        ``label`` is a rendering hint: a point the mapper placed inside the
+        polygon for a label to sit on. ``admin_centre`` is the seat of the
+        administration, which need not be inside at all -- powiat krakowski
+        surrounds Krakow and excludes it. Preferring admin_centre, as this
+        did, put the seat in ``center`` and the denormalisation then read the
+        county as being inside the city it encircles.
+        """
+        return cls._member_node_id(members, 'label') or \
+            cls._member_node_id(members, 'admin_centre')
+
+    @classmethod
+    def _get_admin_centre_node_id_from_members(cls, members):
+        """The seat, whether or not it lies inside the border."""
+        return cls._member_node_id(members, 'admin_centre')
+
+    @classmethod
+    def _member_node_id(cls, members, role):
         for member in members:
-            if member[1] == 'n' and member[2] == 'admin_centre':
-                return member[0]
-        for member in members:
-            if member[1] == 'n' and member[2] == 'label':
+            if member[1] == 'n' and member[2] == role:
                 return member[0]
         return None
+
+    def _seat_defaults(self, members):
+        """Seat point, name and node id, for a relation that names one."""
+        node_id = self._get_admin_centre_node_id_from_members(members)
+        if node_id is None:
+            return {}
+        node = self.nodes.get(node_id)
+        if node is None:
+            return {}
+        tags, coords = node
+        return {
+            'seat': Point(coords),
+            'seat_name': tags.get('name') or '',
+            'seat_osm_node_id': node_id,
+        }
 
     def _get_merged_multiline_from_members(self, members):
         multiline = self._get_multiline_from_members(members)
@@ -974,18 +1006,22 @@ class BaseImporter(object):
                     'admin_level': self._admin_level(tags),
                     'population': tags.get('population')
                 }
+                countrysubarea_defaults.update(self._seat_defaults(members))
                 center_node_id = self._get_center_node_id_from_members(members)
                 if center_node_id is not None:
                     center_node = self.nodes.get(center_node_id)
-                    _, coords = center_node
-                    countrysubarea_defaults['center'] = Point(coords)
+                    if center_node is not None:
+                        _, coords = center_node
+                        candidate = Point(coords)
+                        # _presave_center replaces it if it falls outside
+                        if border.contains(candidate):
+                            countrysubarea_defaults['center'] = candidate
                 self._upsert(CountrySubarea, 'relation_osm_id', osm_id, countrysubarea_defaults)
             else:
                 if multiline:
                     tqdm.write(
-                        "CountrySubarea not valid (doesn't have border but have multiline):",
-                        tags.get('name'),
-                        'http://openstreetmap.org/relation/{}'.format(osm_id)
+                        "CountrySubarea not valid (doesn't have border but have multiline): "
+                        "{} http://openstreetmap.org/relation/{}".format(tags.get('name'), osm_id)
                     )
 
     def _import_place_from_relation(self, osm_id, tags, members):
@@ -1009,16 +1045,20 @@ class BaseImporter(object):
                     'admin_level': self._admin_level(tags),
                     'population': population
                 }
+                place_defaults.update(self._seat_defaults(members))
                 if center_node_id is not None:
-                    place_defaults['center'] = Point(center_node_coords)
+                    candidate = Point(center_node_coords)
+                    # for a place the node is usually the settlement itself and
+                    # sits inside; where it does not, _presave_center takes over
+                    if border.contains(candidate):
+                        place_defaults['center'] = candidate
                     self.already_imported_places_node_ids.add(center_node_id)
                 self._upsert(Place, 'relation_osm_id', osm_id, place_defaults)
             else:
                 if multiline:
                     tqdm.write(
-                        "Place not valid (doesn't have border but have multiline):",
-                        tags.get('name'),
-                        'http://openstreetmap.org/relation/{}'.format(osm_id)
+                        "Place not valid (doesn't have border but have multiline): "
+                        "{} http://openstreetmap.org/relation/{}".format(tags.get('name'), osm_id)
                     )
 
     def _import_place_from_way(self, osm_id, tags, coords):
@@ -1036,9 +1076,8 @@ class BaseImporter(object):
             else:
                 if multiline:
                     tqdm.write(
-                        "Place not valid (doesn't have border but have multiline):",
-                        tags.get('name'),
-                        'http://openstreetmap.org/way/{}'.format(osm_id)
+                        "Place not valid (doesn't have border but have multiline): "
+                        "{} http://openstreetmap.org/way/{}".format(tags.get('name'), osm_id)
                     )
 
     def _import_place_from_node(self, osm_id, tags, coords):
@@ -1064,18 +1103,21 @@ class BaseImporter(object):
                     'admin_level': self._admin_level(tags),
                     'population': tags.get('population')
                 }
+                placesubarea_defaults.update(self._seat_defaults(members))
                 center_node_id = self._get_center_node_id_from_members(members)
                 if center_node_id is not None:
                     center_node = self.nodes.get(center_node_id)
-                    _, coords = center_node
-                    placesubarea_defaults['center'] = Point(coords)
+                    if center_node is not None:
+                        _, coords = center_node
+                        candidate = Point(coords)
+                        if border.contains(candidate):
+                            placesubarea_defaults['center'] = candidate
                 self._upsert(PlaceSubarea, 'relation_osm_id', osm_id, placesubarea_defaults)
             else:
                 if multiline:
                     tqdm.write(
-                        "PlaceSubarea not valid (doesn't have border but have multiline):",
-                        tags.get('name'),
-                        'http://openstreetmap.org/relation/{}'.format(osm_id)
+                        "PlaceSubarea not valid (doesn't have border but have multiline): "
+                        "{} http://openstreetmap.org/relation/{}".format(tags.get('name'), osm_id)
                     )
 
     def _import_street_from_relation(self, osm_id, tags, members):
