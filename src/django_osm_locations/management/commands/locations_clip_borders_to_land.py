@@ -37,6 +37,22 @@ from .. import Country, CountrySubarea, Place, PlaceSubarea
 #: Tiles bigger than this cost more to intersect than they save.
 SUBDIVIDE_VERTICES = 256
 
+#: Degrees of tolerance for simplifying the coastline, roughly 10 metres.
+#:
+#: Applied to the land polygons, not to the borders, and that distinction is
+#: the point: a clipped border follows the coast on one side and the
+#: administrative boundary on the other. Simplifying the border would move
+#: both, and an inland boundary is shared with the neighbouring unit -- move
+#: it and adjacent polygons stop tiling, opening gaps and overlaps exactly
+#: where point-in-polygon has to decide. Simplifying the input instead leaves
+#: every inland edge untouched and bit-identical.
+#:
+#: 10m takes the United Kingdom's clipped border from 2,238,356 vertices to
+#: 522,825 and its area from 244,583 km2 to 244,579 -- an error of 0.002%,
+#: against the 0.08% the unsimplified dataset already carries versus the
+#: published 244,376.
+SIMPLIFY_DEGREES = 0.0001
+
 #: How much smaller the clipped border must be before it is written back.
 #: Well above the noise of reassembling a polygon from tiles, well below any
 #: real stretch of coast.
@@ -104,8 +120,13 @@ class Command(BaseCommand):
         subdivided = cls.subdivided_name(table)
         return [
             'DROP TABLE IF EXISTS "{}"'.format(subdivided),
-            'CREATE TABLE "{}" AS SELECT ST_Subdivide(geom, {})::geometry(Polygon, 4326) '
-            'AS geom FROM "{}"'.format(subdivided, SUBDIVIDE_VERTICES, table),
+            # Simplify before subdividing, never after: subdivision cuts along
+            # arbitrary lines and simplifying those would pull neighbouring
+            # tiles apart, leaving slivers of unclaimed sea between them.
+            'CREATE TABLE "{}" AS SELECT ST_Subdivide('
+            'ST_SimplifyPreserveTopology(geom, {}), {})::geometry(Polygon, 4326) '
+            'AS geom FROM "{}"'.format(
+                subdivided, SIMPLIFY_DEGREES, SUBDIVIDE_VERTICES, table),
             'CREATE INDEX "{0}_gist" ON "{0}" USING gist (geom)'.format(subdivided),
             'ANALYZE "{}"'.format(subdivided),
         ]

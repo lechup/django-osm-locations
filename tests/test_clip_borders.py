@@ -11,6 +11,7 @@ from django.core.management.base import CommandError
 
 from django_osm_locations.management.commands.locations_clip_borders_to_land import (
     SHRUNK_ENOUGH,
+    SIMPLIFY_DEGREES,
     SUBDIVIDE_VERTICES,
     Command as Clip,
 )
@@ -58,7 +59,11 @@ class TestSubdividing:
     def test_the_tiles_are_indexed(self):
         statements = ' '.join(Clip.sql_for_subdivide('locations_land'))
         assert 'USING gist' in statements
-        assert 'ST_Subdivide(geom, {})'.format(SUBDIVIDE_VERTICES) in statements
+
+    def test_the_vertex_limit_reaches_subdivide(self):
+        statements = ' '.join(Clip.sql_for_subdivide('locations_land'))
+        assert 'ST_Subdivide(' in statements
+        assert ', {})'.format(SUBDIVIDE_VERTICES) in statements
 
 
 class TestClipSql:
@@ -111,3 +116,37 @@ class TestApplySql:
 
     def test_a_centre_already_on_land_is_left_alone(self):
         assert 'THEN loc.center' in Clip.sql_for_apply('place')
+
+
+class TestOnlyTheCoastIsSimplified:
+    """
+    A clipped border follows the coast on one side and the administrative
+    boundary on the other. Simplifying the border would move both, and an
+    inland boundary is shared with the neighbouring unit -- move it and
+    adjacent polygons stop tiling, opening gaps and overlaps exactly where
+    point-in-polygon has to decide.
+    """
+
+    def test_simplification_is_applied_to_the_land_not_the_border(self):
+        statements = ' '.join(Clip.sql_for_subdivide('locations_land'))
+        assert 'ST_SimplifyPreserveTopology(geom' in statements
+        assert 'ST_SimplifyPreserveTopology' not in Clip.sql_for_apply('place')
+        assert 'ST_SimplifyPreserveTopology' not in Clip.sql_for_clip('place', 'locations_land')
+
+    def test_it_simplifies_before_subdividing(self):
+        """
+        Subdivision cuts along arbitrary lines; simplifying those afterwards
+        would pull neighbouring tiles apart and leave slivers of unclaimed
+        sea between them.
+        """
+        create = [s for s in Clip.sql_for_subdivide('locations_land') if 'CREATE TABLE' in s][0]
+        assert create.index('ST_SimplifyPreserveTopology') > create.index('ST_Subdivide')
+
+    def test_the_tolerance_is_metres_not_kilometres(self):
+        """10m against a border already 0.08% off the published area."""
+        assert 0 < SIMPLIFY_DEGREES <= 0.0005
+
+    def test_topology_is_preserved_rather_than_plain_simplify(self):
+        """ST_Simplify can invalidate a polygon outright."""
+        statements = ' '.join(Clip.sql_for_subdivide('locations_land'))
+        assert 'ST_SimplifyPreserveTopology' in statements

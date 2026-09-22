@@ -25,11 +25,19 @@ services:
     # Tuned for bulk loading rather than for a busy server. synchronous_commit
     # is off because an interrupted import is re-run, not recovered -- it costs
     # the last few transactions on a crash, never consistency.
+    #
+    # The work_mem figures are deliberately modest for a machine this size.
+    # maintenance_work_mem is per autovacuum worker, and three of them on a
+    # 2.8-million-row table during a recalculation is 3GB on its own; with
+    # OpenSearch holding a 3g heap beside it, a desktop session has been
+    # squeezed out before now. Raise them for a dedicated box.
     command: >
       postgres
       -c shared_buffers=1GB
-      -c work_mem=64MB
-      -c maintenance_work_mem=1GB
+      -c work_mem=32MB
+      -c maintenance_work_mem=256MB
+      -c autovacuum_work_mem=256MB
+      -c autovacuum_max_workers=2
       -c max_wal_size=4GB
       -c checkpoint_timeout=30min
       -c synchronous_commit=off
@@ -40,6 +48,12 @@ services:
       timeout: 5s
       retries: 40
     shm_size: 1gb
+    # Docker runs under system.slice, the desktop under user.slice, and
+    # systemd-oomd is configured to kill the *user* slice when it stalls on
+    # reclaim -- so an uncapped container here gets the session killed rather
+    # than itself. It has happened twice. The cap is the structural fix: what
+    # postgres cannot allocate, it cannot take from the desktop.
+    mem_limit: 8g
 
   opensearch:
     image: opensearchproject/opensearch:2.18.0
@@ -65,6 +79,9 @@ services:
       nofile:
         soft: 65536
         hard: 65536
+    # 3g heap plus Lucene's off-heap mmap; see the postgis note on why a
+    # container here needs a ceiling at all.
+    mem_limit: 6g
 
 volumes:
   postgis-data:

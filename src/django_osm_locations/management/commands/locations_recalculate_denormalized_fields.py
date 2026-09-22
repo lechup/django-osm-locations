@@ -69,23 +69,36 @@ class Command(BaseCommand):
         return chosen
 
     @classmethod
-    def get_sql_for_update_denorm_fields(cls, model_name, field_name):
+    def get_sql_for_update_denorm_fields(cls, model_name, field_name, ancestor_table):
         """
         Build the denormalisation UPDATE.
 
-        Only the table and column names are interpolated -- both come from model
-        class names, never from data. The location name, slug and border travel
-        as bound parameters; they originate in OSM and used to be escaped by
-        hand into the SQL string.
+        Only table and column names are interpolated -- all from model class
+        names, never from data. The name, slug and the ancestor's id travel as
+        bound parameters.
+
+        The border is read from the database rather than sent to it. It used
+        to travel as ``obj.border.hexewkb``: the geometry was loaded into
+        Python, hex-encoded to roughly twice its size, and shipped back for
+        the server to parse again -- once per descendant table. That was
+        tolerable while borders were small, and stopped being tolerable the
+        moment they were clipped to the coastline, which took the United
+        Kingdom's border from 67,000 vertices to 2.2 million: a single
+        statement carrying a 72MB string, four times over, with the whole
+        hierarchy amounting to about a gigabyte of transient strings per pass.
+        The user session was killed by systemd-oomd under the resulting memory
+        pressure. A subquery on the primary key costs three small parameters
+        and resolves to an InitPlan, evaluated once.
         """
         return """
             UPDATE "locations_{model_name}" SET {field_name} =
             array_cat({field_name}, ARRAY[%s, %s]::varchar[]) WHERE
-              ST_Intersects(center, ST_GeomFromEWKB(decode(%s, 'hex')))
+              ST_Intersects(center, (SELECT border FROM "{ancestor_table}" WHERE id = %s))
             ;
         """.format(**{
             'model_name': model_name,
             'field_name': field_name,
+            'ancestor_table': ancestor_table,
         })
 
     @classmethod
@@ -143,7 +156,9 @@ class Command(BaseCommand):
 
         :param model_class_to_update: model class
         """
-        objects = model_class_to_update.objects.exclude(border=None).only('name', 'slug', 'border').iterator()
+        # border deliberately not deferred-in: it is read server-side now, and
+        # loading it here pulled half a gigabyte of geometry through Python
+        objects = model_class_to_update.objects.exclude(border=None).only('name', 'slug').iterator()
         objects_count = model_class_to_update.objects.exclude(border=None).count()
         for obj in progress(objects, total=objects_count, desc=model_class_to_update.__name__):
             model_name = model_class_to_update.__name__
@@ -159,9 +174,11 @@ class Command(BaseCommand):
             for denormalized_model_class in denormalized_model_classes:
                 field_name = model_class_to_update.__name__.lower()
                 model_name = denormalized_model_class.__name__.lower()
-                sql = cls.get_sql_for_update_denorm_fields(model_name, field_name)
+                sql = cls.get_sql_for_update_denorm_fields(
+                    model_name, field_name, model_class_to_update._meta.db_table,
+                )
                 with connection.cursor() as cursor:
-                    cursor.execute(sql, [obj.name, obj.slug, obj.border.hexewkb.decode('ascii')])
+                    cursor.execute(sql, [obj.name, obj.slug, obj.id])
 
     @classmethod
     @transaction.atomic
