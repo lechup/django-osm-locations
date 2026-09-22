@@ -132,8 +132,11 @@ def build_query(q=None, within=None, bbox=None, near=None, radius=None,
             'multi_match': {
                 'query': q,
                 # the name matters most, its unfolded form more than the
-                # n-grammed one, and ancestry lets "krakow florianska" work
-                'fields': ['name.exact^4', 'name^2', 'ancestry_names'],
+                # n-grammed one, and ancestry lets "krakow florianska" work.
+                # names_all sits below both so a native-name match still wins:
+                # searching "polska" should not be outranked by somewhere whose
+                # Polish translation happens to match.
+                'fields': ['name.exact^4', 'name^2', 'ancestry_names', 'names_all^0.5'],
                 'type': 'best_fields',
             }
         })

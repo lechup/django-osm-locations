@@ -11,6 +11,7 @@ from rest_framework.views import APIView
 
 from ..search.client import get_client, get_index_prefix
 from ..search.indexes import INDEXES
+from .localize import ancestor_keys, apply_language, fetch_ancestor_names
 from .queries import QueryError, build_body, parse_types
 
 
@@ -47,6 +48,9 @@ class SearchView(APIView):
     * ``near`` + ``radius`` -- ``near=-4.48,54.15&radius=5km``
     * ``order`` -- ``relevance`` (default with ``q``), ``name``, or ``size``
     * ``geometry=true`` -- include the full geometry in each result
+    * ``lang`` -- return names in this language where OSM has one, e.g.
+      ``lang=pl`` for Niemcy rather than Deutschland. Ancestry is translated
+      too, and anything untranslated keeps the name OSM stored.
     * ``page``, ``page_size``
     """
 
@@ -80,7 +84,16 @@ class SearchView(APIView):
             ignore_unavailable=True,
             **search_kwargs
         )
-        return Response(format_response(result, page, page_size))
+        payload = format_response(result, page, page_size)
+
+        language = (params.get('lang') or '').strip()
+        if language:
+            hits = payload.get('results', [])
+            apply_language(
+                hits, language,
+                fetch_ancestor_names(client, ancestor_keys(hits), language, prefix),
+            )
+        return Response(payload)
 
 
 def type_view(name):

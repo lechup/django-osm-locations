@@ -66,6 +66,18 @@ BASE_PROPERTIES = {
     },
     'slug': {'type': 'keyword'},
     'center': {'type': 'geo_point'},
+    # Translations, for display. `enabled: false` stores and returns them
+    # without indexing: a country carries 200-270 of them, and neither 270
+    # mapping fields nor 270 inverted-index entries per country would earn
+    # their keep when nothing queries them by language.
+    'names': {'type': 'object', 'enabled': False},
+    # Every translation as one searchable field, so "niemcy" finds
+    # Deutschland without a per-language mapping.
+    'names_all': {
+        'type': 'text',
+        'analyzer': 'location_prefix',
+        'search_analyzer': 'location_prefix_search',
+    },
     'bbox': {'type': 'double'},
     'osm': {
         'properties': {
@@ -185,6 +197,8 @@ class LocationIndex:
             'id': obj.id,
             'type': self.name,
             'name': obj.name,
+            'names': obj.names or None,
+            'names_all': ' '.join(sorted(set((obj.names or {}).values()))) or None,
             'slug': obj.slug,
             'center': (
                 {'lon': obj.center[0], 'lat': obj.center[1]} if obj.center else None

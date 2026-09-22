@@ -15,6 +15,15 @@ class LocationBase(gis_models.Model):
     """
     name = models.CharField(max_length=255)
     slug = models.SlugField(max_length=255, editable=False)
+
+    #: Translations of ``name``, keyed by language: {"pl": "Niemcy", "en": "Germany"}.
+    #:
+    #: OSM carries these as ``name:<lang>`` tags, and coverage runs opposite to
+    #: row count: a country relation has 200-270 of them, a voivodeship about
+    #: 95, while 7-10% of places and 0.5% of streets have any at all. So the
+    #: rows that matter most are the cheapest to carry, and the millions of
+    #: streets store an empty dict.
+    names = models.JSONField(default=dict, blank=True)
     bbox = ArrayField(
         models.FloatField(),
         size=4,

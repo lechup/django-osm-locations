@@ -1,3 +1,4 @@
+import re
 import os
 from array import array
 from datetime import datetime
@@ -169,6 +170,45 @@ class BatchUpserter:
                 fields = sorted(changed_fields | self.derived_fields)
                 self.model.objects.bulk_update(to_update, fields, batch_size=self.batch_size)
                 self.updated += len(to_update)
+
+
+#: ``name:<suffix>`` keys that are not languages at all.
+#:
+#: OSM overloads the namespace with grammar and provenance, and this is not a
+#: corner case: ``name:genitive`` is the single most common ``name:*`` tag in
+#: the Poland extract at 49,118 occurrences, ahead of every real language.
+#: Taking everything after the colon would index Polish noun declensions as
+#: though they were locales.
+NON_LANGUAGE_NAME_KEYS = frozenset({
+    'genitive', 'prefix', 'suffix', 'adjective', 'abbreviation',
+    'etymology', 'start_date', 'end_date', 'botanical', 'source',
+    'wikipedia', 'wikidata', 'left', 'right', 'signed', 'pronunciation',
+})
+
+#: A language tag: two or three letters, optionally with a script or region
+#: subtag -- pl, csb, zh-Hant, pt-BR. Anything else is a convention we have
+#: not seen and would rather skip than mistake for a locale.
+LANGUAGE_TAG = re.compile(r'^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$')
+
+
+def language_names(tags):
+    """
+    Translations of ``name``, keyed by language.
+
+    Skips the grammatical and provenance suffixes above, and anything that
+    does not look like a language tag.
+    """
+    names = {}
+    for key in tags:
+        if not key.startswith('name:'):
+            continue
+        suffix = key[len('name:'):]
+        if suffix in NON_LANGUAGE_NAME_KEYS or not LANGUAGE_TAG.match(suffix):
+            continue
+        value = tags.get(key)
+        if value:
+            names[suffix] = value
+    return names
 
 
 class BaseImporter(object):
@@ -434,10 +474,27 @@ class BaseImporter(object):
         print("Parsing ended: %s, took: %s!\n" % (end, end - start_all))
 
     @classmethod
+    def _wanted_tag(cls, key):
+        """
+        Whether a tag is worth carrying through the parse.
+
+        ``name:<lang>`` is wanted but cannot be whitelisted by name -- there
+        are 380 such keys in the Poland extract alone. The language test runs
+        here rather than at import time so that ``name:genitive`` and its
+        kind, which are grammar rather than locales and outnumber every real
+        language, are never cached at all.
+        """
+        if key in cls.whitelist_tags:
+            return True
+        if key.startswith('name:'):
+            suffix = key[len('name:'):]
+            return suffix not in NON_LANGUAGE_NAME_KEYS and bool(LANGUAGE_TAG.match(suffix))
+        return False
+
+    @classmethod
     def _tags_to_dict(cls, obj):
-        """OSM tags as a plain dict, reduced to the whitelist."""
-        whitelist = cls.whitelist_tags
-        return {tag.k: tag.v for tag in obj.tags if tag.k in whitelist}
+        """OSM tags as a plain dict, reduced to what the import needs."""
+        return {tag.k: tag.v for tag in obj.tags if cls._wanted_tag(tag.k)}
 
     def _parse_relations(self):
         start = datetime.now()
@@ -636,7 +693,7 @@ class BaseImporter(object):
     def _tag_filter(cls, tags):
         # reduce memory usage
         for key in list(tags):
-            if key not in cls.whitelist_tags:
+            if not cls._wanted_tag(key):
                 del tags[key]
 
     def _are_all_members_cached(self, members):
@@ -1002,6 +1059,7 @@ class BaseImporter(object):
             if border:
                 countrysubarea_defaults = {
                     'name': tags.get('name'),
+                    'names': language_names(tags),
                     'border': border,
                     'admin_level': self._admin_level(tags),
                     'population': tags.get('population')
@@ -1041,6 +1099,7 @@ class BaseImporter(object):
                         population = center_node_population
                 place_defaults = {
                     'name': tags.get('name'),
+                    'names': language_names(tags),
                     'border': border,
                     'admin_level': self._admin_level(tags),
                     'population': population
@@ -1070,6 +1129,7 @@ class BaseImporter(object):
             if border:
                 self._upsert(Place, 'way_osm_id', osm_id, {
                     'name': tags.get('name'),
+                    'names': language_names(tags),
                     'border': border,
                     'population': tags.get('population')
                 })
@@ -1086,6 +1146,7 @@ class BaseImporter(object):
                 return
             self._upsert(Place, 'node_osm_id', osm_id, {
                 'name': tags.get('name'),
+                    'names': language_names(tags),
                 'center': Point(coords),
                 'population': tags.get('population')
             })
@@ -1099,6 +1160,7 @@ class BaseImporter(object):
             if border:
                 placesubarea_defaults = {
                     'name': tags.get('name'),
+                    'names': language_names(tags),
                     'border': border,
                     'admin_level': self._admin_level(tags),
                     'population': tags.get('population')
@@ -1127,6 +1189,7 @@ class BaseImporter(object):
                 return
             self._upsert(Street, 'relation_osm_id', osm_id, {
                 'name': tags.get('name'),
+                    'names': language_names(tags),
                 'lines': lines,
             })
 
@@ -1137,6 +1200,7 @@ class BaseImporter(object):
                 return
             self._upsert(Street, 'way_osm_id', osm_id, {
                 'name': tags.get('name'),
+                    'names': language_names(tags),
                 'lines': lines,
             })
 
