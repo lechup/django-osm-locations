@@ -85,33 +85,16 @@ class TestItIsActuallyCalled:
         assert calls == []
 
 
-class TestTheWalkRunsIt:
+class TestTheWalkRunsItInTimeToMatter:
     """
-    The pipeline goes through locations_recalculate_all, which drives the
-    denormalisation in pieces and skips the command's handle() entirely. A
-    test that called handle() passed while the pass never ran: 771,253
-    streets kept no place through a twelve-hour recalculation.
+    The slug pass qualifies a duplicate street by its place, so attaching the
+    strays has to happen before streets are slugged. Running it after the walk
+    -- where it first sat -- left 771,321 streets slugged with no place to
+    qualify by, and the OSM-id fallback rate unmoved at 27.7% through a
+    twelve-hour recalculation.
     """
 
-    def test_recalculate_all_attaches_the_strays(self):
-        from unittest import mock
-
-        from django_osm_locations.management.commands.locations_recalculate_all import (
-            Command as RecalculateAll,
-        )
-
-        with mock.patch(
-            'django_osm_locations.management.commands.locations_recalculate_all.call_command'
-        ), mock.patch.object(Denorm, 'clean_denorm_fields_before_update'), \
-                mock.patch.object(Denorm, 'clean_denorm_fields_after_update'), \
-                mock.patch.object(Denorm, 'update_denorm_fields_for_model_class'), \
-                mock.patch.object(Denorm, 'update_street_place_field') as attach:
-            RecalculateAll().handle()
-
-        attach.assert_called_once()
-
-    def test_it_runs_after_the_placeholder_is_stripped(self):
-        """An array still holding ['',''] is not an empty one."""
+    def _order(self):
         from unittest import mock
 
         from django_osm_locations.management.commands.locations_recalculate_all import (
@@ -120,13 +103,35 @@ class TestTheWalkRunsIt:
 
         order = []
         with mock.patch(
-            'django_osm_locations.management.commands.locations_recalculate_all.call_command'
+            'django_osm_locations.management.commands.locations_recalculate_all.call_command',
+            side_effect=lambda name, *a, **kw: order.append(
+                '{}:{}'.format(name.replace('locations_recalculate_', ''), a[0] if a else '')
+            ),
         ), mock.patch.object(Denorm, 'clean_denorm_fields_before_update'), \
-                mock.patch.object(Denorm, 'update_denorm_fields_for_model_class'), \
-                mock.patch.object(Denorm, 'clean_denorm_fields_after_update',
-                                  side_effect=lambda: order.append('clean')), \
+                mock.patch.object(Denorm, 'clean_denorm_fields_after_update'), \
                 mock.patch.object(Denorm, 'update_street_place_field',
                                   side_effect=lambda: order.append('attach')):
             RecalculateAll().handle()
+        return order
 
-        assert order == ['clean', 'attach']
+    def test_it_runs_at_all(self):
+        assert 'attach' in self._order()
+
+    def test_it_runs_before_streets_are_slugged(self):
+        order = self._order()
+        assert order.index('attach') < order.index('slugs:Street')
+
+    def test_it_runs_after_places_have_been_pushed_down(self):
+        """There is nothing to be nearest to until places are in the arrays."""
+        order = self._order()
+        assert order.index('denormalized_fields:Place') < order.index('attach')
+
+
+class TestItToleratesThePlaceholder:
+    def test_an_array_holding_only_the_placeholder_counts_as_empty(self):
+        """
+        Mid-walk the arrays still carry ['','']; a street with no place looks
+        like [['','']] rather than {}.
+        """
+        sql = Denorm.get_sql_for_street_place_field()
+        assert "ARRAY[ARRAY['','']]::varchar[]" in sql

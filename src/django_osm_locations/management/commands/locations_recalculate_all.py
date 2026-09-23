@@ -60,13 +60,15 @@ class Command(BaseCommand):
                 'locations_recalculate_denormalized_fields', ancestor,
                 no_clean_before=True, no_clean_after=True, no_search_vector=True,
             )
+            if ancestor == 'Place':
+                # Streets inside no place border take the nearest one, and it
+                # has to happen here: the slug pass qualifies a duplicate by
+                # its place, so running this after the walk -- as it first did
+                # -- left 771,321 streets slugged with nothing to qualify by,
+                # and the OSM-id fallback rate unmoved at 27.7%.
+                RecalculateDenormalizedFields.update_street_place_field()
             call_command('locations_recalculate_slugs', descendant)
         RecalculateDenormalizedFields.clean_denorm_fields_after_update()
-        # Streets that fall inside no place border get the nearest one. This
-        # walk drives the pieces directly rather than through the command's
-        # handle(), so it has to be called here too -- it lives behind that
-        # command's clean_after branch, which this walk deliberately skips.
-        RecalculateDenormalizedFields.update_street_place_field()
 
         # The tsvector columns are not rebuilt here. Search moved to
         # OpenSearch, where an edge n-gram analyser does the prefix matching

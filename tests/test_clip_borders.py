@@ -10,6 +10,7 @@ import pytest
 from django.core.management.base import CommandError
 
 from django_osm_locations.management.commands.locations_clip_borders_to_land import (
+    MERGE_VERTICES_CLOSER_THAN,
     SHRUNK_ENOUGH,
     SIMPLIFY_DEGREES,
     SUBDIVIDE_VERTICES,
@@ -150,3 +151,25 @@ class TestOnlyTheCoastIsSimplified:
         """ST_Simplify can invalidate a polygon outright."""
         statements = ' '.join(Clip.sql_for_subdivide('locations_land'))
         assert 'ST_SimplifyPreserveTopology' in statements
+
+
+class TestGeometryIsWritableToTheIndex:
+    """
+    Intersecting against tiles puts new vertices on the seams, and two of them
+    can land closer together than the seven decimal places GEOS writes GeoJSON
+    with. PostGIS keeps them as distinct points; the serialised shape has the
+    same coordinate twice, and OpenSearch refuses it -- "duplicate consecutive
+    coordinates". One such vertex failed an entire reindex, and 293 stored
+    geometries had them.
+    """
+
+    def test_near_duplicate_vertices_are_merged_on_write(self):
+        assert 'ST_RemoveRepeatedPoints' in Clip.sql_for_apply('place')
+
+    def test_the_tolerance_is_below_what_geojson_can_express(self):
+        """GEOS writes seven decimals; anything finer cannot survive it."""
+        assert MERGE_VERTICES_CLOSER_THAN <= 0.0000001
+
+    def test_the_tolerance_is_not_large_enough_to_move_a_coastline(self):
+        """About a centimetre -- far under the 10m simplification."""
+        assert MERGE_VERTICES_CLOSER_THAN < SIMPLIFY_DEGREES / 100

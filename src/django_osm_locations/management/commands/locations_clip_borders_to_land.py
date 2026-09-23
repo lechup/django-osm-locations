@@ -53,6 +53,16 @@ SUBDIVIDE_VERTICES = 256
 #: published 244,376.
 SIMPLIFY_DEGREES = 0.0001
 
+#: Vertices closer than this are merged, in degrees -- about a centimetre.
+#:
+#: Intersecting against tiles puts new vertices on the seams, and two of them
+#: can land closer together than the seven decimal places GEOS writes GeoJSON
+#: with. PostGIS keeps them as distinct points; the serialised geometry has
+#: the same coordinate twice, and OpenSearch rejects the shape outright with
+#: "duplicate consecutive coordinates". One such vertex fails a whole bulk
+#: request, so the geometry is cleaned where it is made.
+MERGE_VERTICES_CLOSER_THAN = 0.0000001
+
 #: How much smaller the clipped border must be before it is written back.
 #: Well above the noise of reassembling a polygon from tiles, well below any
 #: real stretch of coast.
@@ -174,7 +184,7 @@ class Command(BaseCommand):
         """
         return """
             UPDATE "locations_{model_name}" AS loc SET
-                border = c.border,
+                border = ST_RemoveRepeatedPoints(c.border, {merge}),
                 area   = ST_Area(c.border::geography) / 1000000,
                 bbox   = ARRAY[ST_XMin(c.border), ST_YMin(c.border),
                                ST_XMax(c.border), ST_YMax(c.border)],
@@ -183,7 +193,8 @@ class Command(BaseCommand):
             FROM "{staging}" c
             WHERE loc.id = c.id
               AND ST_Area(c.border::geography) < ST_Area(loc.border::geography) * %s;
-        """.format(model_name=model_name, staging=cls.staging_name(model_name))
+        """.format(model_name=model_name, staging=cls.staging_name(model_name),
+                   merge=MERGE_VERTICES_CLOSER_THAN)
 
     @classmethod
     def sql_for_count(cls, model_name):

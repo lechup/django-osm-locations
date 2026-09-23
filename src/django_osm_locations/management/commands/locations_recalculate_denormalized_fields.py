@@ -249,7 +249,13 @@ class Command(BaseCommand):
                     LIMIT 1
                 ) p
                 WHERE s2.center IS NOT NULL
-                  AND (s2.place IS NULL OR array_length(s2.place, 1) IS NULL)
+                  AND (s2.place IS NULL
+                       OR array_length(s2.place, 1) IS NULL
+                       -- mid-walk the arrays still carry the placeholder, and
+                       -- an array holding only ['',''] is an empty one. This
+                       -- has to run before streets are slugged, or the 771,321
+                       -- strays are qualified with no place to qualify by.
+                       OR s2.place = ARRAY[ARRAY['','']]::varchar[])
                   AND ST_DWithin(p.center::geography, s2.center::geography, %s)
             ) AS x
             WHERE s.id = x.id;
