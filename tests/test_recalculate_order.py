@@ -33,6 +33,7 @@ class TestWalkOrder:
             side_effect=lambda name, *a, **kw: calls.append((name, a)),
         ), mock.patch.object(Denorm, 'clean_denorm_fields_before_update'), \
                 mock.patch.object(Denorm, 'clean_denorm_fields_after_update'), \
+                mock.patch.object(Denorm, 'update_street_place_field'), \
                 mock.patch.object(Denorm, 'update_search_vector_field'):
             RecalculateAll().handle()
         return calls
@@ -69,6 +70,7 @@ class TestWalkOrder:
                     'django_osm_locations.management.commands.'
                     'locations_recalculate_all.call_command'
                 ), mock.patch.object(Denorm, 'clean_denorm_fields_before_update'), \
+                mock.patch.object(Denorm, 'update_street_place_field'), \
                 mock.patch.object(Denorm, 'clean_denorm_fields_after_update'):
             RecalculateAll().handle()
 
@@ -80,7 +82,8 @@ class TestWalkOrder:
                 mock.patch(
                     'django_osm_locations.management.commands.'
                     'locations_recalculate_all.call_command'
-                ), mock.patch.object(Denorm, 'update_search_vector_field'):
+                ), mock.patch.object(Denorm, 'update_street_place_field'), \
+                mock.patch.object(Denorm, 'update_search_vector_field'):
             RecalculateAll().handle()
 
         assert before.call_count == 1

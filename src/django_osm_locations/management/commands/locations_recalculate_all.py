@@ -62,6 +62,11 @@ class Command(BaseCommand):
             )
             call_command('locations_recalculate_slugs', descendant)
         RecalculateDenormalizedFields.clean_denorm_fields_after_update()
+        # Streets that fall inside no place border get the nearest one. This
+        # walk drives the pieces directly rather than through the command's
+        # handle(), so it has to be called here too -- it lives behind that
+        # command's clean_after branch, which this walk deliberately skips.
+        RecalculateDenormalizedFields.update_street_place_field()
 
         # The tsvector columns are not rebuilt here. Search moved to
         # OpenSearch, where an edge n-gram analyser does the prefix matching

@@ -83,3 +83,50 @@ class TestItIsActuallyCalled:
                         no_search_vector=True)
 
         assert calls == []
+
+
+class TestTheWalkRunsIt:
+    """
+    The pipeline goes through locations_recalculate_all, which drives the
+    denormalisation in pieces and skips the command's handle() entirely. A
+    test that called handle() passed while the pass never ran: 771,253
+    streets kept no place through a twelve-hour recalculation.
+    """
+
+    def test_recalculate_all_attaches_the_strays(self):
+        from unittest import mock
+
+        from django_osm_locations.management.commands.locations_recalculate_all import (
+            Command as RecalculateAll,
+        )
+
+        with mock.patch(
+            'django_osm_locations.management.commands.locations_recalculate_all.call_command'
+        ), mock.patch.object(Denorm, 'clean_denorm_fields_before_update'), \
+                mock.patch.object(Denorm, 'clean_denorm_fields_after_update'), \
+                mock.patch.object(Denorm, 'update_denorm_fields_for_model_class'), \
+                mock.patch.object(Denorm, 'update_street_place_field') as attach:
+            RecalculateAll().handle()
+
+        attach.assert_called_once()
+
+    def test_it_runs_after_the_placeholder_is_stripped(self):
+        """An array still holding ['',''] is not an empty one."""
+        from unittest import mock
+
+        from django_osm_locations.management.commands.locations_recalculate_all import (
+            Command as RecalculateAll,
+        )
+
+        order = []
+        with mock.patch(
+            'django_osm_locations.management.commands.locations_recalculate_all.call_command'
+        ), mock.patch.object(Denorm, 'clean_denorm_fields_before_update'), \
+                mock.patch.object(Denorm, 'update_denorm_fields_for_model_class'), \
+                mock.patch.object(Denorm, 'clean_denorm_fields_after_update',
+                                  side_effect=lambda: order.append('clean')), \
+                mock.patch.object(Denorm, 'update_street_place_field',
+                                  side_effect=lambda: order.append('attach')):
+            RecalculateAll().handle()
+
+        assert order == ['clean', 'attach']
