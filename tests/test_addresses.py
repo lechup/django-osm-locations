@@ -155,3 +155,183 @@ class TestSettlementFromAddresses:
 
         source = inspect.getsource(Denorm.update_street_place_field)
         assert source.index('from its own addresses') < source.index('nearest place')
+
+
+class TestAnAddressHasABbox:
+    """
+    LocationBase carries no bbox hook -- the bordered and multiline bases each
+    supply their own -- and Address inherits neither. Every address document
+    shipped an empty bbox until it grew one of its own.
+    """
+
+    def test_the_hook_exists(self):
+        assert '_presave_bbox' in Address._save_hooks()
+
+    @pytest.mark.django_db
+    def test_the_bbox_is_around_the_point(self):
+        a = Address(name='Łąkowa 5', house_number='5', center=Point(18.6, 54.35))
+        a.save()
+        assert a.bbox == a.center_bbox
+        assert a.bbox != []
+
+
+@pytest.mark.django_db
+class TestSlugIsDerivedAfterTheStreetIsKnown:
+    """
+    _presave_slug writes a slug only when there is none -- at import, before
+    the street array exists. Every address came out as "lakowa-5", and nothing
+    later touched it, because Address is kept out of the disambiguation pass
+    on purpose. Derived still has to be derived after the link.
+    """
+
+    def test_the_import_path_alone_gives_an_unqualified_slug(self):
+        """This is the bug: reproduce it before showing it fixed."""
+        a = Address(name='Łąkowa 5', house_number='5', center=Point(18.6, 54.35))
+        a.save()
+        assert a.slug == 'lakowa-5'
+
+    def test_the_pass_qualifies_it_by_the_linked_street(self):
+        from django.db import connection
+
+        a = Address(name='Łąkowa 5', house_number='5', center=Point(18.6, 54.35))
+        a.save()
+        Address.objects.filter(pk=a.pk).update(street=[['Łąkowa', 'lakowa-gdansk']])
+
+        Denorm.update_address_slugs()
+
+        a.refresh_from_db()
+        assert a.slug == 'lakowa-gdansk-5'
+
+    def test_a_village_address_falls_back_to_its_place(self):
+        a = Address(name='Kowale 12', house_number='12', center=Point(18.6, 54.35))
+        a.save()
+        Address.objects.filter(pk=a.pk).update(place=[['Kowale', 'kowale']])
+
+        Denorm.update_address_slugs()
+
+        a.refresh_from_db()
+        assert a.slug == 'kowale-12'
+
+    def test_with_no_parent_it_keeps_the_name_slug(self):
+        a = Address(name='Kowale 12', house_number='12', center=Point(18.6, 54.35))
+        a.save()
+        Denorm.update_address_slugs()
+        a.refresh_from_db()
+        assert a.slug == 'kowale-12'
+
+    @pytest.mark.parametrize('number', ['5', '12a', '5/7', '3 B'])
+    def test_sql_and_python_agree(self, number):
+        """
+        Two spellings of the same rule, and a mismatch would fail silently:
+        the row would carry one slug and the model would compute another.
+        """
+        a = Address(name='Łąkowa {}'.format(number), house_number=number,
+                    center=Point(18.6, 54.35))
+        a.save()
+        Address.objects.filter(pk=a.pk).update(street=[['Łąkowa', 'lakowa-gdansk']])
+        Denorm.update_address_slugs()
+        a.refresh_from_db()
+        assert a.slug == a.slugify
+
+
+class TestTheSettlementJoinIsDeterministic:
+    """
+    A name alone does not pick a place: 44% of Polish places share theirs
+    with another, and a plain join on the name matched every Kowale there is
+    -- an arbitrary one won. The nearest namesake wins now.
+    """
+
+    def test_it_picks_the_nearest_place_of_that_name(self):
+        sql = Denorm.get_sql_for_street_settlement_from_addresses()
+        assert 'p.name = ranked.settlement_name' in sql
+        assert 'ORDER BY p.center <-> st2.center' in sql
+        assert 'LIMIT 1' in sql
+
+    def test_it_is_a_lateral_not_a_join(self):
+        """A join fans out; a lateral with LIMIT 1 yields exactly one row."""
+        sql = Denorm.get_sql_for_street_settlement_from_addresses()
+        assert 'CROSS JOIN LATERAL' in sql
+        assert 'JOIN "locations_place" p\n' not in sql
+
+    @pytest.mark.django_db
+    def test_two_places_with_one_name_resolve_to_the_near_one(self):
+        from django.db import connection
+
+        from django_osm_locations.models import Place, Street
+        from django.contrib.gis.geos import LineString, MultiLineString
+
+        near = Place.objects.create(name='Kowale', slug='kowale', center=Point(18.60, 54.35))
+        far = Place.objects.create(name='Kowale', slug='kowale-2', center=Point(19.60, 55.35))
+        street = Street.objects.create(
+            name='Łąkowa', slug='lakowa',
+            lines=MultiLineString(LineString((18.600, 54.350), (18.601, 54.351))),
+            center=Point(18.6005, 54.3505),
+        )
+        Address.objects.create(name='Łąkowa 1', house_number='1', street_name='Łąkowa',
+                               settlement_name='Kowale', center=Point(18.6006, 54.3506))
+
+        with connection.cursor() as cursor:
+            cursor.execute(Denorm.get_sql_for_street_settlement_from_addresses(),
+                           [Denorm.ADDRESS_MATCH_METRES])
+
+        street.refresh_from_db()
+        assert street.place == [['Kowale', 'kowale']]
+        assert street.place != [['Kowale', 'kowale-2']]
+
+
+class TestSlugsRunAfterTheStrip:
+    def test_the_walk_derives_address_slugs_after_cleaning(self):
+        """
+        Until the placeholder is stripped, element [1] is ['',''] and the real
+        parent sits at [2]; deriving before that would read an empty slug.
+        """
+        from unittest import mock
+
+        from django_osm_locations.management.commands.locations_recalculate_all import (
+            Command as RecalculateAll,
+        )
+
+        order = []
+        with mock.patch(
+            'django_osm_locations.management.commands.locations_recalculate_all.call_command'
+        ), mock.patch.object(Denorm, 'clean_denorm_fields_before_update'), \
+                mock.patch.object(Denorm, 'update_street_place_field'), \
+                mock.patch.object(Denorm, 'update_address_street_field',
+                                  side_effect=lambda: order.append('link')), \
+                mock.patch.object(Denorm, 'clean_denorm_fields_after_update',
+                                  side_effect=lambda: order.append('clean')), \
+                mock.patch.object(Denorm, 'update_address_slugs',
+                                  side_effect=lambda: order.append('slugs')):
+            RecalculateAll().handle()
+
+        assert order == ['link', 'clean', 'slugs']
+
+
+class TestParameterisedSqlIsSafeToExecute:
+    """
+    psycopg2 scans the whole SQL string for placeholders, comments included.
+    A stray percent character shifts the parameter count and the statement
+    fails at execute time -- which is how a comment reading "44% of places"
+    took down this pass, and a follow-up comment containing a literal "%s"
+    took it down again. Pin the count, so the next comment cannot.
+    """
+    import re as _re
+    STRAY = _re.compile(r'%[^s%(]')
+
+    @pytest.mark.parametrize('sql,params', [
+        (Denorm.get_sql_for_street_settlement_from_addresses(), 1),
+        (Denorm.get_sql_for_address_street_link(), 1),
+        (Denorm.get_sql_for_street_place_field(), 1),
+        (Denorm.get_sql_for_address_slugs(), 0),
+    ])
+    def test_placeholder_count_matches_the_parameters_passed(self, sql, params):
+        assert sql.count('%s') == params
+
+    @pytest.mark.parametrize('sql', [
+        Denorm.get_sql_for_street_settlement_from_addresses(),
+        Denorm.get_sql_for_address_street_link(),
+        Denorm.get_sql_for_street_place_field(),
+        Denorm.get_sql_for_address_slugs(),
+    ])
+    def test_no_stray_percent_character(self, sql):
+        assert self.STRAY.search(sql) is None, self.STRAY.search(sql)

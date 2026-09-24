@@ -73,6 +73,9 @@ class Command(BaseCommand):
         # says which street it is on, and a point is not inside a line.
         RecalculateDenormalizedFields.update_address_street_field()
         RecalculateDenormalizedFields.clean_denorm_fields_after_update()
+        # After the strip: an address's slug reads its parent from element [1],
+        # which until now was the placeholder.
+        RecalculateDenormalizedFields.update_address_slugs()
 
         # The tsvector columns are not rebuilt here. Search moved to
         # OpenSearch, where an edge n-gram analyser does the prefix matching

@@ -182,6 +182,17 @@ class Address(LocationMergableBase, LocationBase, LocationOSMBase):
             return slugify('{}-{}'.format(parent, self.house_number))
         return slugify(self.name)
 
+    def _presave_bbox(self, *args, **kwargs):
+        """
+        A bbox around the point, since there is nothing else to box.
+
+        LocationBase carries no bbox hook -- the bordered and multiline bases
+        each supply their own -- and Address inherits neither, so without this
+        the index document shipped an empty bbox for every address.
+        """
+        if self.center:
+            self.bbox = self.center_bbox
+
     def _parent_slug(self):
         """The street it is on, or the settlement when it has no street."""
         for level in ('street', 'place'):

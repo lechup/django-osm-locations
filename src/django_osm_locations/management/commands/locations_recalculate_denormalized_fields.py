@@ -293,8 +293,21 @@ class Command(BaseCommand):
                     ) v
                     ORDER BY v.street_id, v.votes DESC, v.settlement_name
                 ) ranked
-                JOIN "locations_place" p
-                  ON p.name = ranked.settlement_name AND NOT p.is_merged
+                JOIN "locations_street" st2 ON st2.id = ranked.street_id
+                -- A name alone does not pick a place: nearly half of Polish
+                -- places share theirs with another, and a plain join on the
+                -- name matched every Kowale there is. The nearest namesake
+                -- wins. Keep this comment free of the percent character:
+                -- psycopg2 scans the whole string for placeholders, comments
+                -- included, and a stray one shifts the parameter count.
+                CROSS JOIN LATERAL (
+                    SELECT name, slug
+                    FROM "locations_place" p
+                    WHERE p.name = ranked.settlement_name
+                      AND NOT p.is_merged AND p.center IS NOT NULL
+                    ORDER BY p.center <-> st2.center
+                    LIMIT 1
+                ) p
             ) AS x
             WHERE s.id = x.street_id;
         """
@@ -342,6 +355,39 @@ class Command(BaseCommand):
             ) AS x
             WHERE s.id = x.id;
         """
+
+    @classmethod
+    def get_sql_for_address_slugs(cls):
+        """
+        Derive each address's slug from what it now knows it is on.
+
+        _presave_slug writes a slug only when there is none, which is at
+        import -- before the street array exists -- so every address came out
+        as "lakowa-5": 8.5 million rows, and nothing later touched them,
+        because Address is deliberately kept out of the disambiguation pass.
+        Derived is still derived; it just has to be derived after the street
+        is linked. Mirrors Address.slugify exactly, so the two never drift.
+
+        Runs after the placeholder is stripped: until then element [1] is
+        ['',''] and the real parent sits at [2].
+        """
+        return """
+            UPDATE "locations_address" SET slug = CASE
+                WHEN street[1][2] IS NOT NULL AND street[1][2] <> ''
+                    THEN slugify(street[1][2] || '-' || house_number)
+                WHEN place[1][2] IS NOT NULL AND place[1][2] <> ''
+                    THEN slugify(place[1][2] || '-' || house_number)
+                ELSE slugify(name)
+            END;
+        """
+
+    @classmethod
+    @transaction.atomic
+    def update_address_slugs(cls):
+        print("Address - deriving slugs from the linked street...")
+        with connection.cursor() as cursor:
+            cursor.execute(cls.get_sql_for_address_slugs())
+            print("  {} derived".format(cursor.rowcount))
 
     @classmethod
     @transaction.atomic
