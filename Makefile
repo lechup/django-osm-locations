@@ -33,7 +33,7 @@ LOCAL_ENV     := DJANGO_SETTINGS_MODULE=local.settings
 .DEFAULT_GOAL := help
 .PHONY: help install test-up test-down test-reset test test-search test-pbf test-all \
         local-up local-down local-reset migrate import update merge coastline clip \
-        snapshot load-snapshot snapshots \
+        snapshot pack load-snapshot snapshots \
         recalculate reindex index-status index-cleanup process demo shell dbshell \
         build check bench clean
 
@@ -121,8 +121,13 @@ load-snapshot: local-up  ## Restore a published snapshot: make load-snapshot SNA
 	@test -n "$(SNAPSHOT)" || { echo "set SNAPSHOT=<name>; make snapshots to list them"; exit 1; }
 	$(LOCAL_ENV) $(PYTHON) -m django locations_import_snapshot $(SNAPSHOT)
 
-snapshots: local-up  ## List what the snapshot repository holds
-	$(LOCAL_ENV) $(PYTHON) -m django locations_import_snapshot --list
+pack:  ## Turn a snapshot into release assets: make pack SNAPSHOT=pl-2026-09-24
+	@test -n "$(SNAPSHOT)" || { echo "set SNAPSHOT=<name>; make snapshots to list them"; exit 1; }
+	./scripts/pack-snapshot.sh $(SNAPSHOT)
+
+snapshots: local-up  ## List loadable snapshots: make snapshots [ISO=pl]
+	$(LOCAL_ENV) $(PYTHON) -m django locations_import_snapshot --list \
+		$(if $(ISO),--in $(ISO),)
 
 recalculate: local-up  ## Recompute slugs, ancestry, areas and lengths
 	$(LOCAL_ENV) $(PYTHON) -m django locations_recalculate_all

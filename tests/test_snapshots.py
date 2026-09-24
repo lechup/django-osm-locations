@@ -55,6 +55,10 @@ class FakeSnapshot:
             raise RuntimeError('access denied')
         self.repositories.append((repository, body))
 
+    def get_repository(self):
+        return {name: {'settings': body['settings']}
+                for name, body in self.repositories}
+
     def create(self, repository, snapshot, body, params):
         self.created.append((snapshot, body, params))
 
@@ -233,6 +237,32 @@ class TestEveryTypeCanBeRoundTripped:
         assert snapshots._alias_for(index, 'locations') == INDEXES[name].alias('locations')
 
 
+class TestOneCountryPerRepository:
+    """
+    A filesystem repository keeps one manifest at its root naming every
+    snapshot in it, so two countries in one repository are not two downloads:
+    no subset of that directory restores either one on its own.
+    """
+
+    def test_each_country_gets_its_own_directory(self):
+        assert snapshots.repository_for('pl') == ('locations-pl', '/snapshots/pl')
+        assert snapshots.repository_for('dk') == ('locations-dk', '/snapshots/dk')
+
+    def test_countries_do_not_share_a_directory(self):
+        _, polish = snapshots.repository_for('pl')
+        _, danish = snapshots.repository_for('dk')
+        assert polish != danish
+
+    def test_no_country_is_still_a_directory_of_its_own(self):
+        """A single-country deployment snapshots everything; it still packs."""
+        assert snapshots.repository_for(None) == ('locations-all', '/snapshots/all')
+
+    def test_the_root_is_where_path_repo_points(self):
+        name, location = snapshots.repository_for('pl', root='/var/snapshots/')
+        assert location == '/var/snapshots/pl'
+        assert name == 'locations-pl'
+
+
 class TestTheLoadCommand:
     """
     Listing what a repository holds has to work before you know a name, and
@@ -254,7 +284,20 @@ class TestTheLoadCommand:
         client = FakeClient()
         self._patch(monkeypatch, client)
         call_command('locations_import_snapshot', list_only=True)
-        assert client.snapshot.gets == 1
+        assert client.snapshot.gets == 0  # nothing registered, nothing to ask
+
+    def test_listing_a_named_directory_registers_it_first(self, monkeypatch):
+        """
+        A consumer who has just unpacked a download has a directory, not a
+        repository, and no API can find it for them.
+        """
+        from django.core.management import call_command
+
+        client = FakeClient()
+        self._patch(monkeypatch, client)
+        call_command('locations_import_snapshot', '--list', '--in', 'pl')
+        assert client.snapshot.repositories[0][0] == 'locations-pl'
+        assert client.snapshot.repositories[0][1]['settings']['location'] == '/snapshots/pl'
 
     def test_restoring_without_a_name_says_which(self, monkeypatch):
         from django.core.management import call_command
@@ -263,3 +306,68 @@ class TestTheLoadCommand:
         self._patch(monkeypatch, FakeClient())
         with pytest.raises(CommandError, match='Which snapshot'):
             call_command('locations_import_snapshot')
+
+    def test_the_directory_comes_from_the_snapshot_name(self, monkeypatch):
+        """`pl-2026-09-24` was published from `pl`, and says so."""
+        from django.core.management import call_command
+
+        client = FakeClient()
+        self._patch(monkeypatch, client)
+        call_command('locations_import_snapshot', 'pl-2026-09-24')
+        assert client.snapshot.repositories[0][0] == 'locations-pl'
+        assert client.snapshot.restored[0][0] == 'pl-2026-09-24'
+
+    def test_an_unpacked_elsewhere_snapshot_can_say_where(self, monkeypatch):
+        from django.core.management import call_command
+
+        client = FakeClient()
+        self._patch(monkeypatch, client)
+        call_command('locations_import_snapshot', 'pl-2026-09-24', '--in', 'poland-old')
+        assert client.snapshot.repositories[0][1]['settings']['location'] == (
+            '/snapshots/poland-old')
+
+
+class TestThePackageCommand:
+    @staticmethod
+    def _patch(monkeypatch, client):
+        from django_osm_locations.management.commands import locations_export_snapshot as command
+
+        monkeypatch.setattr(command, 'get_client', lambda: client)
+        monkeypatch.setattr(command, 'get_index_prefix', lambda: 'locations')
+        return command
+
+    def test_a_country_is_written_to_its_own_directory(self, monkeypatch):
+        from django.core.management import call_command
+
+        client = FakeClient(ALIASES)
+        self._patch(monkeypatch, client)
+        call_command('locations_export_snapshot', 'pl', '--name', 'pl-2026-09-24')
+
+        assert client.snapshot.repositories[0][0] == 'locations-pl'
+        assert client.snapshot.repositories[0][1]['settings']['location'] == '/snapshots/pl'
+        name, body, _ = client.snapshot.created[0]
+        assert name == 'pl-2026-09-24'
+        assert body['indices'] == (
+            'locations-places-pl-20260101,locations-streets-pl-20260101')
+
+    def test_it_refuses_a_country_that_is_not_indexed(self, monkeypatch):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        self._patch(monkeypatch, FakeClient(ALIASES))
+        with pytest.raises(CommandError, match='Nothing is aliased'):
+            call_command('locations_export_snapshot', 'fr')
+
+    def test_a_partial_snapshot_is_not_published_quietly(self, monkeypatch):
+        """
+        OpenSearch does not treat PARTIAL as an error, so a snapshot missing
+        shards would go out looking whole.
+        """
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        client = FakeClient(ALIASES)
+        client.snapshot.states = ['PARTIAL']
+        self._patch(monkeypatch, client)
+        with pytest.raises(CommandError, match='PARTIAL'):
+            call_command('locations_export_snapshot', 'pl')

@@ -193,13 +193,22 @@ and ancestry, and indexing. If all you want is to search, a published snapshot
 skips every step of it.
 
 ```bash
-make load-snapshot SNAPSHOT=pl-2026-09-24    # restore and alias in one go
-make snapshots                               # what the repository holds
+sha256sum -c SHA256SUMS                            # check what you downloaded
+cat pl-2026-09-24.tar.gz.part* | tar -xzf - -C local/snapshots
+make load-snapshot SNAPSHOT=pl-2026-09-24          # restore and alias in one go
+make snapshots ISO=pl                              # what that directory holds
 ```
 
 The cluster has to be started with `path.repo` pointing at the directory the
-snapshots live in — `docker-compose.local.yml` does that — because OpenSearch
-will not take a directory at call time.
+snapshots live under — `docker-compose.local.yml` does that — because
+OpenSearch will not take a directory at call time.
+
+Each country unpacks into a directory of its own, `local/snapshots/pl`, and
+that is not tidiness. A filesystem repository keeps one manifest at its root
+naming every snapshot in it, so two countries in one repository are not two
+downloads: no subset of that directory restores either one alone. The
+directory name is where `load-snapshot` looks, taken from the snapshot name;
+`--in <directory>` overrides it if you unpacked somewhere else.
 
 **Countries are published separately and merge by alias.** Load Poland, then
 Denmark, and both sit under the same aliases and are searched as one. That is
@@ -219,11 +228,15 @@ Two things follow, and both matter:
 To publish:
 
 ```bash
-make snapshot ISO=pl      # package the live Polish indexes
+make snapshot ISO=pl                  # package the live Polish indexes
+make pack SNAPSHOT=pl-2026-09-24      # tar, split, checksum, and print the notes
 ```
 
-The snapshot directory then has to be packed and split: a GitHub release asset
-may not exceed 2 GB, and three countries came to 4.3 GB.
+`pack` splits at 1.9 GB because a GitHub release asset may not exceed 2 GB and
+a country is larger than that — three countries came to 4.3 GB. It refuses a
+directory holding more than one snapshot rather than quietly publishing both,
+and prints the release notes, including the commands above and the attribution
+the license asks for.
 
 Published indexes are derived from OpenStreetMap and carry ODbL's attribution
 and share-alike obligations — see [License](#license). That is separate from

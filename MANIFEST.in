@@ -13,3 +13,4 @@ exclude docker-compose.local.yml
 exclude docker-compose.test.yml
 exclude Makefile
 prune benchmarks
+prune scripts

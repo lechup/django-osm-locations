@@ -27,8 +27,26 @@ from .indexes import INDEXES
 #: directory at call time.
 DEFAULT_REPOSITORY_PATH = '/snapshots'
 
-#: The repository registered for this package's snapshots.
+#: Base name of the repositories registered for this package's snapshots.
+#: The country is appended, because each country is published on its own.
 DEFAULT_REPOSITORY = 'locations'
+
+
+def repository_for(country_token, root=DEFAULT_REPOSITORY_PATH,
+                   name=DEFAULT_REPOSITORY):
+    """
+    The (name, directory) one country is published from.
+
+    Each country gets a repository directory of its own, and that is not
+    tidiness. A filesystem repository keeps one manifest at its root -- the
+    `index-N` file -- naming every snapshot and every index it holds, and the
+    shard data underneath is addressed through it. Put Poland and Denmark in
+    one repository and there is no subset of that directory that restores
+    Poland alone: the manifest a consumer needs also announces a Denmark whose
+    files they were not given. Two directories, two self-contained downloads.
+    """
+    token = country_token or 'all'
+    return '{}-{}'.format(name, token), '{}/{}'.format(root.rstrip('/'), token)
 
 
 def register_repository(client=None, name=DEFAULT_REPOSITORY,

@@ -10,11 +10,11 @@ from django.core.management.base import BaseCommand, CommandError
 
 from ...search.client import get_client, get_index_prefix
 from ...search.snapshots import (
-    DEFAULT_REPOSITORY,
     DEFAULT_REPOSITORY_PATH,
     create,
     indexes_for,
     register_repository,
+    repository_for,
 )
 
 
@@ -39,13 +39,11 @@ class Command(BaseCommand):
                  'when the snapshot was taken.',
         )
         parser.add_argument(
-            '--repository', default=DEFAULT_REPOSITORY,
-            help='Repository to write into. Default {}.'.format(DEFAULT_REPOSITORY),
-        )
-        parser.add_argument(
-            '--location', default=DEFAULT_REPOSITORY_PATH,
-            help='Directory the cluster writes snapshots to, as the cluster '
-                 'sees it. Must match path.repo. Default {}.'.format(
+            '--root', default=DEFAULT_REPOSITORY_PATH,
+            help='Directory the cluster writes snapshots under, as the cluster '
+                 'sees it. Must match path.repo. Each country is written to a '
+                 'directory of its own beneath it, which is what makes one '
+                 'country a download of its own. Default {}.'.format(
                      DEFAULT_REPOSITORY_PATH),
         )
 
@@ -65,11 +63,9 @@ class Command(BaseCommand):
                 'Nothing is aliased for {}. Index it before packaging it.'.format(
                     country or 'any country'))
 
+        repository, location = repository_for(country, root=options['root'])
         try:
-            register_repository(
-                client=client, name=options['repository'],
-                location=options['location'],
-            )
+            register_repository(client=client, name=repository, location=location)
         except RuntimeError as error:
             raise CommandError(str(error))
 
@@ -82,7 +78,7 @@ class Command(BaseCommand):
             self.stdout.write('  {} {}/{} shards'.format(state, done, total))
 
         state = create(
-            name, indexes, client=client, repository=options['repository'],
+            name, indexes, client=client, repository=repository,
             on_progress=report if options.get('verbosity', 1) > 1 else None,
         )
         if state == 'PARTIAL':
@@ -92,7 +88,8 @@ class Command(BaseCommand):
                 'publish as though it were whole.'.format(name))
 
         self.stdout.write(
-            'written to {} on the cluster. Tar that directory, split it under '
-            'the 2GB an asset may be, and publish the parts with their '
-            'checksums.'.format(options['location'])
+            'written to {} on the cluster. That directory is the unit of '
+            'publication: `make pack SNAPSHOT={}` tars it, splits it under '
+            'the 2GB a release asset may be, and writes the checksums.'.format(
+                location, name)
         )
