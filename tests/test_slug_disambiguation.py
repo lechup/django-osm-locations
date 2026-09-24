@@ -152,7 +152,15 @@ class TestPlaces:
 
 
 class TestOtherLevels:
-    def test_country_subareas_qualify_by_country(self):
+    def test_the_same_name_in_two_countries_keeps_the_same_slug(self):
+        """
+        A slug is unique within a country, not across the world.
+
+        That is what lets each country's index be built and published on its
+        own: adding Denmark cannot rename anything Polish. The price is that a
+        slug no longer identifies a row globally, which the detail endpoint
+        has to account for once several countries are loaded together.
+        """
         CountrySubarea.objects.create(
             name='Middle', border=MultiPolygon(square(0, 0)),
             country=[['Isle of Man', 'isle-of-man']],
@@ -162,6 +170,23 @@ class TestOtherLevels:
             country=[['Polska', 'polska']],
         )
         call_command('locations_recalculate_slugs', 'countrysubarea')
+
+        assert sorted(CountrySubarea.objects.values_list('slug', flat=True)) == [
+            'middle', 'middle',
+        ]
+
+    def test_the_same_name_within_one_country_still_qualifies(self):
+        """Scoping narrows what counts as a duplicate; it does not stop it."""
+        CountrySubarea.objects.create(
+            name='Middle', border=MultiPolygon(square(0, 0)),
+            country=[['Polska', 'polska']],
+        )
+        CountrySubarea.objects.create(
+            name='Middle', border=MultiPolygon(square(9, 9)),
+            country=[['Polska', 'polska']],
+        )
+        call_command('locations_recalculate_slugs', 'countrysubarea')
+
         found = sorted(CountrySubarea.objects.values_list('slug', flat=True))
         assert found[0] == 'middle'
-        assert found[1] in ('middle-polska', 'middle-isle-of-man'), found[1]
+        assert found[1] != 'middle', found

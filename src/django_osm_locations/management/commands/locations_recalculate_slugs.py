@@ -1,6 +1,8 @@
+from collections import defaultdict
+
 from django.contrib.gis.db.models.functions import Distance
 from django.core.management.base import BaseCommand
-from django.db import transaction
+from django.db import connection, transaction
 from django.db.models import Count, F, Func, Q
 from ...utils.progress import progress
 
@@ -63,6 +65,12 @@ class Command(BaseCommand):
     #: Columns the qualifier cascade never reads, deferred so that resolving a
     #: slug does not drag a street's geometry or a tsvector across the wire.
     MAYBE_HEAVY = ('border', 'lines', 'search_vector', 'search_vector_name')
+
+    #: The country a row belongs to, whether or not the placeholder is still
+    #: there. clean_denorm_fields_before_update puts ['',''] at position 1 and
+    #: array_cat appends after it, so mid-walk the real ancestor sits at 2 and
+    #: after the strip at 1. Both, in one expression.
+    SCOPE_SQL = "coalesce(nullif(country[1][2], ''), country[2][2])"
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -148,35 +156,83 @@ class Command(BaseCommand):
                 yield value
 
     @classmethod
+    def scopes_for(cls, model_class):
+        """
+        (slug, country) for every row, so slugs can be made unique per country.
+
+        A slug is unique within a country, not across the world. That is what
+        lets one country's index be built, published and merged with another's
+        without either one's public identifiers moving: adding Denmark cannot
+        rename a Polish street.
+
+        One pass. The denormalised arrays carry no GIN index, and `country` is
+        a two-dimensional array rather than nested ones, so a filter per
+        country would be a sequential scan per country -- ten of them over 2.8
+        million streets.
+        """
+        table = model_class._meta.db_table
+        if 'country' not in (getattr(model_class, 'denorm_fields', None) or ()):
+            # Country itself: its slugs are the country names, and those are
+            # the one thing that must stay globally unique.
+            with connection.cursor() as cursor:
+                cursor.execute('SELECT slug, %s FROM "{}"'.format(table), [''])
+                yield from cursor
+            return
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT slug, {} FROM "{}"'.format(cls.SCOPE_SQL, table)
+            )
+            while True:
+                rows = cursor.fetchmany(10000)
+                if not rows:
+                    return
+                yield from rows
+
+    @classmethod
+    def duplicates_for(cls, model_class):
+        """
+        (country, slug, ids) for every base slug held by more than one row in
+        the same country. Grouped in SQL so only the collisions come back.
+        """
+        table = model_class._meta.db_table
+        scope = "''" if 'country' not in (
+            getattr(model_class, 'denorm_fields', None) or ()) else cls.SCOPE_SQL
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT {scope} AS scope, slug, array_agg(id) AS ids
+                FROM "{table}"
+                GROUP BY {scope}, slug
+                HAVING count(*) > 1
+            """.format(scope=scope, table=table))
+            return cursor.fetchall()
+
+    @classmethod
     def set_unique_slugs(cls, model_class):
         """
-        Resolve duplicate slugs by qualifying all but the largest of each set.
+        Resolve duplicate slugs by qualifying all but the largest of each set,
+        within each country.
         """
-        taken = set(
-            model_class.objects.values_list('slug', flat=True)
-        )
-        duplicated = (
-            model_class.objects.values('slug')
-            .annotate(n=Count('slug'))
-            .filter(n__gt=1)
-            .values_list('slug', flat=True)
-            .order_by()
-        )
-        duplicated = list(duplicated)
+        taken = defaultdict(set)
+        for slug, scope in cls.scopes_for(model_class):
+            taken[scope].add(slug)
+
+        duplicated = cls.duplicates_for(model_class)
         if not duplicated:
             return
 
         pending = []
-        for base_slug in progress(duplicated, desc=model_class.__name__, leave=False):
+        for scope, base_slug, ids in progress(
+                duplicated, desc=model_class.__name__, leave=False):
             objects = list(
-                model_class.objects.filter(slug=base_slug)
+                model_class.objects.filter(pk__in=ids)
                 .defer(*cls._heavy_fields(model_class))
                 .order_by(*cls._rank(model_class))
             )
             # the largest keeps the bare slug
             for obj in objects[1:]:
-                obj.slug = cls._unique_slug_for(obj, model_class, base_slug, taken)
-                taken.add(obj.slug)
+                obj.slug = cls._unique_slug_for(
+                    obj, model_class, base_slug, taken[scope])
+                taken[scope].add(obj.slug)
                 pending.append(obj)
                 if len(pending) >= cls.BATCH_SIZE:
                     model_class.objects.bulk_update(pending, ['slug'])
