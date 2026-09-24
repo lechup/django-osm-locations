@@ -267,24 +267,48 @@ def apply_scoring(query):
     }
 
 
-def build_sort(order, has_query):
+# Along a street, in the order a person walks it: 1, 2, 3, 3 B, 5/7, 10, 12,
+# 12a. The leading integer does the ordering and the raw keyword breaks the
+# tie between 12 and 12a; anything with no digit to lead with -- "Unit 10",
+# "Inside WH Smith", 0.2% at most in any country -- goes last. unmapped_type
+# is needed for the same reason it is in SIZE_SORT: the same request can
+# span the streets index, which has neither field.
+NUMBER_SORT = [
+    {'house_number_sort': {'order': 'asc', 'missing': '_last', 'unmapped_type': 'integer'}},
+    {'house_number': {'order': 'asc', 'unmapped_type': 'keyword'}},
+]
+
+
+def build_sort(order, has_query, types=None):
     """
     ``?order=`` -> a sort clause.
 
     Relevance is the default when there is a query. Without one it would be
-    meaningless, so size takes over: largest area, longest street.
+    meaningless, so size takes over: largest area, longest street -- except
+    for a request that is only addresses, which have no size worth the name
+    and whose natural order is the house number.
     """
     if order == 'name':
         return [{'name.keyword': {'order': 'asc', 'unmapped_type': 'keyword'}}]
+    if order == 'number':
+        return list(NUMBER_SORT)
     if order == 'size':
         return list(SIZE_SORT)
     if order == 'relevance' or (order is None and has_query):
         return ['_score']
+    if order is None and types is not None and list(types) == ['addresses']:
+        return list(NUMBER_SORT)
     return list(SIZE_SORT)
 
 
-def build_body(params):
-    """Turn a request's query parameters into a full search body."""
+def build_body(params, types=None):
+    """
+    Turn a request's query parameters into a full search body.
+
+    ``types`` is the resolved list the view is searching, passed in rather
+    than re-parsed from ``?type=`` because a view pinned to one type -- the
+    ``/api/addresses/`` endpoint -- carries no such parameter.
+    """
     q = params.get('q') or None
     page, page_size = parse_page(params.get('page'), params.get('page_size'))
     include_geometry = str(params.get('geometry', '')).lower() in ('1', 'true', 'yes')
@@ -304,7 +328,7 @@ def build_body(params):
 
     body = {
         'query': query,
-        'sort': build_sort(params.get('order'), bool(q)),
+        'sort': build_sort(params.get('order'), bool(q), types),
         'from': (page - 1) * page_size,
         'size': page_size,
         'track_total_hits': True,

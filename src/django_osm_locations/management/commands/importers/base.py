@@ -886,6 +886,36 @@ class BaseImporter(object):
             return False
         return bool(tags.get('addr:street') or tags.get('addr:place'))
 
+    #: Digits at the start of a house number, whatever follows them.
+    HOUSE_NUMBER_LEADING_DIGITS = re.compile(r'^\s*(\d+)')
+
+    @classmethod
+    def _house_number_sort_key(cls, number):
+        """
+        The integer a house number sorts by, or None when it has none.
+
+        The leading integer is enough. Conventions differ in the suffix --
+        4 bis, 2-pomp, 29-30, 24B, 3A -- and the leading integer orders all of
+        them the way a person walking the street would: 29-30 after 28,
+        4 bis after 4. Measured across seven extracts, 36 million addresses:
+
+            Poland        8.58M   no leading digit 0.1%   ev.43
+            Britain       5.11M                    0.2%   Unit 10, Inside WH Smith
+            Netherlands   9.94M                    0.0%   B56, N4
+            France        6.21M                    0.0%   A4, Le Capitole
+            Denmark       2.61M                    0       --
+            Norway        2.57M                    0.0%   one Cyrillic typo
+            Finland       1.08M                    0.0%   A4, B 20, C 18 III
+
+        Every country holds at 99.8% or better, so nothing is done per
+        country; a country importer can override this method should one ever
+        need it. The remainder is not house numbers -- units, landmarks,
+        Finnish stairwells -- and stripping a leading letter would misplace
+        them (A4 in France is a road), so they sort last instead.
+        """
+        match = cls.HOUSE_NUMBER_LEADING_DIGITS.match(number or '')
+        return int(match.group(1)) if match else None
+
     @classmethod
     def _address_defaults(cls, tags):
         """
@@ -901,6 +931,7 @@ class BaseImporter(object):
             'name': '{} {}'.format(street or settlement, number).strip(),
             'names': language_names(tags),
             'house_number': number,
+            'house_number_sort': cls._house_number_sort_key(number),
             'street_name': street,
             'settlement_name': settlement,
             'postcode': tags.get('addr:postcode') or '',

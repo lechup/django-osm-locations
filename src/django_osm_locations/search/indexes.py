@@ -127,6 +127,10 @@ ADDRESS_PROPERTIES = {
     # is, which is what makes 8.5 million of them affordable next to 1.9
     # million streets.
     'house_number': {'type': 'keyword'},
+    # The leading integer, for ordering: a keyword sorts 1, 10, 11, 2 and an
+    # integer cannot hold 12a. Kept beside the keyword, which breaks the tie
+    # between 12 and 12a and is what gets displayed.
+    'house_number_sort': {'type': 'integer'},
     'street_name': {'type': 'keyword'},
     'settlement_name': {'type': 'keyword'},
     'postcode': {'type': 'keyword'},
@@ -239,6 +243,7 @@ class LocationIndex:
             doc['length'] = obj.length
         if 'house_number' in self.properties:
             doc['house_number'] = obj.house_number
+            doc['house_number_sort'] = obj.house_number_sort
             doc['street_name'] = obj.street_name or None
             doc['settlement_name'] = obj.settlement_name or None
             doc['postcode'] = obj.postcode or None

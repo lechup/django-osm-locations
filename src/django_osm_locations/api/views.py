@@ -46,7 +46,9 @@ class SearchView(APIView):
     * ``within`` -- comma separated ancestor slugs, e.g. ``within=douglas``
     * ``bbox`` -- ``minlon,minlat,maxlon,maxlat``
     * ``near`` + ``radius`` -- ``near=-4.48,54.15&radius=5km``
-    * ``order`` -- ``relevance`` (default with ``q``), ``name``, or ``size``
+    * ``order`` -- ``relevance`` (default with ``q``), ``name``, ``size``, or
+      ``number`` -- house numbers in walking order, 1, 2, 3, 3 B, 10, 12a;
+      the default for a request that is only addresses
     * ``geometry=true`` -- include the full geometry in each result
     * ``lang`` -- return names in this language where OSM has one, e.g.
       ``lang=pl`` for Niemcy rather than Deutschland. Ancestry is translated
@@ -60,7 +62,7 @@ class SearchView(APIView):
         params = request.query_params
         try:
             names = self.location_types or parse_types(params.get('type'))
-            body, page, page_size = build_body(params)
+            body, page, page_size = build_body(params, names)
         except QueryError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 

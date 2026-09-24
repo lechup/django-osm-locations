@@ -153,6 +153,12 @@ class Address(LocationMergableBase, LocationBase, LocationOSMBase):
     #: addressing rather than a gap.
     settlement_name = models.CharField(max_length=255, blank=True, default="", db_index=True)
     postcode = models.CharField(max_length=32, blank=True, default="", db_index=True)
+    #: The leading integer of house_number, for ordering. A keyword sorts
+    #: 1, 10, 11, 2; an integer cannot hold 12a or 5/7. The leading integer
+    #: gives the order a person walking the street expects, and None -- the
+    #: 0.2% with no digit to lead with, "Unit 10", "Inside WH Smith" -- sorts
+    #: last. See BaseImporter._house_number_sort_key for what it covers.
+    house_number_sort = models.IntegerField(null=True, blank=True, db_index=True)
 
     denorm_fields = ('country', 'countrysubarea', 'place', 'placesubarea', 'street')
     country = DenormArrayField(max_length=255)
