@@ -3,13 +3,21 @@ from django.db import transaction, connection
 from django.utils.text import slugify
 from ...utils.progress import progress
 
-from .. import Country, CountrySubarea, Place, PlaceSubarea, Street
+from .. import Address, Country, CountrySubarea, Place, PlaceSubarea, Street
 
 
 class Command(BaseCommand):
     help = "Recalculate all denormalized fields for locations objects like CountrySubarea.country."
 
-    DENORMALIZED_MODEL_CLASSES = [Country, CountrySubarea, Place, PlaceSubarea, Street]
+    #: The hierarchy, coarsest first. Address is last because nothing sits
+    #: below a house number, and it is the level that lets a full parent path
+    #: be printed: Polska > pomorskie > Gdansk > Lakowa > Lakowa 5.
+    DENORMALIZED_MODEL_CLASSES = [
+        Country, CountrySubarea, Place, PlaceSubarea, Street, Address,
+    ]
+    #: Sources for the point-in-polygon push-down, which needs a border.
+    #: Street has none -- it has lines -- so an address gets its street by
+    #: name (update_address_street_field) rather than by containment.
     MODEL_CLASSES_TO_UPDATE = DENORMALIZED_MODEL_CLASSES[:4]
     MODEL_CLASSES_TO_CLEAN = DENORMALIZED_MODEL_CLASSES[1:]
     MODEL_CASSES_TO_SEARCH_UPDATE = DENORMALIZED_MODEL_CLASSES
@@ -217,6 +225,80 @@ class Command(BaseCommand):
     #: less than saying nothing.
     NEAREST_PLACE_KM = 25
 
+    #: How near an address has to be to count as being on a street.
+    #: Generous enough for a building set back from the road, tight enough
+    #: that the next street over does not vote.
+    ADDRESS_MATCH_METRES = 100
+
+    @classmethod
+    def get_sql_for_address_street_link(cls):
+        """
+        Point each address at the street it names, and give it that ancestry.
+
+        The match is by name within a settlement, because that is what an
+        address states: addr:street says which street, addr:city or addr:place
+        says which settlement. Geometry only breaks ties -- the nearest street
+        of that name, within ADDRESS_MATCH_METRES.
+        """
+        return """
+            UPDATE "locations_address" AS a SET street = x.pair
+            FROM (
+                SELECT a2.id, ARRAY[ARRAY[s.name, s.slug]]::varchar[] AS pair
+                FROM "locations_address" a2
+                CROSS JOIN LATERAL (
+                    SELECT name, slug
+                    FROM "locations_street"
+                    WHERE NOT is_merged
+                      AND name = a2.street_name
+                      AND center IS NOT NULL
+                      AND ST_DWithin(center::geography, a2.center::geography, %s)
+                    ORDER BY center <-> a2.center
+                    LIMIT 1
+                ) s
+                WHERE a2.street_name <> '' AND a2.center IS NOT NULL
+            ) AS x
+            WHERE a.id = x.id;
+        """
+
+    @classmethod
+    def get_sql_for_street_settlement_from_addresses(cls):
+        """
+        Give a street the settlement its own addresses name.
+
+        This is the one place here that reads rather than infers. 64% of
+        Poland's addressed features and 80% of Britain's name both a street
+        and a settlement, against 0.6% of roads carrying addr:city themselves,
+        so for most streets the answer is written down -- and a street whose
+        addresses say Gdansk is in Gdansk, whatever happens to be nearest.
+
+        The modal settlement wins, because a long road can carry addresses
+        from more than one village and the majority is the better answer.
+        """
+        return """
+            UPDATE "locations_street" AS s SET place = x.pair
+            FROM (
+                SELECT ranked.street_id, ARRAY[ARRAY[p.name, p.slug]]::varchar[] AS pair
+                FROM (
+                    SELECT DISTINCT ON (v.street_id)
+                           v.street_id, v.settlement_name
+                    FROM (
+                        SELECT st.id AS street_id, a.settlement_name, count(*) AS votes
+                        FROM "locations_street" st
+                        JOIN "locations_address" a
+                          ON a.street_name = st.name
+                         AND a.settlement_name <> ''
+                         AND ST_DWithin(a.center::geography, st.center::geography, %s)
+                        WHERE NOT st.is_merged AND st.center IS NOT NULL
+                        GROUP BY st.id, a.settlement_name
+                    ) v
+                    ORDER BY v.street_id, v.votes DESC, v.settlement_name
+                ) ranked
+                JOIN "locations_place" p
+                  ON p.name = ranked.settlement_name AND NOT p.is_merged
+            ) AS x
+            WHERE s.id = x.street_id;
+        """
+
     @classmethod
     def get_sql_for_street_place_field(cls):
         """
@@ -263,14 +345,38 @@ class Command(BaseCommand):
 
     @classmethod
     @transaction.atomic
-    def update_street_place_field(cls):
-        print("Street - attaching streets that fall inside no place...")
+    def update_address_street_field(cls):
+        print("Address - linking addresses to the street they name...")
         with connection.cursor() as cursor:
+            cursor.execute(
+                cls.get_sql_for_address_street_link(), [cls.ADDRESS_MATCH_METRES],
+            )
+            print("  {} linked".format(cursor.rowcount))
+
+    @classmethod
+    @transaction.atomic
+    def update_street_place_field(cls):
+        """
+        Give every street a settlement, best evidence first.
+
+        An address states which settlement a street is in; a nearest-place
+        search guesses. So the addresses go first and the guess only fills
+        what they leave.
+        """
+        with connection.cursor() as cursor:
+            print("Street - reading the settlement from its own addresses...")
+            cursor.execute(
+                cls.get_sql_for_street_settlement_from_addresses(),
+                [cls.ADDRESS_MATCH_METRES],
+            )
+            print("  {} from addresses".format(cursor.rowcount))
+
+            print("Street - attaching what is left to the nearest place...")
             cursor.execute(
                 cls.get_sql_for_street_place_field(),
                 [cls.NEAREST_PLACE_KM * 1000],
             )
-            print("  {} attached".format(cursor.rowcount))
+            print("  {} by proximity".format(cursor.rowcount))
 
     @classmethod
     def get_sql_for_search_vector(cls, model_class):

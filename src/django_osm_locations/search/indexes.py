@@ -8,7 +8,7 @@ import json
 
 from django.contrib.gis.geos import GEOSGeometry
 
-from ..models import Country, CountrySubarea, Place, PlaceSubarea, Street
+from ..models import Address, Country, CountrySubarea, Place, PlaceSubarea, Street
 
 # Prefix matching without a wildcard query: index the name as edge n-grams at
 # write time so "krak" hits "krakow" through an ordinary term lookup. This is
@@ -122,6 +122,16 @@ BORDER_PROPERTIES = {
     'geometry': {'type': 'geo_shape'},
 }
 
+ADDRESS_PROPERTIES = {
+    # A point, and no extent: an address carries no geometry beyond where it
+    # is, which is what makes 8.5 million of them affordable next to 1.9
+    # million streets.
+    'house_number': {'type': 'keyword'},
+    'street_name': {'type': 'keyword'},
+    'settlement_name': {'type': 'keyword'},
+    'postcode': {'type': 'keyword'},
+}
+
 MULTILINE_PROPERTIES = {
     'length': {'type': 'double'},
     'geometry': {'type': 'geo_shape'},
@@ -213,7 +223,11 @@ class LocationIndex:
             'ancestry': entries,
             'ancestry_slugs': slugs,
             'ancestry_names': names,
-            'geometry': self._geojson(getattr(obj, self.geometry_field, None)),
+            # An address has no geometry field: its position is `center`, and
+            # that is all there is of it.
+            'geometry': self._geojson(
+                getattr(obj, self.geometry_field, None) if self.geometry_field else None
+            ),
         }
         if 'area' in self.properties:
             doc['area'] = obj.area
@@ -224,6 +238,11 @@ class LocationIndex:
             doc['seat_name'] = obj.seat_name or None
         if 'length' in self.properties:
             doc['length'] = obj.length
+        if 'house_number' in self.properties:
+            doc['house_number'] = obj.house_number
+            doc['street_name'] = obj.street_name or None
+            doc['settlement_name'] = obj.settlement_name or None
+            doc['postcode'] = obj.postcode or None
         return doc
 
 
@@ -235,5 +254,8 @@ INDEXES = {
         LocationIndex('places', Place, 'border', BORDER_PROPERTIES, 'area'),
         LocationIndex('place-subareas', PlaceSubarea, 'border', BORDER_PROPERTIES, 'area'),
         LocationIndex('streets', Street, 'lines', MULTILINE_PROPERTIES, 'length'),
+        # No geometry field: `center` is on every document already, and an
+        # address has nothing else worth indexing.
+        LocationIndex('addresses', Address, None, ADDRESS_PROPERTIES, 'house_number'),
     ]
 }

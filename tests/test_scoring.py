@@ -30,11 +30,16 @@ class TestTypeBoosts:
         """
         assert DEFAULT_TYPE_BOOSTS['country-subareas'] > DEFAULT_TYPE_BOOSTS['places']
 
-    def test_a_place_still_outranks_a_subdivision_of_one(self):
-        assert DEFAULT_TYPE_BOOSTS['places'] > DEFAULT_TYPE_BOOSTS['place-subareas']
+    def test_addresses_rank_lowest(self):
+        """
+        Below streets on purpose: 8.5 million addresses for Poland against 1.9
+        million streets, so searching "Lakowa" would otherwise bury the street
+        under every house on it.
+        """
+        assert DEFAULT_TYPE_BOOSTS['addresses'] == min(DEFAULT_TYPE_BOOSTS.values())
 
-    def test_streets_rank_lowest(self):
-        assert DEFAULT_TYPE_BOOSTS['streets'] == min(DEFAULT_TYPE_BOOSTS.values())
+    def test_a_street_outranks_its_own_addresses(self):
+        assert DEFAULT_TYPE_BOOSTS['streets'] > DEFAULT_TYPE_BOOSTS['addresses']
 
     def test_every_type_has_a_boost(self):
         from django_osm_locations.search.indexes import INDEXES

@@ -1,7 +1,7 @@
 from django.db import models
 
-from .base import LocationBorderBase, LocationOSMBorderBase, LocationOSMMultilineBase, \
-    LocationMergableBase
+from .base import LocationBase, LocationBorderBase, LocationOSMBase, \
+    LocationOSMBorderBase, LocationOSMMultilineBase, LocationMergableBase
 from .fields import DenormArrayField
 
 
@@ -119,3 +119,74 @@ class Street(LocationMergableBase, LocationOSMMultilineBase):
 
     class Meta:
         ordering = ['-length']
+    @property
+    def addresses(self):
+        return Address.objects.filter(street__contains=[[self.name, self.slug]])
+
+
+# No existing base pairs a point with OSM ids: the bordered and multiline
+# variants both bring geometry an address does not have.
+class Address(LocationMergableBase, LocationBase, LocationOSMBase):
+    """
+    A house number, and what it is a house number on.
+
+    The first thing here that knows where a street is rather than guessing:
+    64% of Poland's addressed features and 80% of Britain's name both their
+    street and their settlement, against 0.6% of roads carrying addr:city
+    themselves. An address states the association; a nearest-place search
+    infers it.
+
+    A point, not a polygon -- an address has no extent worth storing, which
+    keeps it out of the border clipping and makes it far cheaper per document
+    than a street.
+
+    ``street`` is the fifth denormalised level, and the reason a full parent
+    path can be printed: Polska > pomorskie > Gdansk > Lakowa > Lakowa 5.
+    """
+
+    house_number = models.CharField(max_length=64, db_index=True)
+    #: As tagged, before being matched to a Street row. Kept because the match
+    #: is by name, and it helps to see what was matched on.
+    street_name = models.CharField(max_length=255, blank=True, default="", db_index=True)
+    #: addr:city, or addr:place where a settlement has no streets -- 35% of
+    #: Poland's addresses against 0.3% of Britain's, which is village
+    #: addressing rather than a gap.
+    settlement_name = models.CharField(max_length=255, blank=True, default="", db_index=True)
+    postcode = models.CharField(max_length=32, blank=True, default="", db_index=True)
+
+    denorm_fields = ('country', 'countrysubarea', 'place', 'placesubarea', 'street')
+    country = DenormArrayField(max_length=255)
+    countrysubarea = DenormArrayField(max_length=255)
+    place = DenormArrayField(max_length=255)
+    placesubarea = DenormArrayField(max_length=255)
+    street = DenormArrayField(max_length=255)
+
+    class Meta:
+        verbose_name_plural = 'addresses'
+        ordering = ('street_name', 'house_number')
+
+    @property
+    def slugify(self):
+        """
+        Derived, never disambiguated.
+
+        There are 8.5 million of these for Poland alone, and putting them
+        through the duplicate-resolution pass would be both enormous and
+        pointless: a street slug is already unique, so a house number on it
+        is unique too.
+        """
+        from ..utils.slugify import slugify
+
+        parent = self._parent_slug()
+        if parent:
+            return slugify('{}-{}'.format(parent, self.house_number))
+        return slugify(self.name)
+
+    def _parent_slug(self):
+        """The street it is on, or the settlement when it has no street."""
+        for level in ('street', 'place'):
+            for pair in getattr(self, level, None) or []:
+                if len(pair) > 1 and pair[1]:
+                    return pair[1]
+        return ""
+

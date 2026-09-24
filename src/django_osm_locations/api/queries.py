@@ -197,6 +197,10 @@ DEFAULT_TYPE_BOOSTS = {
     'places': 4.0,
     'place-subareas': 2.0,
     'streets': 1.0,
+    # Below streets on purpose. There are 8.5 million addresses for Poland
+    # against 1.9 million streets, so a search for "Lakowa" would otherwise
+    # bury the street under every house on it.
+    'addresses': 0.5,
 }
 
 

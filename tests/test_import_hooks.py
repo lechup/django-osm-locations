@@ -43,6 +43,8 @@ class TestImportHooks:
         instance.country = mock.MagicMock()
         # do_import parses the extract first; there is no extract here
         instance._parse_and_cache = lambda: None
+        # reads the extract a second time; there is no extract here
+        instance.import_addresses = lambda: None
         return instance
 
     def test_before_import_runs_before_anything_is_written(self, importer):
@@ -54,10 +56,14 @@ class TestImportHooks:
         importer._import_nodes = lambda: order.append('nodes')
         importer._flush_writes = lambda: None
         importer.do_update_country_border = lambda: order.append('border')
+        importer.import_addresses = lambda: order.append('addresses')
 
         importer.do_import()
 
-        assert order == ['before', 'relations', 'ways', 'nodes', 'border', 'after']
+        # addresses come after the border because each one is filtered
+        # against it as it arrives
+        assert order == ['before', 'relations', 'ways', 'nodes', 'border',
+                         'addresses', 'after']
 
     def test_after_import_sees_the_country_border(self, importer):
         """It runs after do_update_country_border, so the border is settled."""

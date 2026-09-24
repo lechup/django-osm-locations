@@ -32,6 +32,7 @@ class TestWalkOrder:
             'django_osm_locations.management.commands.locations_recalculate_all.call_command',
             side_effect=lambda name, *a, **kw: calls.append((name, a)),
         ), mock.patch.object(Denorm, 'clean_denorm_fields_before_update'), \
+                mock.patch.object(Denorm, 'update_address_street_field'), \
                 mock.patch.object(Denorm, 'clean_denorm_fields_after_update'), \
                 mock.patch.object(Denorm, 'update_street_place_field'), \
                 mock.patch.object(Denorm, 'update_search_vector_field'):
@@ -71,6 +72,7 @@ class TestWalkOrder:
                     'locations_recalculate_all.call_command'
                 ), mock.patch.object(Denorm, 'clean_denorm_fields_before_update'), \
                 mock.patch.object(Denorm, 'update_street_place_field'), \
+                mock.patch.object(Denorm, 'update_address_street_field'), \
                 mock.patch.object(Denorm, 'clean_denorm_fields_after_update'):
             RecalculateAll().handle()
 
@@ -78,6 +80,7 @@ class TestWalkOrder:
 
     def test_the_arrays_are_cleaned_once_around_the_whole_walk(self):
         with mock.patch.object(Denorm, 'clean_denorm_fields_before_update') as before, \
+                mock.patch.object(Denorm, 'update_address_street_field'), \
                 mock.patch.object(Denorm, 'clean_denorm_fields_after_update') as after, \
                 mock.patch(
                     'django_osm_locations.management.commands.'
@@ -113,12 +116,22 @@ class TestSelectedModelClasses:
     def test_picks_by_name_case_insensitively(self):
         assert Denorm.selected_model_classes(['place']) == [Place]
 
-    def test_street_is_not_an_ancestor(self):
-        """Nothing sits below a street, so it is written to but never from."""
+    def test_a_street_is_not_a_source_for_the_geometric_pass(self):
+        """
+        It has lines, not a border, and a point is not inside a line. An
+        address gets its street by name instead.
+        """
         from django.core.management.base import CommandError
 
         with pytest.raises(CommandError, match='not an ancestor model'):
             Denorm.selected_model_classes(['Street'])
+
+    def test_an_address_is_not_an_ancestor(self):
+        """Nothing sits below a house number."""
+        from django.core.management.base import CommandError
+
+        with pytest.raises(CommandError, match='not an ancestor model'):
+            Denorm.selected_model_classes(['Address'])
 
 
 @pytest.mark.django_db

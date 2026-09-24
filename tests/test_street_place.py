@@ -108,6 +108,7 @@ class TestTheWalkRunsItInTimeToMatter:
                 '{}:{}'.format(name.replace('locations_recalculate_', ''), a[0] if a else '')
             ),
         ), mock.patch.object(Denorm, 'clean_denorm_fields_before_update'), \
+                mock.patch.object(Denorm, 'update_address_street_field'), \
                 mock.patch.object(Denorm, 'clean_denorm_fields_after_update'), \
                 mock.patch.object(Denorm, 'update_street_place_field',
                                   side_effect=lambda: order.append('attach')):

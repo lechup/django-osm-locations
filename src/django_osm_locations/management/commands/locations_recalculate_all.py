@@ -68,6 +68,10 @@ class Command(BaseCommand):
                 # and the OSM-id fallback rate unmoved at 27.7%.
                 RecalculateDenormalizedFields.update_street_place_field()
             call_command('locations_recalculate_slugs', descendant)
+        # After the streets are slugged, because an address stores its
+        # street's slug, and by name rather than by containment -- an address
+        # says which street it is on, and a point is not inside a line.
+        RecalculateDenormalizedFields.update_address_street_field()
         RecalculateDenormalizedFields.clean_denorm_fields_after_update()
 
         # The tsvector columns are not rebuilt here. Search moved to

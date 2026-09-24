@@ -18,6 +18,7 @@ class TestMappings:
     def test_every_location_type_has_an_index(self):
         assert set(INDEXES) == {
             'countries', 'country-subareas', 'places', 'place-subareas', 'streets',
+            'addresses',
         }
 
     def test_center_is_a_geo_point(self):

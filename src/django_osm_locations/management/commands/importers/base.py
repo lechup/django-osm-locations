@@ -12,7 +12,8 @@ from django.contrib.gis.db.models.aggregates import Union
 from django.db.models import Count, Min
 from tqdm import tqdm
 
-from .. import Country, CountrySubarea, Place, PlaceSubarea, Street, MergeMultiline, array_agg_ordered
+from .. import Address, Country, CountrySubarea, Place, PlaceSubarea, Street, \
+    MergeMultiline, array_agg_ordered
 from ....utils.progress import progress, show_progress_default  # noqa: F401
 
 
@@ -228,7 +229,11 @@ class BaseImporter(object):
     un = None
 
     whitelist_tags = ['name', 'admin_level', 'boundary', 'place', 'highway', 'population',
-                      'ISO3166-1', 'ISO3166-1:alpha2']
+                      'ISO3166-1', 'ISO3166-1:alpha2',
+                      # An address states which street and settlement it is on,
+                      # which 0.6% of roads do for themselves.
+                      'addr:housenumber', 'addr:street', 'addr:city', 'addr:place',
+                      'addr:postcode']
     location_models_mergable = [CountrySubarea, Place, PlaceSubarea, Street]
     location_models_not_mergable = []
     location_models = location_models_mergable + location_models_not_mergable
@@ -348,6 +353,12 @@ class BaseImporter(object):
         print("Importing Coords and Nodes ended: %s, took: %s!\n" % (end, end - start))
 
         self.do_update_country_border()
+
+        # After the border, because each address is filtered against it as it
+        # arrives, and this pass keeps nothing to filter afterwards.
+        with transaction.atomic():
+            self.import_addresses()
+
         self.after_import()
 
         end = datetime.now()
@@ -862,6 +873,40 @@ class BaseImporter(object):
         return False
 
     @classmethod
+    def _is_address(cls, tags):
+        """
+        Anything with a house number and something to hang it on.
+
+        ``addr:street`` covers 96% of Britain's addressed features and 65% of
+        Poland's; ``addr:place`` covers the rest of Poland's -- village
+        addresses where there is no street to name -- and almost none of
+        Britain's. Both are wanted.
+        """
+        if not tags.get('addr:housenumber'):
+            return False
+        return bool(tags.get('addr:street') or tags.get('addr:place'))
+
+    @classmethod
+    def _address_defaults(cls, tags):
+        """
+        ``name`` is what somebody would type: "Lakowa 5".
+
+        The slug is derived from it and the parent, never disambiguated --
+        there are 8.5 million of these for Poland alone.
+        """
+        street = tags.get('addr:street') or ''
+        settlement = tags.get('addr:city') or tags.get('addr:place') or ''
+        number = tags.get('addr:housenumber')
+        return {
+            'name': '{} {}'.format(street or settlement, number).strip(),
+            'names': language_names(tags),
+            'house_number': number,
+            'street_name': street,
+            'settlement_name': settlement,
+            'postcode': tags.get('addr:postcode') or '',
+        }
+
+    @classmethod
     def _get_multipolygon_from_multiline(cls, multiline):
         polygons = []
         if multiline:
@@ -1209,6 +1254,62 @@ class BaseImporter(object):
         self._import_place_from_relation(osm_id, tags, members)
         self._import_placesubarea_from_relation(osm_id, tags, members)
         self._import_street_from_relation(osm_id, tags, members)
+
+    def import_addresses(self):
+        """
+        Read addresses in a pass of their own, holding nothing.
+
+        Poland has 8.58 million usable addresses and 62.6% of them are
+        building outlines, whose node references come to 43.9 million. Caching
+        those the way streets are cached is the memory profile that had
+        systemd-oomd killing the desktop, and the geometry is wanted only to
+        average into a single point. So this re-reads the extract instead: one
+        more pass over the file, no cache, and the country border already
+        assembled so each address can be filtered as it arrives.
+        """
+        start = datetime.now()
+        print("Reading Addresses %s ..." % start)
+        osmium = _load_osmium()
+
+        processor = (
+            osmium.FileProcessor(self.file_path, osmium.osm.WAY | osmium.osm.NODE)
+            .with_locations(_location_storage())
+            .with_filter(osmium.filter.KeyFilter('addr:housenumber'))
+        )
+        kept = 0
+        for obj in self._progress(processor, desc='addresses', unit='addr'):
+            tags = {tag.k: tag.v for tag in obj.tags}
+            if not self._is_address(tags):
+                continue
+            point = self._address_point(obj)
+            if point is None or not self._within_country(point):
+                continue
+            defaults = self._address_defaults(tags)
+            defaults['center'] = point
+            field = 'node_osm_id' if obj.is_node() else 'way_osm_id'
+            self._upsert(Address, field, obj.id, defaults)
+            kept += 1
+
+        self._flush_writes()
+        end = datetime.now()
+        print("Addresses read: %s, took: %s! (%d kept)\n" % (end, end - start, kept))
+
+    @staticmethod
+    def _address_point(obj):
+        """
+        Where the address is.
+
+        A node is its own position. A building is the average of its outline,
+        which is all that is kept of it -- an address has no extent worth
+        storing.
+        """
+        if obj.is_node():
+            return Point(obj.location.lon, obj.location.lat)
+        points = [(n.location.lon, n.location.lat) for n in obj.nodes if n.location.valid()]
+        if not points:
+            return None
+        return Point(sum(p[0] for p in points) / len(points),
+                     sum(p[1] for p in points) / len(points))
 
     def _import_way(self, osm_id, tags, coords):
         self._import_place_from_way(osm_id, tags, coords)

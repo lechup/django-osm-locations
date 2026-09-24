@@ -22,6 +22,7 @@ class TestTypes:
     def test_defaults_to_every_type(self):
         assert set(parse_types(None)) == {
             'countries', 'country-subareas', 'places', 'place-subareas', 'streets',
+            'addresses',
         }
 
     def test_parses_a_subset(self):

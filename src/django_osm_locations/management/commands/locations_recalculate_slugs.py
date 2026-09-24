@@ -217,6 +217,10 @@ class Command(BaseCommand):
         return '{}-{}'.format(base_slug, osm_id)
 
     def handle(self, *args, **options):
+        # Address is deliberately absent. Its slug is derived from its street
+        # and house number, which is unique by construction, and putting 8.5
+        # million of them through duplicate resolution would be enormous and
+        # pointless.
         models = [Country, CountrySubarea, Place, PlaceSubarea, Street]
         selected = options.get('types')
         if selected:
