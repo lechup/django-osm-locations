@@ -111,8 +111,25 @@ class DetailView(APIView):
     """
     One location by slug, with its full geometry.
 
-    Slugs are unique per type, so the type is part of the URL.
+    Slugs are unique per type *within a country*, not across the world. That
+    is what lets each country's index be built and published on its own --
+    adding Denmark cannot rename a Polish street -- and it means that with
+    several countries loaded, a slug can name more than one place. Measured
+    across Poland, Britain and Denmark that is 60 slugs: mostly cycle trails
+    called "jurassic-park" and short Danish-English villages like "dale".
+
+    Where it happens, say so rather than pick one. ``?within=<ancestor slug>``
+    narrows it, the same parameter search uses.
+
+    Parameters:
+
+    * ``within`` -- an ancestor slug, e.g. ``within=polska``, to choose
+      between countries when a slug is ambiguous
+    * ``lang`` -- return names in this language where OSM has one
     """
+
+    #: Enough to tell the caller which is which without fetching everything.
+    AMBIGUITY_LIMIT = 10
 
     def get(self, request, location_type, slug):
         if location_type not in INDEXES:
@@ -123,13 +140,61 @@ class DetailView(APIView):
             )
 
         alias = INDEXES[location_type].alias(get_index_prefix())
+        within = (request.query_params.get('within') or '').strip()
+
+        must = [{'term': {'slug': slug}}]
+        if within:
+            must.append({'term': {'ancestry_slugs': within}})
+
         client = get_client()
         result = client.search(
             index=alias,
-            body={'query': {'term': {'slug': slug}}, 'size': 1},
+            # one more than we can serve, so more than one is visible rather
+            # than silently truncated to the first
+            body={'query': {'bool': {'filter': must}}, 'size': self.AMBIGUITY_LIMIT},
             ignore_unavailable=True,
         )
         hits = result.get('hits', {}).get('hits', [])
         if not hits:
             return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
-        return Response(format_hit(hits[0]))
+        if len(hits) > 1:
+            return self._ambiguous(slug, hits)
+
+        payload = format_hit(hits[0])
+        language = (request.query_params.get('lang') or '').strip()
+        if language:
+            apply_language(
+                [payload], language,
+                fetch_ancestor_names(
+                    client, ancestor_keys([payload]), language, get_index_prefix(),
+                ),
+            )
+        return Response(payload)
+
+    def _ambiguous(self, slug, hits):
+        """
+        Several rows answer to this slug, so name them instead of guessing.
+
+        Taking the first was what this did, and with one country loaded it was
+        safe because slugs were unique. Across countries the winner depends on
+        the order shards come back in, which is not a decision anyone made.
+        """
+        candidates = []
+        for hit in hits:
+            source = hit.get('_source') or {}
+            candidates.append({
+                'slug': source.get('slug'),
+                'name': source.get('name'),
+                'ancestry_slugs': source.get('ancestry_slugs') or [],
+            })
+        return Response(
+            {
+                'detail': (
+                    '{} locations share the slug {!r}. A slug is unique within '
+                    'a country, not across them; add ?within=<ancestor slug> '
+                    'to choose.'.format(len(hits), slug)
+                ),
+                'candidates': candidates,
+            },
+            status=status.HTTP_409_CONFLICT,
+        )
