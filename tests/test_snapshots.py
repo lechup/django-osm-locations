@@ -231,3 +231,35 @@ class TestEveryTypeCanBeRoundTripped:
     def test_an_index_of_each_type_finds_its_alias(self, name):
         index = '{}-{}-pl-20260924'.format('locations', name)
         assert snapshots._alias_for(index, 'locations') == INDEXES[name].alias('locations')
+
+
+class TestTheLoadCommand:
+    """
+    Listing what a repository holds has to work before you know a name, and
+    asking for nothing in particular has to say so rather than restore
+    something arbitrary.
+    """
+
+    @staticmethod
+    def _patch(monkeypatch, client):
+        from django_osm_locations.management.commands import locations_import_snapshot as command
+
+        monkeypatch.setattr(command, 'get_client', lambda: client)
+        monkeypatch.setattr(command, 'get_index_prefix', lambda: 'locations')
+        return command
+
+    def test_listing_needs_no_snapshot_name(self, monkeypatch):
+        from django.core.management import call_command
+
+        client = FakeClient()
+        self._patch(monkeypatch, client)
+        call_command('locations_import_snapshot', list_only=True)
+        assert client.snapshot.gets == 1
+
+    def test_restoring_without_a_name_says_which(self, monkeypatch):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        self._patch(monkeypatch, FakeClient())
+        with pytest.raises(CommandError, match='Which snapshot'):
+            call_command('locations_import_snapshot')

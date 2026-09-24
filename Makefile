@@ -122,7 +122,7 @@ load-snapshot: local-up  ## Restore a published snapshot: make load-snapshot SNA
 	$(LOCAL_ENV) $(PYTHON) -m django locations_import_snapshot $(SNAPSHOT)
 
 snapshots: local-up  ## List what the snapshot repository holds
-	$(LOCAL_ENV) $(PYTHON) -m django locations_import_snapshot --list x
+	$(LOCAL_ENV) $(PYTHON) -m django locations_import_snapshot --list
 
 recalculate: local-up  ## Recompute slugs, ancestry, areas and lengths
 	$(LOCAL_ENV) $(PYTHON) -m django locations_recalculate_all

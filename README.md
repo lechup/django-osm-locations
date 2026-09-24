@@ -81,6 +81,7 @@ python manage.py migrate
 | `Place` | `MultiPolygon` | cities, towns, villages, hamlets |
 | `PlaceSubarea` | `MultiPolygon` | districts and neighbourhoods |
 | `Street` | `MultiLineString` | ordered by length |
+| `Address` | `Point` | house number, its street and its settlement |
 
 All but `Country` carry an `is_merged` flag: OSM frequently represents one
 real-world place as several relations, ways and nodes, and the import pipeline
@@ -88,8 +89,12 @@ marks the redundant copies rather than deleting them. Use the manager helpers
 `Model.objects.not_merged()` / `.merged()` to filter.
 
 Ancestry is denormalised onto each row (`country`, `countrysubarea`, `place`,
-`placesubarea`) as arrays of `[slug, name]` pairs, so a street row knows its
-city and region without a join.
+`placesubarea`, and `street` for addresses) as arrays of `[slug, name]` pairs,
+so a street row knows its city and region without a join — and an address can
+print its whole parent path, `Polska › pomorskie › Gdańsk › Łąkowa › Łąkowa 5`.
+
+Every row also carries `names`, OSM's translations of its name keyed by
+language. See [Localized names](#localized-names).
 
 ## REST API
 
@@ -113,7 +118,8 @@ LOCATIONS_OPENSEARCH_HOSTS = ["http://opensearch:9200"]
 | `/api/places/`, `/api/streets/`, … | the same, restricted to one type |
 | `/api/<type>/<slug>/` | one location, with full geometry |
 
-Types are `countries`, `country-subareas`, `places`, `place-subareas`, `streets`.
+Types are `countries`, `country-subareas`, `places`, `place-subareas`,
+`streets`, `addresses`.
 
 ### Parameters
 
@@ -125,7 +131,8 @@ Types are `countries`, `country-subareas`, `places`, `place-subareas`, `streets`
 | `bbox` | `?bbox=-5,54,-4,55` | `minlon,minlat,maxlon,maxlat` |
 | `near` + `radius` | `?near=-4.4,54.1&radius=5km` | within a distance of a point |
 | `admin_level` | `?admin_level=4,6` | only these OSM admin levels |
-| `order` | `?order=name` | `relevance` (default with `q`), `name`, `size` |
+| `order` | `?order=name` | `relevance` (default with `q`), `name`, `size`, `number` |
+| `lang` | `?lang=pl` | names in that language where OSM has one, ancestry included |
 | `geometry` | `?geometry=true` | include full geometry in list results |
 | `page`, `page_size` | `?page=2&page_size=50` | paging, max 200 per page |
 
@@ -177,6 +184,50 @@ Krakuszowice. Two multiplicative factors fix that:
 
 Both apply only when there is a `q`; without one, results are sorted by size
 anyway.
+
+## Published indexes
+
+Building a country from scratch costs about thirteen hours: downloading the
+extract, importing it, clipping borders to the coastline, recalculating slugs
+and ancestry, and indexing. If all you want is to search, a published snapshot
+skips every step of it.
+
+```bash
+make load-snapshot SNAPSHOT=pl-2026-09-24    # restore and alias in one go
+make snapshots                               # what the repository holds
+```
+
+The cluster has to be started with `path.repo` pointing at the directory the
+snapshots live in — `docker-compose.local.yml` does that — because OpenSearch
+will not take a directory at call time.
+
+**Countries are published separately and merge by alias.** Load Poland, then
+Denmark, and both sit under the same aliases and are searched as one. That is
+an ordinary OpenSearch alias over several indexes, so nothing in the query
+layer knows about it.
+
+Two things follow, and both matter:
+
+* **Merge by alias, never by reindexing several countries into one index.** A
+  document's `_id` is its PostGIS primary key, unique per country and not
+  across them, so one country would overwrite the other.
+* **An index alone is read-only.** `locations_update` and the
+  `locations_recalculate_*` commands all work on PostGIS, which a published
+  index does not carry. To update between releases, or to extend the data,
+  run the import yourself — that is what the rest of this README is about.
+
+To publish:
+
+```bash
+make snapshot ISO=pl      # package the live Polish indexes
+```
+
+The snapshot directory then has to be packed and split: a GitHub release asset
+may not exceed 2 GB, and three countries came to 4.3 GB.
+
+Published indexes are derived from OpenStreetMap and carry ODbL's attribution
+and share-alike obligations — see [License](#license). That is separate from
+this package's own BSD-3 licence, which covers the code.
 
 ## Updating to newer OSM data
 
@@ -235,6 +286,16 @@ python manage.py locations_reindex           # rebuild and swap
 wrote, compares that against the database, and only then moves the alias. If it
 comes up short it refuses to promote and exits non-zero, leaving the previous
 index serving. The superseded index is kept as a rollback path.
+
+One country at a time, when indexes are published separately:
+
+```bash
+python manage.py locations_reindex --country poland
+```
+
+That builds `locations-streets-pl-<suffix>` from Poland's rows alone and adds
+it to the aliases without disturbing any other country already under them. A
+rebuild without `--country` still replaces everything.
 
 ```bash
 python manage.py locations_reindex --dry-run          # report only
@@ -295,6 +356,89 @@ places use the nearest larger place within about 110 km, country subareas use
 their country. The OSM id remains as a last resort for what geography cannot
 separate, such as two streets of the same name in the same town. On the Isle of
 Man extract it is never needed: all 2008 streets get a readable slug.
+
+### A slug is unique within a country, not across them
+
+This is deliberate, and it is what lets each country's index be built,
+published and replaced on its own: importing Denmark cannot rename a Polish
+street and break a URL somebody has already published.
+
+The price is that a slug does not identify a row globally. With several
+countries loaded together, one can name more than one place — measured across
+Poland, Britain and Denmark, 60 slugs do, out of roughly 422,000 rows that
+keep an unqualified slug. They are mostly not real names: cycle trails called
+`jurassic-park` and `drop-zone`, and short Danish-English villages like `dale`
+and `aller`. Collisions grow with the square of the country count and with
+linguistic proximity, so a Scandinavian set will see more than this.
+
+Where it happens the detail endpoint says so rather than picking one, because
+the winner would otherwise be whichever shard answered first:
+
+```
+GET /api/streets/dale/
+409 {"detail": "2 locations share the slug 'dale'. A slug is unique within a
+      country, not across them; add ?within=<ancestor slug> to choose.",
+     "candidates": [...]}
+
+GET /api/streets/dale/?within=polska
+200 {...}
+```
+
+With one country loaded this cannot happen at all.
+
+## Addresses
+
+An address is a house number and what it is a house number on. They are the
+one thing here that knows where a street is rather than inferring it: 64% of
+Poland's addressed features and 80% of Britain's name both their street and
+their settlement, against 0.6% of roads carrying `addr:city` themselves.
+
+```
+GET /api/addresses/?within=lakowa-gdansk        # a street, in walking order
+GET /api/search/?q=Łąkowa 5
+```
+
+Ordering is by house number by default for an addresses-only request, because
+an address has no size worth sorting by. `?order=number` asks for it anywhere.
+A keyword sorts `1, 10, 11, 2` and an integer cannot hold `12a` or `5/7`, so
+the leading integer orders and the raw number breaks ties: `1, 2, 3, 3 B, 5/7,
+10, 12, 12a`. Measured across seven extracts and 36 million addresses, at most
+0.2% of any country has no leading digit — British units like `Unit 10`,
+Finnish stairwells like `B 20` — and those sort last.
+
+They rank below streets in search, so looking for a street name does not bury
+it under every house on it.
+
+Addresses are read in a pass of their own rather than cached with everything
+else: 62.6% of them are building outlines, whose node references come to 43.9
+million for Poland, and holding those is enough to get a desktop session
+killed. The pass re-reads the extract once the country border is known, so
+each address is filtered as it arrives and nothing is kept.
+
+## Localized names
+
+OSM carries translations as `name:<lang>`, and this package keeps them:
+
+```
+GET /api/search/?q=deutschland&lang=pl      → "Niemcy"
+GET /api/search/?q=belfast&lang=pl          → ancestry as "Wielka Brytania › …"
+```
+
+Anything without a translation keeps the name OSM stored, which is most
+things: coverage runs opposite to row count. A country relation carries 200–270
+translations and a voivodeship about 95, while 7–10% of places and 0.5% of
+streets have any at all — so the rows people most want translated are the ones
+that carry translations.
+
+`name:genitive` is not a language. It is the most common `name:*` tag in the
+Polish extract at 49,118 occurrences, ahead of every real one, and
+`name:prefix`, `name:adjective` and `name:etymology` sit in the same
+namespace; they are filtered out before anything is stored.
+
+Translations are stored but not indexed field-by-field — a mapping field per
+language would be 375 of them — and one `names_all` field makes them all
+searchable, so "niemcy" finds Deutschland. Slugs stay monolingual: they are
+identifiers, not labels.
 
 ## Subdomain middleware
 
@@ -463,6 +607,10 @@ everything in the file is imported, which is the behaviour this replaced.
 | `locations_reindex` | Rebuild the search index and swap the alias |
 | `locations_index_status` | Compare database row counts with the live index |
 | `locations_index_cleanup` | Remove superseded indexes no alias points at |
+| `locations_load_land_polygons` | Load the coastline shapefile into PostGIS |
+| `locations_clip_borders_to_land` | Trim borders back to that coastline |
+| `locations_export_snapshot` | Package a country's live indexes for publication |
+| `locations_import_snapshot` | Restore a published snapshot and alias it |
 
 Nothing here removes rows from the database. Earlier versions shipped
 `locations_clear_merged`, `locations_clear_not_in_country` and
@@ -485,6 +633,7 @@ of the index.
 | `LOCATIONS_OPENSEARCH_HOSTS` | `['http://localhost:9200']` | Where OpenSearch lives |
 | `LOCATIONS_OPENSEARCH_INDEX_PREFIX` | `locations` | Prefix for every index and alias |
 | `LOCATIONS_OPENSEARCH_CLIENT_KWARGS` | `{}` | Extra client args: auth, TLS, timeouts |
+| `LOCATIONS_LAND_POLYGONS_TABLE` | none | Table the coastline lives in; needed to clip borders |
 
 ### Memory during import
 
@@ -638,3 +787,12 @@ under the [Open Database License](https://www.openstreetmap.org/copyright), so
 a database you build by running `locations_import` is an ODbL-derived database
 and carries that license's attribution and share-alike obligations, whatever
 license this package uses.
+
+The same applies to any index published from it, and there the obligation is
+ours rather than yours: a published snapshot is a derivative database, offered
+under ODbL, and carries
+
+> © OpenStreetMap contributors
+
+Coastlines come from [osmdata.openstreetmap.de](https://osmdata.openstreetmap.de),
+which is ODbL for the same reason.

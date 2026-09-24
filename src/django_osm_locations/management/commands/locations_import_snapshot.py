@@ -27,8 +27,9 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument(
-            'snapshot',
-            help='Name of the snapshot in the repository, e.g. pl-2026-09-24.',
+            'snapshot', nargs='?', default=None,
+            help='Name of the snapshot in the repository, e.g. pl-2026-09-24. '
+                 'Not needed with --list.',
         )
         parser.add_argument(
             '--repository', default=DEFAULT_REPOSITORY,
@@ -61,6 +62,10 @@ class Command(BaseCommand):
             return self._list(client, options['repository'])
 
         name = options['snapshot']
+        if not name:
+            raise CommandError(
+                'Which snapshot? Pass its name, or --list to see what the '
+                'repository holds.')
         indexes = self._indexes_in(client, options['repository'], name)
         if not indexes:
             raise CommandError('Snapshot {} holds no indexes.'.format(name))
