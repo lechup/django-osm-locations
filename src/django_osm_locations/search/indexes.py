@@ -144,11 +144,10 @@ class LocationIndex:
     document from a model instance.
     """
 
-    def __init__(self, name, model, geometry_field, extra_properties, sort_field):
+    def __init__(self, name, model, geometry_field, extra_properties):
         self.name = name
         self.model = model
         self.geometry_field = geometry_field
-        self.sort_field = sort_field
         self.properties = dict(BASE_PROPERTIES)
         self.properties.update(extra_properties)
 
@@ -249,13 +248,13 @@ class LocationIndex:
 INDEXES = {
     index.name: index
     for index in [
-        LocationIndex('countries', Country, 'border', BORDER_PROPERTIES, 'area'),
-        LocationIndex('country-subareas', CountrySubarea, 'border', BORDER_PROPERTIES, 'area'),
-        LocationIndex('places', Place, 'border', BORDER_PROPERTIES, 'area'),
-        LocationIndex('place-subareas', PlaceSubarea, 'border', BORDER_PROPERTIES, 'area'),
-        LocationIndex('streets', Street, 'lines', MULTILINE_PROPERTIES, 'length'),
+        LocationIndex('countries', Country, 'border', BORDER_PROPERTIES),
+        LocationIndex('country-subareas', CountrySubarea, 'border', BORDER_PROPERTIES),
+        LocationIndex('places', Place, 'border', BORDER_PROPERTIES),
+        LocationIndex('place-subareas', PlaceSubarea, 'border', BORDER_PROPERTIES),
+        LocationIndex('streets', Street, 'lines', MULTILINE_PROPERTIES),
         # No geometry field: `center` is on every document already, and an
         # address has nothing else worth indexing.
-        LocationIndex('addresses', Address, None, ADDRESS_PROPERTIES, 'house_number'),
+        LocationIndex('addresses', Address, None, ADDRESS_PROPERTIES),
     ]
 }
