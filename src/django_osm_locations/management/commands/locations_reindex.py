@@ -17,6 +17,14 @@ class Command(BaseCommand):
             help='Location types to rebuild. Defaults to all of them.',
         )
         parser.add_argument(
+            '--country',
+            default=None,
+            help='Rebuild only this country, named as the importer is: '
+                 'poland, united-kingdom. Its index is kept apart from the '
+                 'others and the alias covers them all, so countries can be '
+                 'built, published and replaced one at a time.',
+        )
+        parser.add_argument(
             '-n', '--dry-run',
             action='store_true',
             help='Report what would be rebuilt, and how it compares to what is '
@@ -50,6 +58,30 @@ class Command(BaseCommand):
         )
 
     @staticmethod
+    def _resolve_country(name):
+        """
+        The Country row for an importer's name, or None for everything.
+
+        Named the way the importers are -- poland, united-kingdom -- because
+        that is the vocabulary the rest of the commands use.
+        """
+        if not name:
+            return None
+        from ...models import Country
+        from .importers import registry
+
+        importers = registry()
+        importer = importers.get(name)
+        if importer is None:
+            raise CommandError('Unknown country: {}. Known: {}.'.format(
+                name, ', '.join(sorted(importers))))
+        try:
+            return Country.objects.get(slug=importer.country_slug)
+        except Country.DoesNotExist:
+            raise CommandError(
+                'No row for {} yet; import it before indexing it.'.format(name))
+
+    @staticmethod
     def _show_progress(options):
         """False when asked to be quiet, otherwise leave it to detection."""
         if options.get('no_progress') or not options.get('verbosity', 1):
@@ -60,10 +92,12 @@ class Command(BaseCommand):
         # one suffix for the whole run, so a rebuild is identifiable as a set
         suffix = new_index_suffix()
         selected = options['types'] or None
+        country = self._resolve_country(options.get('country'))
         try:
             targets = reindexers(
                 selected,
                 suffix=suffix,
+                country=country,
                 batch_size=options['batch_size'],
                 show_progress=self._show_progress(options),
             )

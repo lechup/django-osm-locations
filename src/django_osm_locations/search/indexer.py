@@ -42,11 +42,16 @@ class Reindexer:
     """
 
     def __init__(self, index, client=None, prefix=None, suffix=None, batch_size=500,
-                 show_progress=None):
+                 show_progress=None, country=None):
         self.index = index
         self.client = client or get_client()
         self.prefix = prefix or get_index_prefix()
         self.suffix = suffix or new_index_suffix()
+        #: A Country row when this rebuild covers one country, None for all of
+        #: them. Decides which rows are indexed, what the index is called, and
+        #: -- the part that matters most -- which other indexes the alias is
+        #: taken away from.
+        self.country = country
         self.batch_size = batch_size
         self.indexed = 0
         # None leaves it to terminal detection, matching the importer
@@ -60,10 +65,31 @@ class Reindexer:
 
     @property
     def index_name(self):
-        return self.index.index_name(self.prefix, self.suffix)
+        return self.index.index_name(self.prefix, self.suffix, self.country_token)
+
+    @property
+    def country_token(self):
+        """The country's ISO 3166-1 alpha-2, lowercased, or None."""
+        return self.country.iso2.lower() if self.country else None
+
+    def queryset(self):
+        """
+        Rows to index, narrowed to one country when this is a country build.
+
+        Country itself carries no denormalised country array -- it is what the
+        arrays point at -- so it is matched on its own primary key.
+        """
+        queryset = self.index.queryset()
+        if not self.country:
+            return queryset
+        if 'country' in (getattr(self.index.model, 'denorm_fields', None) or ()):
+            return queryset.filter(
+                country__contains=[[self.country.name, self.country.slug]]
+            )
+        return queryset.filter(pk=self.country.pk)
 
     def database_count(self):
-        return self.index.queryset().count()
+        return self.queryset().count()
 
     def indexed_count(self, name=None):
         """Documents in an index, or 0 when it does not exist."""
@@ -92,7 +118,7 @@ class Reindexer:
         minutes; the bar goes to stderr so piping stdout still works.
         """
         rows = progress(
-            self.index.queryset().iterator(chunk_size=self.batch_size),
+            self.queryset().iterator(chunk_size=self.batch_size),
             total=total,
             desc=self.index.name,
             unit='doc',
@@ -117,6 +143,27 @@ class Reindexer:
         self.client.indices.refresh(index=self.index_name)
         return success, errors
 
+    def replaces(self, index_name):
+        """
+        Whether this rebuild supersedes an index already under the alias.
+
+        A country rebuild replaces only that country. Rebuilding Poland must
+        leave Denmark under the alias, or merging countries would mean each
+        import silently evicting the last -- the alias is the whole mechanism
+        by which several countries are searched as one.
+
+        A rebuild covering everything replaces everything, country indexes
+        included.
+        """
+        if index_name == self.index_name:
+            return False
+        stem = '{}-{}-'.format(self.prefix, self.index.name)
+        if not index_name.startswith(stem):
+            return False
+        if not self.country:
+            return True
+        return index_name[len(stem):].startswith('{}-'.format(self.country_token))
+
     def promote(self):
         """
         Move the alias onto the new index, atomically.
@@ -125,10 +172,9 @@ class Reindexer:
         and removing it is a separate, explicit decision.
         """
         actions = [{'add': {'index': self.index_name, 'alias': self.alias}}]
-        replaced = self.aliased_indexes()
+        replaced = [old for old in self.aliased_indexes() if self.replaces(old)]
         for old in replaced:
-            if old != self.index_name:
-                actions.append({'remove': {'index': old, 'alias': self.alias}})
+            actions.append({'remove': {'index': old, 'alias': self.alias}})
         self.client.indices.update_aliases(body={'actions': actions})
         return replaced
 

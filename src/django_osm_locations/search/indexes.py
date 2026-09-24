@@ -158,7 +158,16 @@ class LocationIndex:
     def alias(self, prefix):
         return '{}-{}'.format(prefix, self.name)
 
-    def index_name(self, prefix, suffix):
+    def index_name(self, prefix, suffix, country=None):
+        """
+        The concrete index behind the alias.
+
+        A country token keeps one country's index apart from another's, so
+        both can sit under the same alias and be searched together while
+        still being built, published and replaced on their own.
+        """
+        if country:
+            return '{}-{}-{}-{}'.format(prefix, self.name, country, suffix)
         return '{}-{}-{}'.format(prefix, self.name, suffix)
 
     def body(self):
