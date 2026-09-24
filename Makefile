@@ -33,6 +33,7 @@ LOCAL_ENV     := DJANGO_SETTINGS_MODULE=local.settings
 .DEFAULT_GOAL := help
 .PHONY: help install test-up test-down test-reset test test-search test-pbf test-all \
         local-up local-down local-reset migrate import update merge coastline clip \
+        snapshot load-snapshot snapshots \
         recalculate reindex index-status index-cleanup process demo shell dbshell \
         build check bench clean
 
@@ -110,6 +111,18 @@ coastline: local-up  ## Download and load land polygons for border clipping
 
 clip: local-up  ## Trim borders back to the coastline (needs `make coastline`)
 	$(LOCAL_ENV) $(PYTHON) -m django locations_clip_borders_to_land
+
+snapshot: local-up  ## Package a country's live indexes: make snapshot ISO=pl
+	@test -n "$(ISO)" || { echo "set ISO=pl (the country's alpha-2 code), or ISO=all"; exit 1; }
+	$(LOCAL_ENV) $(PYTHON) -m django locations_export_snapshot \
+		$(if $(filter all,$(ISO)),,$(ISO))
+
+load-snapshot: local-up  ## Restore a published snapshot: make load-snapshot SNAPSHOT=pl-2026-09-24
+	@test -n "$(SNAPSHOT)" || { echo "set SNAPSHOT=<name>; make snapshots to list them"; exit 1; }
+	$(LOCAL_ENV) $(PYTHON) -m django locations_import_snapshot $(SNAPSHOT)
+
+snapshots: local-up  ## List what the snapshot repository holds
+	$(LOCAL_ENV) $(PYTHON) -m django locations_import_snapshot --list x
 
 recalculate: local-up  ## Recompute slugs, ancestry, areas and lengths
 	$(LOCAL_ENV) $(PYTHON) -m django locations_recalculate_all

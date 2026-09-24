@@ -65,10 +65,19 @@ services:
       # 3g leaves headroom for Poland and the UK in the same cluster
       OPENSEARCH_JAVA_OPTS: "-Xms3g -Xmx3g"
       bootstrap.memory_lock: "true"
+      # Snapshots can only be written to a directory the cluster has been
+      # told about up front; there is no way to nominate one at call time.
+      # This is what locations_export_snapshot writes into, and what a
+      # consumer restoring a published index has to configure too.
+      path.repo: /snapshots
     ports:
       - "${LOCATIONS_LOCAL_OPENSEARCH_PORT:-59201}:9200"
     volumes:
       - opensearch-data:/usr/share/opensearch/data
+      # A bind mount rather than a named volume: the point of a snapshot is
+      # to leave the container, and tarring a named volume means another
+      # container to do it with.
+      - ./local/snapshots:/snapshots
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health || exit 1"]
       interval: 5s

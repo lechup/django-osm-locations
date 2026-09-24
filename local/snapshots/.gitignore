@@ -1,0 +1,4 @@
+# Snapshots are build output: large, regenerable, and published as release
+# assets rather than committed.
+*
+!.gitignore
