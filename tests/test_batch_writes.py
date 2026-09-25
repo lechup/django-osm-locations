@@ -124,3 +124,65 @@ class TestPlaces:
         writer.add(7, {'name': 'X', 'border': MultiPolygon(square(2, 2)), 'population': '~900'})
         writer.flush()
         assert Place.objects.get(relation_osm_id=7).population == 0
+
+
+class TestWritersAreNotDeclaredInAdvance:
+    """
+    Every model/lookup-field pair an import path writes needs a writer, and a
+    fixed declaration of them is a trap: the address pass arrived with two
+    lookup fields of its own, nothing added them, and the KeyError surfaced 52
+    minutes into a real import with every other pass already done.
+    """
+
+    @staticmethod
+    def _importer():
+        from django_osm_locations.management.commands.importers.poland import (
+            PolandImporter,
+        )
+
+        return PolandImporter('polska', 'unused.osm.pbf')
+
+    @pytest.mark.django_db
+    @pytest.mark.parametrize('model_name,field', [
+        ('Address', 'node_osm_id'),
+        ('Address', 'way_osm_id'),
+        ('Place', 'relation_osm_id'),
+        ('Place', 'way_osm_id'),
+        ('Place', 'node_osm_id'),
+        ('Street', 'relation_osm_id'),
+        ('Street', 'way_osm_id'),
+        ('CountrySubarea', 'relation_osm_id'),
+        ('PlaceSubarea', 'relation_osm_id'),
+    ])
+    def test_a_writer_appears_for_any_pair_a_pass_uses(self, model_name, field):
+        from django.apps import apps
+
+        model = apps.get_model('locations', model_name)
+        importer = self._importer()
+        importer._upsert(model, field, 1, {'name': 'somewhere'})
+        assert (model, field) in importer.writers
+
+    @pytest.mark.django_db
+    def test_the_same_pair_reuses_one_writer(self):
+        """Otherwise each row would be its own batch, which is the thing the
+        buffering exists to avoid."""
+        from django.apps import apps
+
+        model = apps.get_model('locations', 'Address')
+        importer = self._importer()
+        importer._upsert(model, 'node_osm_id', 1, {'name': 'a'})
+        first = importer.writers[(model, 'node_osm_id')]
+        importer._upsert(model, 'node_osm_id', 2, {'name': 'b'})
+        assert importer.writers[(model, 'node_osm_id')] is first
+
+    @pytest.mark.django_db
+    def test_flushing_covers_writers_made_on_the_way(self):
+        from django.apps import apps
+
+        model = apps.get_model('locations', 'Address')
+        importer = self._importer()
+        importer._upsert(model, 'node_osm_id', 12345, {
+            'name': 'Łąkowa 5', 'house_number': '5', 'street_name': 'Łąkowa',
+        })
+        importer._flush_writes()
+        assert model.objects.filter(node_osm_id=12345).exists()

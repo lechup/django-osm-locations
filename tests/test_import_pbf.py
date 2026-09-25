@@ -159,3 +159,48 @@ def test_reimport_updates_in_place(imported):
     stats = importer.writers[(Street, 'way_osm_id')]
     assert stats.created == 0
     assert stats.updated > 1000, 'the update path should have been exercised'
+
+
+def test_imports_addresses(imported):
+    """
+    The address pass, which for a long time was executed here and asserted
+    nowhere -- so a missing writer for (Address, 'node_osm_id') got through
+    this tier and surfaced 52 minutes into a Poland import instead.
+    """
+    from django_osm_locations.models import Address
+
+    assert Address.objects.exists()
+    assert Address.objects.exclude(house_number='').count() == Address.objects.count()
+
+
+def test_addresses_name_their_street(imported):
+    """
+    What makes an address worth having: it says where it is, which is the one
+    thing a street geometry does not.
+    """
+    from django_osm_locations.models import Address
+
+    with_street = Address.objects.exclude(street_name='').count()
+    assert with_street > 0
+    assert with_street / Address.objects.count() > 0.5
+
+
+def test_addresses_are_inside_the_country(imported):
+    """An extract is a rectangle; the Isle of Man is not."""
+    from django_osm_locations.models import Address, Country
+
+    border = Country.objects.get(slug='isle-of-man').border
+    assert border is not None
+    assert not Address.objects.exclude(center__intersects=border).exists()
+
+
+def test_house_numbers_sort_the_way_a_street_is_walked(imported):
+    """1, 2, 10 -- not 1, 10, 2, which is what a keyword sort gives."""
+    from django_osm_locations.models import Address
+
+    numbers = list(
+        Address.objects.filter(house_number__regex=r'^\d+$')
+        .order_by('house_number_sort', 'house_number')
+        .values_list('house_number', flat=True)[:40]
+    )
+    assert numbers == sorted(numbers, key=int)

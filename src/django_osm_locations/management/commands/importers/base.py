@@ -309,17 +309,14 @@ class BaseImporter(object):
         self.country_border = None        # the geometry itself
 
         # Writes are buffered: one update_or_create per object dominated import
-        # time. Keyed by the OSM id field each import path looks up on.
-        batch_size = int(getattr(settings, 'LOCATIONS_WRITE_BATCH_SIZE', 1000) or 1000)
-        self.writers = {
-            (CountrySubarea, 'relation_osm_id'): BatchUpserter(CountrySubarea, 'relation_osm_id', batch_size),
-            (Place, 'relation_osm_id'): BatchUpserter(Place, 'relation_osm_id', batch_size),
-            (Place, 'way_osm_id'): BatchUpserter(Place, 'way_osm_id', batch_size),
-            (Place, 'node_osm_id'): BatchUpserter(Place, 'node_osm_id', batch_size),
-            (PlaceSubarea, 'relation_osm_id'): BatchUpserter(PlaceSubarea, 'relation_osm_id', batch_size),
-            (Street, 'relation_osm_id'): BatchUpserter(Street, 'relation_osm_id', batch_size),
-            (Street, 'way_osm_id'): BatchUpserter(Street, 'way_osm_id', batch_size),
-        }
+        # time. Keyed by the OSM id field each import path looks up on, and
+        # created when that path first writes rather than declared here. The
+        # declaration used to be a fixed list, and the address pass arrived with
+        # two lookup fields of its own that nobody added to it -- a KeyError 52
+        # minutes into a real import, after every other pass had succeeded.
+        self.write_batch_size = int(
+            getattr(settings, 'LOCATIONS_WRITE_BATCH_SIZE', 1000) or 1000)
+        self.writers = {}
 
         # place can be imported from relation - it's center is node that later is imported also as new place
         # we use that cache to cache nodes_ids of relation centers, so that we won't have duplicates
@@ -495,7 +492,12 @@ class BaseImporter(object):
                         show=self.show_progress)
 
     def _upsert(self, model, lookup_field, lookup_value, defaults):
-        self.writers[(model, lookup_field)].add(lookup_value, defaults)
+        key = (model, lookup_field)
+        writer = self.writers.get(key)
+        if writer is None:
+            writer = self.writers[key] = BatchUpserter(
+                model, lookup_field, self.write_batch_size)
+        writer.add(lookup_value, defaults)
 
     def _flush_writes(self):
         for writer in self.writers.values():
