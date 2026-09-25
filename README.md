@@ -712,7 +712,51 @@ THRESHOLD=20 make import-guarded france # stop earlier
 It exits 75 if it had to stop, so a wrapper can retry with a smaller limit.
 It also sweeps orphaned node-index files before and after: a killed process
 runs no cleanup handler, and that file is the size of the extract's node
-table.
+table — 5.3GB for France.
+
+#### On a server
+
+The pressure rule is not a desktop thing. Ubuntu ships it in the
+`systemd-oomd` package, as a drop-in on `user@.service`:
+
+```
+ManagedOOMMemoryPressure=kill
+ManagedOOMMemoryPressureLimit=50%
+```
+
+and `systemd-oomd.service` is `WantedBy=multi-user.target`, so a server
+install has the same behaviour wherever that package is present. Check the
+machine rather than assume:
+
+```bash
+systemctl is-active systemd-oomd          # is anything killing on pressure?
+systemctl --user show-environment         # is there a user manager to kill in?
+```
+
+`import-guarded` picks its cgroup from what it finds, and says which it got:
+
+| Situation | What it uses |
+|---|---|
+| root on a systemd host | a **system scope**, in `system.slice` — outside the user manager oomd watches, which is the best place for an unattended import |
+| ordinary login or SSH session | a **user scope**, capped, with the watchdog |
+| no systemd — container, CI | the command as it is, and a warning that there is no cap |
+
+oomd has a second rule, on swap usage, which kills the heaviest swap user in
+a slice. Ubuntu ships it as `ManagedOOMSwap=auto` on `-.slice` — off — so only
+the pressure rule is live out of the box, and the watchdog reports swap in its
+trace rather than acting on it. If you turned that rule on, watch swap too.
+
+The watchdog stands down rather than refusing when there is nothing to
+outrun: no `user@N.service` above the process, no readable `memory.pressure`
+(cgroup v1, or PSI off), or no `systemd-oomd`. It finds the user manager by
+walking up its own cgroup, so a uid other than 1000 is fine.
+
+`make import` only wraps the command when `systemctl --user` answers, which
+over SSH as an ordinary user it does and as root it usually does not — so as
+root it runs uncapped. Prefer `sudo make import-guarded` there, which gets the
+system scope. One more thing about SSH: a user scope belongs to the login
+session, so `loginctl enable-linger <user>` is what keeps an import alive
+after you log out.
 
 ## Development
 

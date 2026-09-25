@@ -35,11 +35,53 @@ CACHE_DIR=${CACHE_DIR:-local}
 LOG=${LOG:-local/import-$(date +%Y%m%d-%H%M%S).log}
 TRACE=${TRACE:-${LOG%.log}.pressure}
 
-PRESSURE=/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/memory.pressure
-if [ ! -r "$PRESSURE" ]; then
-    echo "cannot read $PRESSURE -- refusing to run unguarded" >&2
-    exit 1
+# Find the user manager's own cgroup rather than assuming uid 1000 and a
+# desktop layout: read it off this process and walk up to the user@N.service
+# component. Everything below that is what oomd's pressure rule considers.
+manager_cgroup() {
+    local path
+    path=$(cut -d: -f3 /proc/self/cgroup | head -1)
+    while [ -n "$path" ] && [ "$path" != "/" ]; do
+        case "${path##*/}" in
+            user@*.service) echo "/sys/fs/cgroup$path"; return 0 ;;
+        esac
+        path=${path%/*}
+    done
+    return 1
+}
+
+# Three reasons there may be nothing to watch, and none of them is a reason to
+# refuse the import:
+#
+#   * no user@N.service above us -- a system service, a container, a server
+#     where root has no user manager: oomd's user-pressure rule cannot reach us
+#   * no memory.pressure -- cgroup v1, or PSI off in the kernel: oomd needs PSI
+#     to act on pressure, so it cannot fire this way either
+#   * systemd-oomd not installed or not running -- Ubuntu ships it in its own
+#     package, WantedBy=multi-user.target, so a server has it only if installed
+#
+# In each case the cap still applies and the watchdog simply has nothing to do.
+MANAGER=$(manager_cgroup || true)
+PRESSURE=""
+if [ -n "$MANAGER" ] && [ -r "$MANAGER/memory.pressure" ]; then
+    PRESSURE="$MANAGER/memory.pressure"
 fi
+
+OOMD=no
+if systemctl is-active systemd-oomd.service >/dev/null 2>&1; then
+    OOMD=yes
+fi
+
+# oomd has a second rule, on swap usage, that kills the heaviest swap user in
+# the slice. Ubuntu ships it as ManagedOOMSwap=auto on -.slice, which is off,
+# so this only reports swap rather than acting on it -- a threshold here would
+# stop imports to prevent something that is not enabled. Check the host if you
+# have changed it: systemctl show -p ManagedOOMSwap -- -.slice
+swap_percent() {
+    awk '/^SwapTotal:/ {t=$2} /^SwapFree:/ {f=$2}
+         END {if (t > 0) printf "%.0f", 100*(t-f)/t; else print 0}' /proc/meminfo
+}
+
 
 mkdir -p "$(dirname "$LOG")"
 
@@ -58,38 +100,87 @@ sweep_index() {
 trap sweep_index EXIT
 sweep_index
 
+# Where to put the scope. A system scope lands in system.slice, outside the
+# user manager oomd watches for pressure, which is what you want on a server
+# and needs root; a user scope is what a desktop login has. With no systemd at
+# all -- a container, a CI runner -- run the command as it is and say so,
+# because a missing cap is worth knowing about.
+SCOPE=()
+MODE=plain
+if [ "$(id -u)" = 0 ] && systemctl is-system-running >/dev/null 2>&1; then
+    SCOPE=(systemd-run --scope -p MemoryMax="$LIMIT" -p MemorySwapMax=0 --unit="$UNIT" --quiet --)
+    MODE="system scope"
+elif systemctl --user show-environment >/dev/null 2>&1; then
+    SCOPE=(systemd-run --user --scope -p MemoryMax="$LIMIT" -p MemorySwapMax=0 --unit="$UNIT" --quiet --)
+    MODE="user scope"
+fi
+
+# Say which guards are actually in force, in one place, because "cap only" and
+# "no cap" in the same breath is how you end up believing the wrong one.
+if [ "$MODE" = plain ]; then
+    echo "warning: no systemd scope here, so no memory cap: an overrun is the" >&2
+    echo "         whole machine's problem." >&2
+elif [ -z "$PRESSURE" ] && [ "$OOMD" = yes ]; then
+    echo "warning: systemd-oomd is running but its trigger is not readable" >&2
+    echo "         ($([ -n "$MANAGER" ] && echo "no memory.pressure under $MANAGER" \
+        || echo 'no user manager above this process')). Cap only." >&2
+fi
+if [ -z "$PRESSURE" ] && [ "$OOMD" = no ]; then
+    echo "systemd-oomd is not running here, so there is no pressure kill to"
+    echo "outrun; the watchdog stands down."
+fi
+
 # -u so a kill does not discard the progress written so far: without it the
 # last crash left a zero-byte log and nothing to read.
-systemd-run --user --scope -p MemoryMax="$LIMIT" -p MemorySwapMax=0 \
-    --unit="$UNIT" --quiet -- \
-    "$PYTHON" -u -m django locations_import "$@" > "$LOG" 2>&1 &
+${SCOPE[@]+"${SCOPE[@]}"} "$PYTHON" -u -m django locations_import "$@" > "$LOG" 2>&1 &
 RUNNER=$!
 
-echo "import: $* (limit $LIMIT, stop above ${THRESHOLD}% for $((SUSTAIN * INTERVAL))s)"
+if [ -n "$PRESSURE" ]; then
+    echo "import: $* ($MODE, limit $LIMIT, stop above ${THRESHOLD}% for $((SUSTAIN * INTERVAL))s)"
+else
+    echo "import: $* ($MODE, limit $LIMIT)"
+fi
 echo "log:    $LOG"
 echo "trace:  $TRACE"
 
+# Ask systemd where it put the scope; the layout differs between versions and
+# between a desktop and a server, and guessing it once already cost a session.
+# systemctl, spelled the way the scope was started -- `--user` for a user
+# scope, plain for a system one, nothing to ask when there is no scope.
+sctl() {
+    case "$MODE" in
+        "user scope")   systemctl --user "$@" ;;
+        "system scope") systemctl "$@" ;;
+        *)              return 1 ;;
+    esac
+}
+
+# Ask systemd where it put the scope; the layout differs between versions and
+# between a desktop and a server, and guessing it once already cost a session.
 scope_dir() {
-    local d=/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/$UNIT.scope
-    [ -d "$d" ] && echo "$d"
+    local path
+    path=$(sctl show -p ControlGroup --value "$UNIT.scope" 2>/dev/null)
+    [ -n "$path" ] && [ -d "/sys/fs/cgroup$path" ] && echo "/sys/fs/cgroup$path"
 }
 
 over=0
 while kill -0 "$RUNNER" 2>/dev/null; do
-    avg10=$(awk '/^some/ {sub(/avg10=/, "", $2); print $2; exit}' "$PRESSURE")
+    avg10=""
+    [ -n "$PRESSURE" ] && avg10=$(awk '/^some/ {sub(/avg10=/, "", $2); print $2; exit}' "$PRESSURE")
     used=0
     dir=$(scope_dir)
     if [ -n "$dir" ] && [ -r "$dir/memory.current" ]; then
         used=$(awk '{printf "%.2f", $1/1073741824}' "$dir/memory.current")
     fi
-    printf '%s pressure=%s%% scope=%sGB\n' "$(date +%H:%M:%S)" "$avg10" "$used" >> "$TRACE"
+    printf '%s pressure=%s%% scope=%sGB swap=%s%%\n' \
+        "$(date +%H:%M:%S)" "${avg10:-n/a}" "$used" "$(swap_percent)" >> "$TRACE"
 
-    if awk -v a="$avg10" -v t="$THRESHOLD" 'BEGIN {exit !(a > t)}'; then
+    if [ -n "$avg10" ] && awk -v a="$avg10" -v t="$THRESHOLD" 'BEGIN {exit !(a > t)}'; then
         over=$((over + 1))
         if [ "$over" -ge "$SUSTAIN" ]; then
             echo "pressure $avg10% > $THRESHOLD% for $((SUSTAIN * INTERVAL))s -- stopping the import" \
                 | tee -a "$TRACE"
-            systemctl --user stop "$UNIT.scope" 2>/dev/null
+            sctl stop "$UNIT.scope" 2>/dev/null || kill "$RUNNER" 2>/dev/null
             wait "$RUNNER" 2>/dev/null
             exit 75   # EX_TEMPFAIL: try again with a smaller limit
         fi
@@ -101,5 +192,10 @@ done
 
 wait "$RUNNER"
 STATUS=$?
-echo "import finished with status $STATUS; peak pressure $(awk '{gsub(/pressure=|%/,"",$2); if ($2+0>m) m=$2+0} END {print m"%"}' "$TRACE")"
+if [ -n "$PRESSURE" ]; then
+    echo "import finished with status $STATUS; peak pressure $(awk \
+        '{gsub(/pressure=|%/,"",$2); if ($2+0>m) m=$2+0} END {print m"%"}' "$TRACE")"
+else
+    echo "import finished with status $STATUS"
+fi
 exit "$STATUS"

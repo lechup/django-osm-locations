@@ -87,3 +87,8 @@ local/osm_data/
 local/.disk_cache/
 .disk_cache/
 .file_cache/
+
+# Import artefacts: the libosmium node index (tens of GB, removed when the
+# pass ends) and the pressure trace written beside an import log.
+local/osm-node-locations-*.idx
+*.pressure
