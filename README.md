@@ -698,25 +698,32 @@ make import france IMPORT_LIMIT=6G
 systemd-run --user --scope -p MemoryMax=8G -- python manage.py locations_import france
 ```
 
-The cap is a backstop against a runaway, not a memory budget, and setting it
-low backfires. With the index on disk the import's own memory is about 200MB;
-everything else in the cgroup is page cache for the index file and the extract,
-and `memory.max` counts that. A France import capped at 8G pinned the cap 44
-seconds into the ways pass, ran quietly for six minutes, then spiked to 47%
-pressure as the index grew past 7.9GB and stopped fitting alongside the
-extract — the cap caused the thrashing it was meant to prevent. Keep it
-comfortably above the extract's node table, 16 bytes a node; the default is
-12G.
+A memory cap turns out to be the wrong instrument, and measurement is what
+says so. `memory.max` counts page cache; the node index is written through
+`mmap`, so its pages are dirty; and a cgroup sitting at its limit has to write
+those back inside reclaim — scattered synchronous IO, which stalls, which *is*
+pressure. Page cache expands to fill whatever limit it is given, so every value
+draws the same curve, just later:
 
-The cap also does not remove the risk on its own: reclaim inside a capped
-scope still raises the pressure oomd is watching. For an import you intend to
-leave running, `make import-guarded` adds a watchdog that stops the scope when
-the user manager's own pressure stays above 30%, well below the 50% where oomd
-starts choosing victims:
+| Cap | Spiked at | When | `anon` throughout |
+|---|---|---|---|
+| 8G | 47% | 7 min into the ways pass | 0.25GB |
+| 12G | 32% | 8 min in | 0.25GB |
+
+The import's own memory never moved. There is nothing there to cap, so
+`import-guarded` asks for no `MemoryMax` by default. What bounds it instead is
+`MemorySwapMax=0` — runaway anonymous memory shows up as pressure at once
+instead of disappearing into swap — and the watchdog. Pass `LIMIT=16G` to ask
+for a cap anyway, keeping it well above the extract's node table.
+
+The watchdog is the guard that works: it stops the scope when the user
+manager's own pressure stays above 30%, well below the 50% where oomd starts
+choosing victims:
 
 ```bash
 make import-guarded france              # logs to local/import-<timestamp>.log
 THRESHOLD=20 make import-guarded france # stop earlier
+LIMIT=16G make import-guarded france    # ask for a cap as well
 ```
 
 It exits 75 if it had to stop, so a wrapper can retry with a smaller limit.

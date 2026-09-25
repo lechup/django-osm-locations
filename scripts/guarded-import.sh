@@ -22,15 +22,22 @@ if [ "$#" -eq 0 ]; then
     exit 2
 fi
 
-# The cap is a backstop against an anonymous runaway, not a memory budget, and
-# it must sit above the node index or it causes the thrashing it was meant to
-# prevent: with the index on disk the import's own memory is about 200MB and
-# the rest of the cgroup is page cache for the index file and the extract. At
-# 8G a France import pinned the cap 44s into the ways pass, ran quietly for six
-# minutes, then spiked to 47% pressure as the index passed 7.9GB and stopped
-# fitting. Keep this comfortably above the extract's node table -- 16 bytes a
-# node -- or leave the cap off and rely on the watchdog.
-LIMIT=${LIMIT:-12G}
+# No memory cap by default, which is not laziness -- it is what two measured
+# runs say. memory.max counts page cache, the node index is written through
+# mmap so its pages are dirty, and a cgroup at its limit has to write them back
+# inside reclaim: scattered synchronous IO, which stalls, which is pressure.
+# Page cache expands to whatever limit it is given, so every value produces the
+# same curve, just later. At 8G a France import spiked at 47% seven minutes in;
+# at 12G it spiked at 32% eight minutes in, with anon steady at 0.25GB both
+# times. There is nothing there to cap.
+#
+# What bounds the import instead: MemorySwapMax=0, so runaway anonymous memory
+# shows up as pressure immediately rather than disappearing into swap, and the
+# watchdog below, which stops it at 25% while oomd fires at 50%.
+#
+# Set LIMIT to ask for one anyway; keep it well above the extract's node table,
+# 16 bytes a node.
+LIMIT=${LIMIT:-}
 # oomd fires at 50%; stop well before it, and only on a sustained reading --
 # a single spike is what page cache filling looks like and is harmless.
 THRESHOLD=${THRESHOLD:-30}
@@ -113,21 +120,24 @@ sweep_index
 # and needs root; a user scope is what a desktop login has. With no systemd at
 # all -- a container, a CI runner -- run the command as it is and say so,
 # because a missing cap is worth knowing about.
+LIMITS=(-p MemorySwapMax=0)
+[ -n "$LIMIT" ] && LIMITS+=(-p MemoryMax="$LIMIT")
+
 SCOPE=()
 MODE=plain
 if [ "$(id -u)" = 0 ] && systemctl is-system-running >/dev/null 2>&1; then
-    SCOPE=(systemd-run --scope -p MemoryMax="$LIMIT" -p MemorySwapMax=0 --unit="$UNIT" --quiet --)
+    SCOPE=(systemd-run --scope "${LIMITS[@]}" --unit="$UNIT" --quiet --)
     MODE="system scope"
 elif systemctl --user show-environment >/dev/null 2>&1; then
-    SCOPE=(systemd-run --user --scope -p MemoryMax="$LIMIT" -p MemorySwapMax=0 --unit="$UNIT" --quiet --)
+    SCOPE=(systemd-run --user --scope "${LIMITS[@]}" --unit="$UNIT" --quiet --)
     MODE="user scope"
 fi
 
 # Say which guards are actually in force, in one place, because "cap only" and
 # "no cap" in the same breath is how you end up believing the wrong one.
 if [ "$MODE" = plain ]; then
-    echo "warning: no systemd scope here, so no memory cap: an overrun is the" >&2
-    echo "         whole machine's problem." >&2
+    echo "warning: no systemd scope here, so swap is not held off this import" >&2
+    echo "         and there is nothing to stop but the process itself." >&2
 elif [ -z "$PRESSURE" ] && [ "$OOMD" = yes ]; then
     echo "warning: systemd-oomd is running but its trigger is not readable" >&2
     echo "         ($([ -n "$MANAGER" ] && echo "no memory.pressure under $MANAGER" \
@@ -143,10 +153,12 @@ fi
 ${SCOPE[@]+"${SCOPE[@]}"} "$PYTHON" -u -m django locations_import "$@" > "$LOG" 2>&1 &
 RUNNER=$!
 
+CAP=${LIMIT:+, limit $LIMIT}
+CAP=${CAP:-, no cap}
 if [ -n "$PRESSURE" ]; then
-    echo "import: $* ($MODE, limit $LIMIT, stop above ${THRESHOLD}% for $((SUSTAIN * INTERVAL))s)"
+    echo "import: $* ($MODE$CAP, stop above ${THRESHOLD}% for $((SUSTAIN * INTERVAL))s)"
 else
-    echo "import: $* ($MODE, limit $LIMIT)"
+    echo "import: $* ($MODE$CAP)"
 fi
 echo "log:    $LOG"
 echo "trace:  $TRACE"
