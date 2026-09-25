@@ -716,6 +716,21 @@ The import's own memory never moved. There is nothing there to cap, so
 instead of disappearing into swap — and the watchdog. Pass `LIMIT=16G` to ask
 for a cap anyway, keeping it well above the extract's node table.
 
+Watch what else is holding memory, because the import is not competing with
+itself. A Poland import that finished its heavy passes with a 1.99% pressure
+peak was stopped at 50% two minutes in an hour later, on the same machine with
+the same settings — the difference was `locations-local-postgis-1` sitting on
+7.8GB of page cache from the first run, and OpenSearch on 3.8GB that an import
+never touches. Before a large one:
+
+```bash
+docker compose -f docker-compose.local.yml stop opensearch   # unused until reindex
+docker compose -f docker-compose.local.yml restart postgis    # drops its page cache
+```
+
+`import-guarded` prints the biggest holders at startup so this is visible
+rather than deduced afterwards.
+
 The watchdog is the guard that works: it stops the scope when the user
 manager's own pressure stays above 30%, well below the 50% where oomd starts
 choosing victims:

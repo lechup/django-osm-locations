@@ -163,6 +163,21 @@ fi
 echo "log:    $LOG"
 echo "trace:  $TRACE"
 
+# What else is holding memory, before the import needs it. This is not
+# decoration: a Poland import that had sailed through with a 1.99% peak was
+# stopped at 50% two minutes in an hour later, and the difference was a
+# database container sitting on 7.8GB of page cache from the first run and a
+# search engine on 3.8GB that an import never touches. Cheaper to print than
+# to reason about afterwards.
+echo "headroom:"
+free -h | awk '/^(Mem|Pamięć)/ {printf "  %s available of %s, %s in cache\n", $NF, $2, $6}'
+for cg in /sys/fs/cgroup/system.slice/docker-*.scope \
+          /sys/fs/cgroup/user.slice/user-*.slice/user@*.service/app.slice/*/; do
+    [ -r "$cg/memory.current" ] || continue
+    awk -v n="$(basename "$cg")" '$1 > 2147483648 {printf "  %5.1f GB  %s\n", $1/1073741824, n}' \
+        "$cg/memory.current"
+done | sort -rn | head -5
+
 # Ask systemd where it put the scope; the layout differs between versions and
 # between a desktop and a server, and guessing it once already cost a session.
 # systemctl, spelled the way the scope was started -- `--user` for a user
