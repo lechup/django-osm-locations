@@ -698,6 +698,22 @@ make import france IMPORT_LIMIT=6G
 systemd-run --user --scope -p MemoryMax=8G -- python manage.py locations_import france
 ```
 
+The cap bounds the damage but does not remove the risk on its own: reclaim
+inside a capped scope still raises the pressure oomd is watching. For an
+import you intend to leave running, `make import-guarded` adds a watchdog
+that stops the scope when the user manager's own pressure stays above 30%,
+well below the 50% where oomd starts choosing victims:
+
+```bash
+make import-guarded france              # logs to local/import-<timestamp>.log
+THRESHOLD=20 make import-guarded france # stop earlier
+```
+
+It exits 75 if it had to stop, so a wrapper can retry with a smaller limit.
+It also sweeps orphaned node-index files before and after: a killed process
+runs no cleanup handler, and that file is the size of the extract's node
+table.
+
 ## Development
 
 A `Makefile` wraps the common tasks; `make` on its own lists them.

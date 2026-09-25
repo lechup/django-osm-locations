@@ -18,7 +18,7 @@ PBF         ?=
 # Scoped to these targets on purpose: doing it for every goal would break
 # ordinary invocations like `make clean build`, where "build" is a real target
 # and not an argument.
-COUNTRY_TARGETS := import update merge process
+COUNTRY_TARGETS := import import-guarded update merge process
 ifneq ($(filter $(firstword $(MAKECMDGOALS)),$(COUNTRY_TARGETS)),)
   COUNTRY_ARGS := $(filter-out $(firstword $(MAKECMDGOALS)),$(MAKECMDGOALS))
   ifneq ($(COUNTRY_ARGS),)
@@ -42,7 +42,8 @@ LOCAL_ENV     := DJANGO_SETTINGS_MODULE=local.settings
 
 .DEFAULT_GOAL := help
 .PHONY: help install test-up test-down test-reset test test-search test-pbf test-all \
-        local-up local-down local-reset migrate import update merge coastline clip \
+        local-up local-down local-reset migrate import import-guarded update merge \
+        coastline clip \
         snapshot pack load-snapshot snapshots \
         recalculate reindex index-status index-cleanup process demo shell dbshell \
         build check bench clean
@@ -101,6 +102,9 @@ migrate: local-up  ## Apply migrations to the persistent database
 
 import: local-up  ## Import extracts: make import poland norway
 	$(LOCAL_ENV) $(CAPPED) $(PYTHON) -m django locations_import $(COUNTRY)
+
+import-guarded: local-up  ## Import unattended, watching oomd: make import-guarded france
+	$(LOCAL_ENV) PYTHON=$(PYTHON) LIMIT=$(IMPORT_LIMIT) ./scripts/guarded-import.sh $(COUNTRY)
 
 update: local-up  ## Fetch OSM diffs and reimport: make update poland
 	$(LOCAL_ENV) $(CAPPED) $(PYTHON) -m django locations_update $(COUNTRY)
