@@ -58,9 +58,16 @@ LOCATIONS_LAND_POLYGONS_TABLE = os.environ.get(
     'LOCATIONS_LAND_POLYGONS_TABLE', 'locations_land'
 )
 
-# A country-sized import holds its node index in memory by default. Uncomment
-# to spill it to disk instead -- slower, but roughly 4GB less RAM for Poland.
-# LOCATIONS_DISK_CACHE = True
+# The node index goes to disk here rather than into RAM. The package default
+# is memory, which is fine for a country; France is 4.8GB of extract and its
+# index does not fit beside an 8GB PostGIS on this machine. Overriding this
+# with flex_mem is how a France import grew the editor's cgroup by twelve
+# gigabytes in three minutes and had systemd-oomd kill the session.
+#
+# The index file lives under LOCATIONS_CACHE_DIR and is removed afterwards.
+LOCATIONS_LOCATION_STORAGE = (
+    os.environ.get('LOCATIONS_LOCATION_STORAGE') or 'sparse_file_array'
+)
 
 ROOT_URLCONF = 'local.urls'
 ROOT_URL = os.environ.get('LOCATIONS_ROOT_URL', 'localhost:8000')

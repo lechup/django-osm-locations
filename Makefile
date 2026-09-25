@@ -26,6 +26,16 @@ ifneq ($(filter $(firstword $(MAKECMDGOALS)),$(COUNTRY_TARGETS)),)
     $(eval $(COUNTRY_ARGS):;@:)
   endif
 endif
+# systemd-oomd kills on memory pressure across the whole user session, and a
+# shell started from an editor shares that editor's cgroup: a France import
+# that overran once took VS Code, dbus and pipewire down with it. Run the
+# heavy commands in a scope of their own with a cap, so an overrun kills the
+# import and nothing else. Needs a user systemd; without one this is empty and
+# the commands run as before.
+IMPORT_LIMIT  ?= 8G
+CAPPED        := $(shell systemctl --user show-environment >/dev/null 2>&1 \
+                   && echo systemd-run --user --scope -p MemoryMax=$(IMPORT_LIMIT) --quiet --)
+
 TEST_COMPOSE  := docker compose -f docker-compose.test.yml
 LOCAL_COMPOSE := docker compose -f docker-compose.local.yml
 LOCAL_ENV     := DJANGO_SETTINGS_MODULE=local.settings
@@ -90,13 +100,13 @@ migrate: local-up  ## Apply migrations to the persistent database
 	$(LOCAL_ENV) $(PYTHON) -m django migrate
 
 import: local-up  ## Import extracts: make import poland norway
-	$(LOCAL_ENV) $(PYTHON) -m django locations_import $(COUNTRY)
+	$(LOCAL_ENV) $(CAPPED) $(PYTHON) -m django locations_import $(COUNTRY)
 
 update: local-up  ## Fetch OSM diffs and reimport: make update poland
-	$(LOCAL_ENV) $(PYTHON) -m django locations_update $(COUNTRY)
+	$(LOCAL_ENV) $(CAPPED) $(PYTHON) -m django locations_update $(COUNTRY)
 
 merge: local-up  ## Merge duplicates only: make merge poland
-	$(LOCAL_ENV) $(PYTHON) -m django locations_import --merge-only $(COUNTRY)
+	$(LOCAL_ENV) $(CAPPED) $(PYTHON) -m django locations_import --merge-only $(COUNTRY)
 
 coastline: local-up  ## Download and load land polygons for border clipping
 	@mkdir -p local/osm_data/coastline

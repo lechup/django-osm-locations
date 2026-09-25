@@ -664,6 +664,40 @@ default. Everything the importer keeps in Python — the relations it matched,
 the ways it will turn into geometry, and tagged nodes — is a small fraction of
 the file, because the tag filters run inside libosmium.
 
+A `*_file_array` index needs a file, and libosmium does not insist: given the
+bare type name it maps anonymous memory instead and is as resident as
+`flex_mem` while reading as though it were not. The importer therefore names
+one itself, under `LOCATIONS_CACHE_DIR`, and removes it when the pass is done;
+it is about 16 bytes a node, so tens of gigabytes for a large country. Name
+your own with `LOCATIONS_LOCATION_STORAGE = "sparse_file_array,/path/to.idx"`
+to put it on a particular filesystem.
+
+Where to draw the line, measured on a 30GB desktop with an 8GB PostGIS beside
+it: Poland (2GB extract) fits in memory, France (4.8GB) does not — in memory
+its index grew twelve gigabytes in three minutes. On disk the same pass holds
+around 200MB of private memory and the rest is page cache the kernel drops
+under pressure.
+
+### Do not let an import share a cgroup with your editor
+
+`systemd-oomd` kills on memory *pressure* across a whole cgroup, and a
+terminal opened inside an editor is in the editor's cgroup. An import that
+overruns there does not die alone: it took VS Code, `dbus` and `pipewire` with
+it, which is a logged-out desktop. `MemoryMin` does not help — it guards
+against reclaim, while the trigger is pressure, and pressure is what a large
+allocation makes.
+
+What does help is a cgroup of its own with a cap, so the kernel kills the
+import and nothing else. `make import` does this where a user systemd is
+running; `IMPORT_LIMIT` sets the cap, 8G by default:
+
+```bash
+make import france IMPORT_LIMIT=6G
+
+# by hand, for any of the long commands
+systemd-run --user --scope -p MemoryMax=8G -- python manage.py locations_import france
+```
+
 ## Development
 
 A `Makefile` wraps the common tasks; `make` on its own lists them.

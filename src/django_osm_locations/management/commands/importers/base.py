@@ -1,6 +1,8 @@
 import re
 import os
+import tempfile
 from array import array
+from contextlib import contextmanager
 from datetime import datetime
 
 from django.conf import settings
@@ -14,6 +16,7 @@ from tqdm import tqdm
 
 from .. import Address, Country, CountrySubarea, Place, PlaceSubarea, Street, \
     MergeMultiline, array_agg_ordered
+from ....conf import get_cache_dir
 from ....utils.progress import progress, show_progress_default  # noqa: F401
 
 
@@ -58,6 +61,45 @@ def _location_storage():
     if getattr(settings, 'LOCATIONS_DISK_CACHE', False):
         return 'sparse_file_array'
     return 'flex_mem'
+
+
+@contextmanager
+def _location_index():
+    """
+    The node-location index, with somewhere for a file-backed one to live.
+
+    A ``*_file_array`` index is only file-backed when libosmium is given a
+    file: the bare type name is accepted and maps anonymous memory instead,
+    so it is as resident as ``flex_mem`` while reading as though it were not.
+    Asking for ``sparse_file_array`` on a 4.8GB France extract still grew by
+    twelve gigabytes in three minutes, which is enough for systemd-oomd to
+    take the desktop session down -- with the file named, the same pass holds
+    about 200MB of private memory and the rest is page cache the kernel can
+    drop.
+
+    The file goes next to the other caches and is removed afterwards. It is
+    the size of the extract's node table -- roughly 16 bytes a node, so tens
+    of gigabytes for a large country -- and nothing reads it once the pass
+    that wrote it has finished.
+    """
+    spec = _location_storage()
+    if ',' in spec or not spec.endswith('_file_array'):
+        # an explicit path, or an index that was never going to touch disk
+        yield spec
+        return
+
+    directory = get_cache_dir()
+    os.makedirs(directory, exist_ok=True)
+    handle, path = tempfile.mkstemp(
+        prefix='osm-node-locations-', suffix='.idx', dir=directory)
+    os.close(handle)
+    try:
+        yield '{},{}'.format(spec, path)
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 
@@ -553,13 +595,14 @@ class BaseImporter(object):
         print("Reading Ways %s ..." % start)
         osmium = _load_osmium()
 
-        processor = (
-            osmium.FileProcessor(self.file_path, osmium.osm.WAY | osmium.osm.NODE)
-            .with_locations(_location_storage())
-            .with_filter(osmium.filter.EntityFilter(osmium.osm.WAY))
-        )
-        for way in self._progress(processor, desc='ways', unit='way'):
-            self._keep_way(way)
+        with _location_index() as storage:
+            processor = (
+                osmium.FileProcessor(self.file_path, osmium.osm.WAY | osmium.osm.NODE)
+                .with_locations(storage)
+                .with_filter(osmium.filter.EntityFilter(osmium.osm.WAY))
+            )
+            for way in self._progress(processor, desc='ways', unit='way'):
+                self._keep_way(way)
 
         end = datetime.now()
         print("Ways read: %s, took: %s! (%d kept)\n" % (end, end - start, len(self.ways)))
@@ -1302,24 +1345,25 @@ class BaseImporter(object):
         print("Reading Addresses %s ..." % start)
         osmium = _load_osmium()
 
-        processor = (
-            osmium.FileProcessor(self.file_path, osmium.osm.WAY | osmium.osm.NODE)
-            .with_locations(_location_storage())
-            .with_filter(osmium.filter.KeyFilter('addr:housenumber'))
-        )
         kept = 0
-        for obj in self._progress(processor, desc='addresses', unit='addr'):
-            tags = {tag.k: tag.v for tag in obj.tags}
-            if not self._is_address(tags):
-                continue
-            point = self._address_point(obj)
-            if point is None or not self._within_country(point):
-                continue
-            defaults = self._address_defaults(tags)
-            defaults['center'] = point
-            field = 'node_osm_id' if obj.is_node() else 'way_osm_id'
-            self._upsert(Address, field, obj.id, defaults)
-            kept += 1
+        with _location_index() as storage:
+            processor = (
+                osmium.FileProcessor(self.file_path, osmium.osm.WAY | osmium.osm.NODE)
+                .with_locations(storage)
+                .with_filter(osmium.filter.KeyFilter('addr:housenumber'))
+            )
+            for obj in self._progress(processor, desc='addresses', unit='addr'):
+                tags = {tag.k: tag.v for tag in obj.tags}
+                if not self._is_address(tags):
+                    continue
+                point = self._address_point(obj)
+                if point is None or not self._within_country(point):
+                    continue
+                defaults = self._address_defaults(tags)
+                defaults['center'] = point
+                field = 'node_osm_id' if obj.is_node() else 'way_osm_id'
+                self._upsert(Address, field, obj.id, defaults)
+                kept += 1
 
         self._flush_writes()
         end = datetime.now()
