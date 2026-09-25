@@ -22,7 +22,15 @@ if [ "$#" -eq 0 ]; then
     exit 2
 fi
 
-LIMIT=${LIMIT:-8G}
+# The cap is a backstop against an anonymous runaway, not a memory budget, and
+# it must sit above the node index or it causes the thrashing it was meant to
+# prevent: with the index on disk the import's own memory is about 200MB and
+# the rest of the cgroup is page cache for the index file and the extract. At
+# 8G a France import pinned the cap 44s into the ways pass, ran quietly for six
+# minutes, then spiked to 47% pressure as the index passed 7.9GB and stopped
+# fitting. Keep this comfortably above the extract's node table -- 16 bytes a
+# node -- or leave the cap off and rely on the watchdog.
+LIMIT=${LIMIT:-12G}
 # oomd fires at 50%; stop well before it, and only on a sustained reading --
 # a single spike is what page cache filling looks like and is harmless.
 THRESHOLD=${THRESHOLD:-30}
@@ -168,12 +176,21 @@ while kill -0 "$RUNNER" 2>/dev/null; do
     avg10=""
     [ -n "$PRESSURE" ] && avg10=$(awk '/^some/ {sub(/avg10=/, "", $2); print $2; exit}' "$PRESSURE")
     used=0
+    anon=0
+    cache=0
     dir=$(scope_dir)
     if [ -n "$dir" ] && [ -r "$dir/memory.current" ]; then
         used=$(awk '{printf "%.2f", $1/1073741824}' "$dir/memory.current")
+        # anon is the import's own memory and should stay small; the rest is
+        # page cache for the index and the extract, and is reclaimable. Which
+        # of the two is filling the cgroup decides whether a spike means a
+        # regression or a cap set too low.
+        read -r anon cache < <(awk '/^anon /{a=$2} /^file /{f=$2}
+            END {printf "%.2f %.2f", a/1073741824, f/1073741824}' "$dir/memory.stat")
     fi
-    printf '%s pressure=%s%% scope=%sGB swap=%s%%\n' \
-        "$(date +%H:%M:%S)" "${avg10:-n/a}" "$used" "$(swap_percent)" >> "$TRACE"
+    printf '%s pressure=%s%% scope=%sGB (anon=%sGB cache=%sGB) swap=%s%%\n' \
+        "$(date +%H:%M:%S)" "${avg10:-n/a}" "$used" "$anon" "$cache" \
+        "$(swap_percent)" >> "$TRACE"
 
     if [ -n "$avg10" ] && awk -v a="$avg10" -v t="$THRESHOLD" 'BEGIN {exit !(a > t)}'; then
         over=$((over + 1))

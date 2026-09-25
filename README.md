@@ -698,11 +698,21 @@ make import france IMPORT_LIMIT=6G
 systemd-run --user --scope -p MemoryMax=8G -- python manage.py locations_import france
 ```
 
-The cap bounds the damage but does not remove the risk on its own: reclaim
-inside a capped scope still raises the pressure oomd is watching. For an
-import you intend to leave running, `make import-guarded` adds a watchdog
-that stops the scope when the user manager's own pressure stays above 30%,
-well below the 50% where oomd starts choosing victims:
+The cap is a backstop against a runaway, not a memory budget, and setting it
+low backfires. With the index on disk the import's own memory is about 200MB;
+everything else in the cgroup is page cache for the index file and the extract,
+and `memory.max` counts that. A France import capped at 8G pinned the cap 44
+seconds into the ways pass, ran quietly for six minutes, then spiked to 47%
+pressure as the index grew past 7.9GB and stopped fitting alongside the
+extract — the cap caused the thrashing it was meant to prevent. Keep it
+comfortably above the extract's node table, 16 bytes a node; the default is
+12G.
+
+The cap also does not remove the risk on its own: reclaim inside a capped
+scope still raises the pressure oomd is watching. For an import you intend to
+leave running, `make import-guarded` adds a watchdog that stops the scope when
+the user manager's own pressure stays above 30%, well below the 50% where oomd
+starts choosing victims:
 
 ```bash
 make import-guarded france              # logs to local/import-<timestamp>.log
