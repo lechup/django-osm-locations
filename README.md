@@ -716,6 +716,15 @@ The import's own memory never moved. There is nothing there to cap, so
 instead of disappearing into swap — and the watchdog. Pass `LIMIT=16G` to ask
 for a cap anyway, keeping it well above the extract's node table.
 
+**Turn `DEBUG` off.** With it on, Django keeps the last 9000 statements it ran,
+fully interpolated, so that `connection.queries` can be inspected. One
+`bulk_create` of a thousand streets leaves 0.6MB of SQL behind — measured — and
+a full deque is 4.9GB. A Poland import grew from 0.02GB of anonymous memory to
+3.58GB across its write phases, in step with the batches, and was stopped 45
+minutes in. The long commands now replace the log with a zero-length deque and
+say so, so ignoring this costs speed rather than the import, but it is still
+the first thing to check.
+
 Watch what else is holding memory, because the import is not competing with
 itself. A Poland import that finished its heavy passes with a 1.99% pressure
 peak was stopped at 50% two minutes in an hour later, on the same machine with

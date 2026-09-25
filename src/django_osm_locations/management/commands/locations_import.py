@@ -4,6 +4,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 from .. import Country
 from ...conf import get_data_dir
+from ...utils.query_log import stop_logging_queries
 from .importers import get_importer, known_countries
 
 
@@ -107,6 +108,10 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         self.osm_repository = options['repo']
+
+        # Before anything reads or writes: with DEBUG on, Django's query log
+        # grows by 0.6MB per batch of streets and would reach 4.9GB.
+        stop_logging_queries(self.stdout)
 
         if len(options['country']) == 0:
             exit("Provide at least one country name!")

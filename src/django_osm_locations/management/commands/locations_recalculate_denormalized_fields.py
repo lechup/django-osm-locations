@@ -2,6 +2,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction, connection
 from django.utils.text import slugify
 from ...utils.progress import progress
+from ...utils.query_log import stop_logging_queries
 
 from .. import Address, Country, CountrySubarea, Place, PlaceSubarea, Street
 
@@ -463,6 +464,7 @@ class Command(BaseCommand):
                 cursor.execute(sql)
 
     def handle(self, *args, **options):
+        stop_logging_queries(self.stdout)
         model_classes = self.selected_model_classes(options.get('types'))
 
         if not options.get('no_clean_before'):

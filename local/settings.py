@@ -13,7 +13,12 @@ import os
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 SECRET_KEY = 'local-development-only'
-DEBUG = True
+# Off by default. With DEBUG on, Django keeps the last 9000 statements it runs,
+# fully interpolated: 0.6MB for one batch of streets, 4.9GB for a full deque,
+# which is what made a Poland import grow 3.5GB and get stopped 45 minutes in.
+# The management commands defend themselves now, but the demo server does not
+# need it either. LOCATIONS_DEBUG=1 turns it back on.
+DEBUG = os.environ.get('LOCATIONS_DEBUG') == '1'
 ALLOWED_HOSTS = ['*']
 
 INSTALLED_APPS = [
