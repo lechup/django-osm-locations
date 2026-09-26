@@ -162,7 +162,7 @@ fi
 
 # -u so a kill does not discard the progress written so far: without it the
 # last crash left a zero-byte log and nothing to read.
-${SCOPE[@]+"${SCOPE[@]}"} "$PYTHON" -u -m django locations_import "$@" > "$LOG" 2>&1 &
+${SCOPE[@]+"${SCOPE[@]}"} "$PYTHON" -u -m django "$COMMAND" "$@" > "$LOG" 2>&1 &
 RUNNER=$!
 
 CAP=${LIMIT:+, limit $LIMIT}
