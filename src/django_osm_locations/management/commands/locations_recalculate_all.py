@@ -1,3 +1,6 @@
+from contextlib import contextmanager
+from datetime import datetime
+
 from django.core.management.base import BaseCommand
 from django.core.management import call_command
 
@@ -30,6 +33,29 @@ class Command(BaseCommand):
         ('PlaceSubarea', 'Street'),
     )
 
+    #: (label, duration) per phase, so the end can say where the time went.
+    timings = None
+
+    @contextmanager
+    def timed(self, label):
+        """
+        Announce a phase, and say how long it took.
+
+        Four hours of recalculation died on its first slug pass and the log
+        could not say how those four hours had been spent -- there was nothing
+        to tell a slow phase from a stuck one, or to decide what a tuning
+        change had achieved. Each phase now prints when it starts and what it
+        cost, and the totals are repeated at the end.
+        """
+        start = datetime.now()
+        self.stdout.write('{} - {}...'.format(start.strftime('%H:%M:%S'), label))
+        try:
+            yield
+        finally:
+            took = datetime.now() - start
+            self.timings.append((label, took))
+            self.stdout.write('  {} took {}'.format(label, took))
+
     def handle(self, *args, **options):
         """
         Areas first, then slugs and ancestry walked down the hierarchy.
@@ -49,33 +75,44 @@ class Command(BaseCommand):
         ancestor is written exactly once. The arrays are cleaned once around
         the whole walk rather than per level.
         """
-        call_command('locations_recalculate_areas_and_lengths')
+        self.timings = []
+        started = datetime.now()
+        with self.timed('areas and lengths'):
+            call_command('locations_recalculate_areas_and_lengths')
 
-        RecalculateDenormalizedFields.clean_denorm_fields_before_update()
+        with self.timed('cleaning denorm fields'):
+            RecalculateDenormalizedFields.clean_denorm_fields_before_update()
         # Countries have nothing to be qualified by, so their slugs are
         # already final and the walk can start by pushing them down.
-        call_command('locations_recalculate_slugs', 'Country')
+        with self.timed('slugs: Country'):
+            call_command('locations_recalculate_slugs', 'Country')
         for ancestor, descendant in self.LEVELS:
-            call_command(
-                'locations_recalculate_denormalized_fields', ancestor,
-                no_clean_before=True, no_clean_after=True, no_search_vector=True,
-            )
+            with self.timed('ancestry: {} down'.format(ancestor)):
+                call_command(
+                    'locations_recalculate_denormalized_fields', ancestor,
+                    no_clean_before=True, no_clean_after=True, no_search_vector=True,
+                )
             if ancestor == 'Place':
                 # Streets inside no place border take the nearest one, and it
                 # has to happen here: the slug pass qualifies a duplicate by
                 # its place, so running this after the walk -- as it first did
                 # -- left 771,321 streets slugged with nothing to qualify by,
                 # and the OSM-id fallback rate unmoved at 27.7%.
-                RecalculateDenormalizedFields.update_street_place_field()
-            call_command('locations_recalculate_slugs', descendant)
+                with self.timed('streets without a place'):
+                    RecalculateDenormalizedFields.update_street_place_field()
+            with self.timed('slugs: {}'.format(descendant)):
+                call_command('locations_recalculate_slugs', descendant)
         # After the streets are slugged, because an address stores its
         # street's slug, and by name rather than by containment -- an address
         # says which street it is on, and a point is not inside a line.
-        RecalculateDenormalizedFields.update_address_street_field()
-        RecalculateDenormalizedFields.clean_denorm_fields_after_update()
+        with self.timed('addresses to streets'):
+            RecalculateDenormalizedFields.update_address_street_field()
+        with self.timed('stripping placeholders'):
+            RecalculateDenormalizedFields.clean_denorm_fields_after_update()
         # After the strip: an address's slug reads its parent from element [1],
         # which until now was the placeholder.
-        RecalculateDenormalizedFields.update_address_slugs()
+        with self.timed('address slugs'):
+            RecalculateDenormalizedFields.update_address_slugs()
 
         # The tsvector columns are not rebuilt here. Search moved to
         # OpenSearch, where an edge n-gram analyser does the prefix matching
@@ -84,3 +121,11 @@ class Command(BaseCommand):
         # every recalculation, most of it one UPDATE over 2.8 million streets.
         # The columns are left in place for anything downstream still reading
         # them; run locations_recalculate_denormalized_fields to refresh them.
+
+        total = datetime.now() - started
+        self.stdout.write('\nwhere the time went:')
+        for label, took in sorted(self.timings, key=lambda pair: -pair[1]):
+            share = 100 * took.total_seconds() / max(total.total_seconds(), 1)
+            self.stdout.write('  {:>12}  {:5.1f}%  {}'.format(
+                str(took).split('.')[0], share, label))
+        self.stdout.write('  {:>12}         total'.format(str(total).split('.')[0]))
