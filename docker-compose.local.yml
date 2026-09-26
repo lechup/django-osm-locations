@@ -26,16 +26,28 @@ services:
     # is off because an interrupted import is re-run, not recovered -- it costs
     # the last few transactions on a crash, never consistency.
     #
-    # The work_mem figures are deliberately modest for a machine this size.
-    # maintenance_work_mem is per autovacuum worker, and three of them on a
-    # 2.8-million-row table during a recalculation is 3GB on its own; with
-    # OpenSearch holding a 3g heap beside it, a desktop session has been
-    # squeezed out before now. Raise them for a dedicated box.
+    # These are sized for this container's 8g limit, not for the host: because
+    # the limit is hard, work_mem can only trade page cache for working memory
+    # inside that budget, and it cannot squeeze the desktop. Measured mid-import
+    # the container sits at its limit with 7.69GB of it droppable page cache and
+    # 0.09GB anonymous, so there is room to spend.
+    #
+    # work_mem is per sort or hash node AND per connection, so it multiplies
+    # twice. 256MB is safe here because one management command is the only heavy
+    # client; max_connections is 100, and pointing a web application at this
+    # database would make the same figure catastrophic. Do not copy it into a
+    # production configuration.
+    #
+    # maintenance_work_mem is one operation at a time in practice -- an index
+    # build, a manual VACUUM -- which makes it the cheapest one to raise.
+    # autovacuum_work_mem stays where it is, because that one does multiply by
+    # the worker count, and shared_buffers stays at 1GB because it is shmem: a
+    # bigger figure is memory the kernel cannot reclaim when the host needs it.
     command: >
       postgres
       -c shared_buffers=1GB
-      -c work_mem=32MB
-      -c maintenance_work_mem=256MB
+      -c work_mem=256MB
+      -c maintenance_work_mem=1GB
       -c autovacuum_work_mem=256MB
       -c autovacuum_max_workers=2
       -c max_wal_size=4GB
