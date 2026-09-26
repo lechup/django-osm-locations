@@ -15,10 +15,22 @@
 #   scripts/guarded-import.sh france
 #   LIMIT=6G THRESHOLD=25 scripts/guarded-import.sh poland denmark
 #
+# COMMAND runs a different management command under the same guard, which the
+# recalculation passes need just as much -- they run for hours and the slug
+# pass loads rows in batches:
+#
+#   COMMAND=locations_clip_borders_to_land scripts/guarded-import.sh
+#   COMMAND=locations_recalculate_all scripts/guarded-import.sh
+#
 set -uo pipefail
 
-if [ "$#" -eq 0 ]; then
+COMMAND=${COMMAND:-locations_import}
+
+# locations_import needs at least one country; the recalculation commands take
+# no arguments at all, so only the import is checked.
+if [ "$COMMAND" = locations_import ] && [ "$#" -eq 0 ]; then
     echo "usage: $0 <country> [country...]" >&2
+    echo "       COMMAND=<management-command> $0 [args...]" >&2
     exit 2
 fi
 
@@ -43,11 +55,11 @@ LIMIT=${LIMIT:-}
 THRESHOLD=${THRESHOLD:-30}
 SUSTAIN=${SUSTAIN:-6}
 INTERVAL=${INTERVAL:-10}
-UNIT=${UNIT:-osm-import}
+UNIT=${UNIT:-osm-$COMMAND}
 PYTHON=${PYTHON:-python}
 # Where the importer puts the node index; must match LOCATIONS_CACHE_DIR.
 CACHE_DIR=${CACHE_DIR:-local}
-LOG=${LOG:-local/import-$(date +%Y%m%d-%H%M%S).log}
+LOG=${LOG:-local/$COMMAND-$(date +%Y%m%d-%H%M%S).log}
 TRACE=${TRACE:-${LOG%.log}.pressure}
 
 # Find the user manager's own cgroup rather than assuming uid 1000 and a
@@ -136,7 +148,7 @@ fi
 # Say which guards are actually in force, in one place, because "cap only" and
 # "no cap" in the same breath is how you end up believing the wrong one.
 if [ "$MODE" = plain ]; then
-    echo "warning: no systemd scope here, so swap is not held off this import" >&2
+    echo "warning: no systemd scope here, so swap is not held off this command" >&2
     echo "         and there is nothing to stop but the process itself." >&2
 elif [ -z "$PRESSURE" ] && [ "$OOMD" = yes ]; then
     echo "warning: systemd-oomd is running but its trigger is not readable" >&2
@@ -156,9 +168,9 @@ RUNNER=$!
 CAP=${LIMIT:+, limit $LIMIT}
 CAP=${CAP:-, no cap}
 if [ -n "$PRESSURE" ]; then
-    echo "import: $* ($MODE$CAP, stop above ${THRESHOLD}% for $((SUSTAIN * INTERVAL))s)"
+    echo "$COMMAND $* ($MODE$CAP, stop above ${THRESHOLD}% for $((SUSTAIN * INTERVAL))s)"
 else
-    echo "import: $* ($MODE$CAP)"
+    echo "$COMMAND $* ($MODE$CAP)"
 fi
 echo "log:    $LOG"
 echo "trace:  $TRACE"
