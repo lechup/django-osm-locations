@@ -139,6 +139,15 @@ class Command(BaseCommand):
                 subdivided, SIMPLIFY_DEGREES, SUBDIVIDE_VERTICES, table),
             'CREATE INDEX "{0}_gist" ON "{0}" USING gist (geom)'.format(subdivided),
             'ANALYZE "{}"'.format(subdivided),
+            # Stamp the tolerance on the table. Without it the tiles are a
+            # cache with no key: changing SIMPLIFY_DEGREES leaves the old tiles
+            # in place, ensure_subdivided finds a table and returns, and the
+            # clip silently uses the previous tolerance. That happened -- the
+            # 10m simplification was added, a clip ran for two hours against
+            # tiles built before it, and the United Kingdom came back with the
+            # same 2,238,352 vertices it had gone in with.
+            "COMMENT ON TABLE \"{}\" IS 'simplify_degrees={}'".format(
+                subdivided, SIMPLIFY_DEGREES),
         ]
 
     @classmethod
@@ -204,13 +213,36 @@ class Command(BaseCommand):
             WHERE ST_Area(c.border::geography) < ST_Area(loc.border::geography) * %s;
         """.format(staging=cls.staging_name(model_name), model_name=model_name)
 
+    @classmethod
+    def subdivided_tolerance(cls, cursor, subdivided):
+        """
+        The tolerance the existing tiles were built with, or None.
+
+        None covers both "no tiles" and "tiles from before they were stamped",
+        and both want rebuilding.
+        """
+        cursor.execute(
+            "SELECT obj_description(to_regclass(%s), 'pg_class')", [subdivided])
+        row = cursor.fetchone()
+        comment = row[0] if row else None
+        if not comment or not comment.startswith('simplify_degrees='):
+            return None
+        return comment.split('=', 1)[1]
+
     def ensure_subdivided(self, table, rebuild):
         subdivided = self.subdivided_name(table)
         with connection.cursor() as cursor:
             cursor.execute('SELECT to_regclass(%s)', [subdivided])
             exists = cursor.fetchone()[0] is not None
-            if exists and not rebuild:
+            built_with = self.subdivided_tolerance(cursor, subdivided) if exists else None
+            stale = built_with != str(SIMPLIFY_DEGREES)
+            if exists and not rebuild and not stale:
                 return
+            if exists and stale and not rebuild:
+                self.stdout.write(
+                    'tiles were built with tolerance {}, not {} -- rebuilding, '
+                    'or the clip would quietly use the old one'.format(
+                        built_with or 'unknown', SIMPLIFY_DEGREES))
             self.stdout.write('subdividing {} into {}-vertex tiles (once, slow)...'.format(
                 table, SUBDIVIDE_VERTICES))
             for statement in self.sql_for_subdivide(table):

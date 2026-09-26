@@ -173,3 +173,57 @@ class TestGeometryIsWritableToTheIndex:
     def test_the_tolerance_is_not_large_enough_to_move_a_coastline(self):
         """About a centimetre -- far under the 10m simplification."""
         assert MERGE_VERTICES_CLOSER_THAN < SIMPLIFY_DEGREES / 100
+
+
+class TestTheTilesAreACacheWithAKey:
+    """
+    The subdivided tiles carry the simplification, so they are a cache keyed by
+    the tolerance -- and for a while they had no key. The 10m simplification was
+    added, a clip ran for two hours against tiles built before it, and the
+    United Kingdom came back with the same 2,238,352 vertices it went in with,
+    because ensure_subdivided found a table and returned.
+    """
+
+    def test_the_build_stamps_the_tolerance_on_the_table(self):
+        statements = Clip.sql_for_subdivide('locations_land')
+        stamped = [s for s in statements if 'COMMENT ON TABLE' in s]
+        assert len(stamped) == 1
+        assert 'simplify_degrees={}'.format(SIMPLIFY_DEGREES) in stamped[0]
+
+    def test_the_stamp_names_the_subdivided_table_not_the_source(self):
+        statements = Clip.sql_for_subdivide('locations_land')
+        stamped = next(s for s in statements if 'COMMENT ON TABLE' in s)
+        assert 'locations_land_subdivided' in stamped
+
+    @pytest.mark.parametrize('comment,expected', [
+        ('simplify_degrees=0.0001', '0.0001'),
+        ('simplify_degrees=1e-05', '1e-05'),
+        ('', None),
+        (None, None),
+        ('something else entirely', None),
+    ])
+    def test_reading_the_stamp_back(self, comment, expected):
+        class Cursor:
+            def execute(self, sql, params=None):
+                pass
+
+            def fetchone(self):
+                return (comment,)
+
+        assert Clip.subdivided_tolerance(Cursor(), 'locations_land_subdivided') == expected
+
+    def test_tiles_from_before_the_stamp_are_treated_as_stale(self):
+        """
+        An unstamped table is exactly the case that caused this: tiles built
+        before the tolerance existed. None must not compare equal to the
+        current tolerance.
+        """
+        class Cursor:
+            def execute(self, sql, params=None):
+                pass
+
+            def fetchone(self):
+                return (None,)
+
+        built_with = Clip.subdivided_tolerance(Cursor(), 'locations_land_subdivided')
+        assert built_with != str(SIMPLIFY_DEGREES)
