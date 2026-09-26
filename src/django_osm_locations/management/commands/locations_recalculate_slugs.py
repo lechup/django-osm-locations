@@ -194,17 +194,24 @@ class Command(BaseCommand):
         """
         (country, slug, ids) for every base slug held by more than one row in
         the same country. Grouped in SQL so only the collisions come back.
+
+        Country has no country to be scoped by, and its scope is therefore a
+        constant. A constant cannot be named in GROUP BY -- PostgreSQL reads a
+        bare one as a positional reference and rejects it as "non-integer
+        constant in GROUP BY" -- so the grouping is built from the columns that
+        actually vary, which for Country is the slug alone.
         """
         table = model_class._meta.db_table
-        scope = "''" if 'country' not in (
-            getattr(model_class, 'denorm_fields', None) or ()) else cls.SCOPE_SQL
+        scoped = 'country' in (getattr(model_class, 'denorm_fields', None) or ())
+        scope = cls.SCOPE_SQL if scoped else "''"
+        group_by = '{}, slug'.format(cls.SCOPE_SQL) if scoped else 'slug'
         with connection.cursor() as cursor:
             cursor.execute("""
                 SELECT {scope} AS scope, slug, array_agg(id) AS ids
                 FROM "{table}"
-                GROUP BY {scope}, slug
+                GROUP BY {group_by}
                 HAVING count(*) > 1
-            """.format(scope=scope, table=table))
+            """.format(scope=scope, table=table, group_by=group_by))
             return cursor.fetchall()
 
     @classmethod

@@ -18,7 +18,9 @@ from django.core.management import call_command
 from django_osm_locations.management.commands.locations_recalculate_slugs import (
     Command as Slugs,
 )
-from django_osm_locations.models import Country, CountrySubarea, Place, Street
+from django_osm_locations.models import (
+    Country, CountrySubarea, Place, PlaceSubarea, Street,
+)
 
 from .conftest import square
 
@@ -128,3 +130,42 @@ class TestItIsOnePassNotOnePerCountry:
             list(Slugs.scopes_for(Street))
 
         assert len(captured) == 1, [q['sql'][:80] for q in captured]
+
+
+class TestEveryModelCanBeAsked:
+    """
+    Country has no country to be scoped by, so its scope is a constant -- and a
+    bare constant cannot be named in GROUP BY, which PostgreSQL rejects as
+    "non-integer constant in GROUP BY". Nothing covered that: the tests asked
+    scopes_for(Country), which parameterises the constant and is fine, and never
+    duplicates_for(Country). locations_recalculate_all runs the Country pass
+    first, so the whole recalculation died four hours in.
+    """
+
+    @pytest.mark.parametrize('model', [
+        Country, CountrySubarea, Place, PlaceSubarea, Street,
+    ])
+    def test_duplicates_for_runs(self, model):
+        assert isinstance(Slugs.duplicates_for(model), list)
+
+    @pytest.mark.parametrize('model', [
+        Country, CountrySubarea, Place, PlaceSubarea, Street,
+    ])
+    def test_scopes_for_runs(self, model):
+        assert isinstance(list(Slugs.scopes_for(model)), list)
+
+    def test_countries_sharing_a_slug_are_still_duplicates(self):
+        """
+        Being globally scoped does not mean unscoped: two countries with the
+        same base slug must still be separated.
+        """
+        for iso2, iso3, un in (('T1', 'TS1', 901), ('T2', 'TS2', 902)):
+            Country.objects.create(name='Testland', slug='testland',
+                                   iso2=iso2, iso3=iso3, un=un)
+        found = {slug for _scope, slug, _ids in Slugs.duplicates_for(Country)}
+        assert 'testland' in found
+
+    def test_the_whole_recalculation_gets_through_the_country_pass(self):
+        """The command that died: recalculate_all's first slug pass."""
+        call_command('locations_recalculate_slugs', 'Country')
+        assert Country.objects.exclude(slug='').count() == Country.objects.count()
