@@ -5,6 +5,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction, connection
 from django.utils.text import slugify
 from ...utils.progress import progress
+from ...utils.bulk_writes import relax_durability
 from ...utils.query_log import stop_logging_queries
 
 from .. import Address, Country, CountrySubarea, Place, PlaceSubarea, Street
@@ -242,6 +243,8 @@ class Command(BaseCommand):
                     )
                 )
             )
+            ancestor_started = datetime.now()
+            ancestor_rows = 0
             for denormalized_model_class in denormalized_model_classes:
                 field_name = model_class_to_update.__name__.lower()
                 model_name = denormalized_model_class.__name__.lower()
@@ -252,12 +255,36 @@ class Command(BaseCommand):
                     cursor.execute(sql, [obj.name, obj.slug, obj.id])
                     cls._tally(model_class_to_update, denormalized_model_class,
                                cursor.rowcount)
+                    ancestor_rows += max(cursor.rowcount, 0)
+            # Per ancestor, not only per level: at this level there are three
+            # countries and the United Kingdom's border carries 2.2 million
+            # vertices against Poland's 103,000, so a level total cannot say
+            # which of them the time went on. Printed only for the levels small
+            # enough for it to be readable -- 3,040 country subareas would bury
+            # the log.
+            if objects_count <= cls.REPORT_EACH_ANCESTOR_UP_TO and report:
+                report('    {} ({} vertices): {} rows in {}'.format(
+                    obj.name, cls._border_vertices(model_class_to_update, obj.id),
+                    ancestor_rows, datetime.now() - ancestor_started))
 
     #: rows rewritten per (ancestor model, descendant model), so a pass can say
     #: where its writes went rather than only how long it took. A descendant
     #: rewritten once per matching ancestor shows up here as a multiple of its
     #: row count, which is the thing worth noticing.
     written = None
+
+    #: Above this many ancestors a per-ancestor line is noise, not information.
+    REPORT_EACH_ANCESTOR_UP_TO = 20
+
+    @classmethod
+    def _border_vertices(cls, model_class, pk):
+        """How complex this ancestor's border is -- the cost driver per row."""
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT ST_NPoints(border) FROM "{}" WHERE id = %s'.format(
+                    model_class._meta.db_table), [pk])
+            row = cursor.fetchone()
+        return row[0] if row and row[0] is not None else 0
 
     @classmethod
     def _tally(cls, ancestor_model, descendant_model, rows):
@@ -564,6 +591,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         stop_logging_queries(self.stdout)
+        relax_durability(self.stdout)
         model_classes = self.selected_model_classes(options.get('types'))
 
         if not options.get('no_clean_before'):

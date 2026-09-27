@@ -5,6 +5,7 @@ from django.core.management.base import BaseCommand
 from django.db import connection, transaction
 from django.db.models import Count, F, Func, Q
 from ...utils.progress import progress
+from ...utils.bulk_writes import relax_durability
 from ...utils.query_log import stop_logging_queries
 
 from .. import Country, CountrySubarea, Place, PlaceSubarea, Street
@@ -282,6 +283,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         stop_logging_queries(self.stdout)
+        relax_durability(self.stdout)
         # Address is deliberately absent. Its slug is derived from its street
         # and house number, which is unique by construction, and putting 8.5
         # million of them through duplicate resolution would be enormous and

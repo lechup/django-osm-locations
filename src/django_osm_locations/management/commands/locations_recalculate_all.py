@@ -3,6 +3,7 @@ from datetime import datetime
 
 from django.core.management.base import BaseCommand
 from django.core.management import call_command
+from django.db import connection
 
 from .locations_recalculate_areas_and_lengths import Command as RecalculateAreasAndLengthCommand
 from .locations_recalculate_slugs import Command as RecalculateSlugs
@@ -56,6 +57,16 @@ class Command(BaseCommand):
             self.timings.append((label, took))
             self.stdout.write('  {} took {}'.format(label, took))
 
+    def add_arguments(self, parser):
+        parser.add_argument(
+            '--one-pass', action='store_true', default=False,
+            help='Push each ancestor level down in one statement instead of one '
+                 'per ancestor row. Measured on Place -> Address: 27,993 '
+                 'statements at 1.88s each extrapolates to 14h36m, which is why '
+                 'the option exists. Passed straight through to '
+                 'locations_recalculate_denormalized_fields.',
+        )
+
     def handle(self, *args, **options):
         """
         Areas first, then slugs and ancestry walked down the hierarchy.
@@ -91,6 +102,7 @@ class Command(BaseCommand):
                 call_command(
                     'locations_recalculate_denormalized_fields', ancestor,
                     no_clean_before=True, no_clean_after=True, no_search_vector=True,
+                    one_pass=options.get('one_pass', False),
                 )
             if ancestor == 'Place':
                 # Streets inside no place border take the nearest one, and it
@@ -122,6 +134,8 @@ class Command(BaseCommand):
         # The columns are left in place for anything downstream still reading
         # them; run locations_recalculate_denormalized_fields to refresh them.
 
+        self.report_write_amplification()
+
         total = datetime.now() - started
         self.stdout.write('\nwhere the time went:')
         for label, took in sorted(self.timings, key=lambda pair: -pair[1]):
@@ -129,3 +143,43 @@ class Command(BaseCommand):
             self.stdout.write('  {:>12}  {:5.1f}%  {}'.format(
                 str(took).split('.')[0], share, label))
         self.stdout.write('  {:>12}         total'.format(str(total).split('.')[0]))
+
+    def report_write_amplification(self):
+        """
+        What the pass cost in writes, which is what it is actually made of.
+
+        Every ancestor pushed down rewrites its descendants, and a rewrite is a
+        new row version. The numbers worth comparing between runs are the
+        rewrites per row -- above 1 means a level rewrote the same rows more
+        than once -- and the share of them PostgreSQL could keep on the page as
+        HOT, which is the share that did not touch any of the table's indexes.
+
+        Read from pg_stat_user_tables, so it measures since the counters were
+        last reset. Reset them before a run that is meant to be compared:
+        SELECT pg_stat_reset();
+        """
+        # Reporting has no business failing the command it reports on, and a
+        # caller without database access -- a test exercising the order of the
+        # walk, for instance -- is not an error.
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT relname, n_live_tup, n_tup_upd, n_tup_hot_upd,
+                           pg_size_pretty(pg_total_relation_size(relid))
+                    FROM pg_stat_user_tables
+                    WHERE relname LIKE 'locations_%' AND n_tup_upd > 0
+                    ORDER BY n_tup_upd DESC
+                """)
+                rows = cursor.fetchall()
+        except Exception:
+            return
+
+        if not rows:
+            return
+        self.stdout.write('\nwrites, since the counters were last reset:')
+        self.stdout.write('  {:<26} {:>12} {:>14} {:>9} {:>8} {:>9}'.format(
+            'table', 'rows', 'rewrites', 'per row', 'HOT', 'size'))
+        for name, live, updated, hot, size in rows:
+            self.stdout.write('  {:<26} {:>12,} {:>14,} {:>9.2f} {:>7.0f}% {:>9}'.format(
+                name, live, updated, updated / max(live, 1),
+                100 * hot / max(updated, 1), size))

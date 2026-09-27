@@ -6,6 +6,8 @@ from django.db.models import F
 from django.db.models.functions import Cast
 
 from .. import Country, CountrySubarea, Place, PlaceSubarea, Street
+from ...utils.bulk_writes import relax_durability
+from ...utils.query_log import stop_logging_queries
 
 
 class Command(BaseCommand):
@@ -64,6 +66,8 @@ class Command(BaseCommand):
         ).update(center=F('new_center'))
 
     def handle(self, *args, **options):
+        stop_logging_queries(self.stdout)
+        relax_durability(self.stdout)
         border_model_classes = [Country, CountrySubarea, Place, PlaceSubarea]
         for border_model_class in border_model_classes:
             print('{} - calculating areas...'.format(border_model_class.__name__).encode('utf-8'))
