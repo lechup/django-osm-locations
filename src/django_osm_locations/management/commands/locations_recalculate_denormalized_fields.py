@@ -26,11 +26,21 @@ class Command(BaseCommand):
     MODEL_CLASSES_TO_UPDATE = DENORMALIZED_MODEL_CLASSES[:4]
     MODEL_CLASSES_TO_CLEAN = DENORMALIZED_MODEL_CLASSES[1:]
     MODEL_CASSES_TO_SEARCH_UPDATE = DENORMALIZED_MODEL_CLASSES
+    #: Which descendants each ancestor is pushed onto by containment.
+    #:
+    #: Address is absent from three of the four on purpose. It used to be in
+    #: all of them, which meant four point-in-polygon passes over 11 million
+    #: rows -- and an address inside a place is inside that place's country and
+    #: country subarea by construction, so three of those four were computing
+    #: what a join already knew. inherit_address_ancestry_from_place does the
+    #: one spatial pass that is genuinely needed and joins the rest. Its place
+    #: subarea stays a containment test: those borders are small, and there is
+    #: nothing above a place subarea for an address to inherit from.
     DENORMALIZED_MODEL_CLASSES_TO_UPDATE_DICT = {
-        'Country': DENORMALIZED_MODEL_CLASSES[1:],
-        'CountrySubarea': DENORMALIZED_MODEL_CLASSES[1:],
-        'Place': DENORMALIZED_MODEL_CLASSES[2:],
-        'PlaceSubarea': DENORMALIZED_MODEL_CLASSES[3:],
+        'Country': [CountrySubarea, Place, PlaceSubarea, Street],
+        'CountrySubarea': [CountrySubarea, Place, PlaceSubarea, Street],
+        'Place': [Place, PlaceSubarea, Street],
+        'PlaceSubarea': [PlaceSubarea, Street, Address],
     }
 
     def add_arguments(self, parser):
@@ -515,6 +525,92 @@ class Command(BaseCommand):
         with connection.cursor() as cursor:
             cursor.execute(cls.get_sql_for_address_slugs())
             print("  {} derived".format(cursor.rowcount))
+
+    #: What an address inherits from the place that contains it rather than
+    #: working out for itself. Its place subarea is not here: those borders are
+    #: small and there is nothing above them to inherit.
+    ADDRESS_INHERITS = ('country', 'countrysubarea')
+
+    @classmethod
+    def get_sql_for_address_place_map(cls):
+        """
+        Which place contains each address, in one spatial join.
+
+        This replaces three point-in-polygon passes over the whole address
+        table with one. Measured on this data: pushing Place down onto 11
+        million addresses one ancestor at a time is 27,993 statements at 1.88s
+        each, extrapolating to 14h36m, and Country and CountrySubarea each cost
+        another pass over the same rows against much larger borders.
+        Aggregating the statement did not help -- a single statement for the
+        level and batches of 2,000 ancestors both ran past generous timeouts --
+        because the cost is the containment test itself, not the shape of the
+        statement issuing it.
+
+        An address inside a place is inside that place's country and country
+        subarea by construction, so those two never needed testing. Only the
+        place has to be found; everything above it is a join.
+
+        No sort and no DISTINCT here: every match is kept, and choosing among
+        them happens once the table is indexed, where it sorts two integers
+        rather than eleven million wide rows.
+        """
+        return """
+            DROP TABLE IF EXISTS "address_place";
+            CREATE TEMPORARY TABLE "address_place" AS
+            SELECT a.id AS address_id, p.id AS place_id, p.area AS place_area
+            FROM "locations_address" a
+            JOIN "locations_place" p
+              ON p.border IS NOT NULL AND ST_Intersects(a.center, p.border);
+            CREATE INDEX "address_place_idx" ON "address_place" (address_id, place_area);
+            ANALYZE "address_place";
+        """
+
+    @classmethod
+    def get_sql_for_address_inherited_ancestry(cls):
+        """
+        Copy the place's ancestry onto its addresses, and name the place.
+
+        The smallest containing place wins. A point inside two places is a
+        boundary anomaly rather than a fact about the world, and the more
+        specific one is the better answer -- where the old pass appended both,
+        ordered by size.
+
+        Run before the placeholder is stripped: the place's arrays still carry
+        it at element 1, so a straight copy lands in the shape the per-ancestor
+        pass produced and the strip removes it from both.
+        """
+        return """
+            UPDATE "locations_address" AS d SET
+                country = p.country,
+                countrysubarea = p.countrysubarea,
+                place = array_cat(d.place, ARRAY[p.name, p.slug]::varchar[])
+            FROM (
+                SELECT DISTINCT ON (address_id) address_id, place_id
+                FROM "address_place"
+                ORDER BY address_id, place_area ASC NULLS LAST, place_id
+            ) AS m
+            JOIN "locations_place" p ON p.id = m.place_id
+            WHERE d.id = m.address_id;
+        """
+
+    @classmethod
+    @transaction.atomic
+    def inherit_address_ancestry_from_place(cls):
+        """One spatial pass, then joins. See the two SQL builders for why."""
+        started = datetime.now()
+        with connection.cursor() as cursor:
+            print("Address - finding the place that contains each address...")
+            cursor.execute(cls.get_sql_for_address_place_map())
+            cursor.execute('SELECT count(*) FROM "address_place"')
+            matches = cursor.fetchone()[0]
+            print("  {} address-place matches in {}".format(
+                matches, datetime.now() - started))
+
+            print("Address - inheriting country and country subarea from it...")
+            inherited = datetime.now()
+            cursor.execute(cls.get_sql_for_address_inherited_ancestry())
+            print("  {} addresses in {}".format(
+                cursor.rowcount, datetime.now() - inherited))
 
     @classmethod
     @transaction.atomic

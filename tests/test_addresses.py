@@ -295,6 +295,7 @@ class TestSlugsRunAfterTheStrip:
         with mock.patch(
             'django_osm_locations.management.commands.locations_recalculate_all.call_command'
         ), mock.patch.object(Denorm, 'clean_denorm_fields_before_update'), \
+                mock.patch.object(Denorm, 'inherit_address_ancestry_from_place'), \
                 mock.patch.object(Denorm, 'update_street_place_field'), \
                 mock.patch.object(Denorm, 'update_address_street_field',
                                   side_effect=lambda: order.append('link')), \

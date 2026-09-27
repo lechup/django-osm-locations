@@ -114,6 +114,13 @@ class Command(BaseCommand):
                     RecalculateDenormalizedFields.update_street_place_field()
             with self.timed('slugs: {}'.format(descendant)):
                 call_command('locations_recalculate_slugs', descendant)
+        # After the walk, because it copies each place's finished ancestry and
+        # final slug onto the addresses inside it, and before the placeholder
+        # is stripped, so the copy lands in the same shape the containment pass
+        # produced.
+        with self.timed('addresses inherit from their place'):
+            RecalculateDenormalizedFields.inherit_address_ancestry_from_place()
+
         # After the streets are slugged, because an address stores its
         # street's slug, and by name rather than by containment -- an address
         # says which street it is on, and a point is not inside a line.
