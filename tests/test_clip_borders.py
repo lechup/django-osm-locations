@@ -11,7 +11,9 @@ from django.core.management.base import CommandError
 
 from django_osm_locations.management.commands.locations_clip_borders_to_land import (
     MERGE_VERTICES_CLOSER_THAN,
+    SAME_LAND_WITHIN,
     SHRUNK_ENOUGH,
+    SIMPLER_ENOUGH,
     SIMPLIFY_DEGREES,
     SUBDIVIDE_VERTICES,
     Command as Clip,
@@ -86,13 +88,15 @@ class TestClipSql:
 
 
 class TestApplySql:
-    def test_only_shrunken_borders_are_written(self):
+    def test_unchanged_borders_are_not_written(self):
         """
         Inland borders are the vast majority -- 2,810 of Poland's 2,876
         subareas -- and rewriting them would only add collinear points along
-        the tile seams.
+        the tile seams. A border has to have lost area or lost vertices.
         """
-        assert 'ST_Area(loc.border::geography) * %s' in Clip.sql_for_apply('place')
+        applied = ' '.join(Clip.sql_for_apply('place').split())
+        assert 'ST_Area(loc.border::geography) * 0.999' in applied
+        assert 'ST_NPoints(loc.border) * 0.95' in applied
 
     def test_the_threshold_is_a_shrink_not_a_change(self):
         assert 0.99 < SHRUNK_ENOUGH < 1.0
@@ -227,3 +231,54 @@ class TestTheTilesAreACacheWithAKey:
 
         built_with = Clip.subdivided_tolerance(Cursor(), 'locations_land_subdivided')
         assert built_with != str(SIMPLIFY_DEGREES)
+
+
+class TestASimplerBorderIsAChangeToo:
+    """
+    Shrinkage was the whole test, and it made an already-clipped border
+    impossible to improve: re-clipping against a simplified coastline changes
+    the outline and not the area, the area test saw nothing, and the simpler
+    geometry was discarded. The United Kingdom sat at 2,238,352 vertices
+    through two clips while the land in its bounding box went from 10,274,780
+    vertices to 677,026.
+    """
+
+    @staticmethod
+    def _condition():
+        return ' '.join(Clip.changed_enough().split())
+
+    def test_losing_area_still_counts(self):
+        assert 'ST_Area(c.border::geography) < ST_Area(loc.border::geography) * 0.999' \
+            in self._condition()
+
+    def test_losing_vertices_at_the_same_area_counts(self):
+        condition = self._condition()
+        assert 'ST_NPoints(c.border) < ST_NPoints(loc.border) * 0.95' in condition
+
+    def test_the_simplification_branch_requires_the_area_to_hold(self):
+        """
+        Otherwise a degenerate result -- a border collapsed to a fraction of
+        its land -- would be accepted for being simpler.
+        """
+        condition = self._condition()
+        assert 'BETWEEN' in condition
+        assert '(1 - 0.001)' in condition and '(1 + 0.001)' in condition
+
+    def test_the_apply_and_the_count_agree(self):
+        """
+        They are two statements deciding the same thing, and a disagreement
+        would report a number of borders that differs from the number written.
+        """
+        applied = ' '.join(Clip.sql_for_apply('country').split())
+        counted = ' '.join(Clip.sql_for_count('country').split())
+        condition = self._condition()
+        assert condition in applied
+        assert condition in counted
+
+    def test_neither_statement_takes_parameters_any_more(self):
+        """
+        The thresholds are formatted in, so a caller passing one would raise
+        "not all arguments converted during string formatting".
+        """
+        assert '%s' not in Clip.sql_for_apply('country')
+        assert '%s' not in Clip.sql_for_count('country')

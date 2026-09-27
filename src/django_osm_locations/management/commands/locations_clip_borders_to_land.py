@@ -68,6 +68,24 @@ MERGE_VERTICES_CLOSER_THAN = 0.0000001
 #: real stretch of coast.
 SHRUNK_ENOUGH = 0.999
 
+#: ...or how much simpler, at the same area, for the same reason.
+#:
+#: Shrinkage alone was the whole test, and it made an already-clipped border
+#: impossible to improve: re-clipping against a finer or coarser coastline
+#: changes the outline without changing the area, the area test saw no change,
+#: and the simpler geometry was computed and thrown away. Measured on the
+#: United Kingdom, whose border is nearly all coast: the land in its bounding
+#: box carries 10,274,780 vertices raw and 677,026 once simplified to 10m, a
+#: 93% reduction that the border never received. It sat at 2,238,352 vertices
+#: through two clips.
+SIMPLER_ENOUGH = 0.95
+
+#: How much the area may move for a rewrite that is only a simplification.
+#: Simplifying the coastline can push the line either way, so the same land
+#: does not mean the identical area -- but it does mean a very close one, and
+#: anything further out is a geometry to reject rather than accept quietly.
+SAME_LAND_WITHIN = 0.001
+
 
 def land_polygons_table():
     return getattr(settings, 'LOCATIONS_LAND_POLYGONS_TABLE', None)
@@ -180,10 +198,30 @@ class Command(BaseCommand):
     def staging_name(model_name):
         return 'clipped_{}'.format(model_name)
 
+    #: The two reasons to write a border back: it lost sea, or it describes the
+    #: same land with materially fewer vertices. Kept in one place because the
+    #: apply and the count must not disagree about what counts as a change.
+    CHANGED_ENOUGH = """
+        (
+              ST_Area(c.border::geography) < ST_Area(loc.border::geography) * {shrunk}
+           OR (
+                  ST_Area(c.border::geography)
+                      BETWEEN ST_Area(loc.border::geography) * (1 - {same_land})
+                          AND ST_Area(loc.border::geography) * (1 + {same_land})
+              AND ST_NPoints(c.border) < ST_NPoints(loc.border) * {simpler}
+              )
+        )
+    """
+
+    @classmethod
+    def changed_enough(cls):
+        return cls.CHANGED_ENOUGH.format(
+            shrunk=SHRUNK_ENOUGH, simpler=SIMPLER_ENOUGH, same_land=SAME_LAND_WITHIN)
+
     @classmethod
     def sql_for_apply(cls, model_name):
         """
-        Write back only the borders the clip actually shrank.
+        Write back the borders the clip shrank, and those it only simplified.
 
         ``center`` is recomputed where the old one is no longer inside -- a
         harbour's point-on-surface can easily land in water the clip has just
@@ -200,18 +238,18 @@ class Command(BaseCommand):
                 center = CASE WHEN ST_Intersects(c.border, loc.center) THEN loc.center
                               ELSE ST_PointOnSurface(c.border) END
             FROM "{staging}" c
-            WHERE loc.id = c.id
-              AND ST_Area(c.border::geography) < ST_Area(loc.border::geography) * %s;
+            WHERE loc.id = c.id AND {changed};
         """.format(model_name=model_name, staging=cls.staging_name(model_name),
-                   merge=MERGE_VERTICES_CLOSER_THAN)
+                   merge=MERGE_VERTICES_CLOSER_THAN, changed=cls.changed_enough())
 
     @classmethod
     def sql_for_count(cls, model_name):
         return """
             SELECT count(*) FROM "{staging}" c
             JOIN "locations_{model_name}" loc ON loc.id = c.id
-            WHERE ST_Area(c.border::geography) < ST_Area(loc.border::geography) * %s;
-        """.format(staging=cls.staging_name(model_name), model_name=model_name)
+            WHERE {changed};
+        """.format(staging=cls.staging_name(model_name), model_name=model_name,
+                   changed=cls.changed_enough())
 
     @classmethod
     def subdivided_tolerance(cls, cursor, subdivided):
@@ -270,10 +308,10 @@ class Command(BaseCommand):
             with transaction.atomic():
                 with connection.cursor() as cursor:
                     cursor.execute(self.sql_for_clip(model_name, table))
-                    cursor.execute(self.sql_for_count(model_name), [SHRUNK_ENOUGH])
+                    cursor.execute(self.sql_for_count(model_name))
                     changed = cursor.fetchone()[0]
                     if dry_run:
                         self.stdout.write('  {} would be clipped'.format(changed))
                         continue
-                    cursor.execute(self.sql_for_apply(model_name), [SHRUNK_ENOUGH])
+                    cursor.execute(self.sql_for_apply(model_name))
                     self.stdout.write('  {} clipped'.format(changed))
