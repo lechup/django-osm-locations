@@ -242,6 +242,36 @@ Published indexes are derived from OpenStreetMap and carry ODbL's attribution
 and share-alike obligations — see [License](#license). That is separate from
 this package's own BSD-3 licence, which covers the code.
 
+### What the recalculation actually costs
+
+Pushing ancestry down rewrites every descendant once for each ancestor that
+contains it, and a rewrite in PostgreSQL is a new row version. Measured across
+Poland, Britain and Denmark: 43 million rewrites over 11 million addresses, 23
+million over 2.8 million streets. The tables end up mostly dead rows —
+`locations_street` reached 34GB and `VACUUM FULL` took it back to 4.3GB, so 87%
+of it was bloat.
+
+Those rewrites touch only the denormalised arrays, which no index covers, so
+they can be HOT updates: the new version goes on the same page and none of the
+seventeen indexes on `locations_address` is touched. HOT needs free space on the
+page, so the two big tables are created with `fillfactor = 70` (migration 0039).
+An existing database needs a rewrite before that takes effect:
+
+```bash
+make dbshell
+=> VACUUM FULL locations_street;    -- 34GB -> 4.3GB, seven minutes
+=> VACUUM FULL locations_address;
+```
+
+Do not add an index over `country`, `countrysubarea`, `place`, `placesubarea` or
+`street` on those tables without measuring a recalculation afterwards: it makes
+every one of those rewrites non-HOT again, whatever the fillfactor. There is a
+test that fails if one appears.
+
+`locations_recalculate_all` reports what each phase cost, and the denormalised
+pass reports rows rewritten per level with a per-row ratio — a ratio well above
+1 means a level is rewriting the same rows repeatedly.
+
 ## Updating to newer OSM data
 
 One command does the whole cycle:
