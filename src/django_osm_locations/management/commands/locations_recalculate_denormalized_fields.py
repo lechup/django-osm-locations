@@ -1,3 +1,6 @@
+from datetime import datetime
+
+from django.apps import apps
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction, connection
 from django.utils.text import slugify
@@ -33,6 +36,16 @@ class Command(BaseCommand):
         parser.add_argument(
             'types', nargs='*',
             help='Ancestor models to push down. Defaults to all of them.',
+        )
+        parser.add_argument(
+            '--one-pass', action='store_true', default=False,
+            help='Push a whole ancestor level down in one statement instead of '
+                 'one per ancestor row. Fewer row rewrites -- a street inside a '
+                 'voivodeship, a county and a commune is rewritten once rather '
+                 'than three times -- but it sorts every match and hash-joins '
+                 'the whole table, which the planner costs as 21 million rows '
+                 'for addresses. Off by default because it has not been shown '
+                 'to be faster; turn it on to measure.',
         )
         parser.add_argument(
             '-a',
@@ -111,6 +124,48 @@ class Command(BaseCommand):
         })
 
     @classmethod
+    def get_sql_for_update_denorm_fields_in_one_pass(cls, model_name, field_name,
+                                                     ancestor_table):
+        """
+        Push one whole ancestor level down in a single statement.
+
+        The per-ancestor version issues one UPDATE for every ancestor row:
+        3,040 country subareas across five descendant tables is 15,200
+        statements, and a descendant contained by a voivodeship, a county and
+        a commune -- all three being CountrySubarea -- is rewritten three
+        times. Every rewrite is a new row version, and because the table is
+        packed at fillfactor 100 with seventeen indexes on it, none of which
+        covers the denormalised arrays, each one also maintains all seventeen.
+
+        Aggregating first rewrites each row once per level instead of once per
+        matching ancestor. The order is what the slug pass depends on: it reads
+        the first pair, and the ancestors were iterated largest-first, so the
+        aggregate is ordered by area descending to keep that.
+
+        ``array_agg`` of a two-element array builds the same N x 2 shape the
+        column already holds, so ``array_cat`` appends it as further rows.
+        """
+        return """
+            UPDATE "locations_{model_name}" AS d
+            SET {field_name} = array_cat(d.{field_name}, a.pairs)
+            FROM (
+                SELECT d2.id,
+                       array_agg(ARRAY[anc.name, anc.slug]::varchar[]
+                                 ORDER BY anc.area DESC NULLS LAST, anc.id) AS pairs
+                FROM "locations_{model_name}" d2
+                JOIN "{ancestor_table}" anc
+                  ON anc.border IS NOT NULL
+                 AND ST_Intersects(d2.center, anc.border)
+                GROUP BY d2.id
+            ) AS a
+            WHERE d.id = a.id;
+        """.format(**{
+            'model_name': model_name,
+            'field_name': field_name,
+            'ancestor_table': ancestor_table,
+        })
+
+    @classmethod
     def get_sql_for_clean_denorm_fields(cls, model_name, field_names):
         """
         Strip the placeholder from every denormalised column in one pass.
@@ -156,7 +211,8 @@ class Command(BaseCommand):
                 cursor.execute(sql)
 
     @classmethod
-    def update_denorm_fields_for_model_class(cls, model_class_to_update):
+    def update_denorm_fields_for_model_class(cls, model_class_to_update, one_pass=False,
+                                             report=None):
         """
         Recaltulate all denorm fields for :param model_class_to_update:. We iterate throught other location models
         defined in `cls.DENORMALIZED_MODEL_CLASSES_TO_UPDATE_DICT` and update proper fields for
@@ -167,8 +223,14 @@ class Command(BaseCommand):
         """
         # border deliberately not deferred-in: it is read server-side now, and
         # loading it here pulled half a gigabyte of geometry through Python
+        if one_pass:
+            return cls._update_denorm_fields_in_one_pass(model_class_to_update, report)
+
         objects = model_class_to_update.objects.exclude(border=None).only('name', 'slug').iterator()
         objects_count = model_class_to_update.objects.exclude(border=None).count()
+        if report:
+            report('{} - pushing down from {} ancestors, one statement each'.format(
+                model_class_to_update.__name__, objects_count))
         for obj in progress(objects, total=objects_count, desc=model_class_to_update.__name__):
             model_name = model_class_to_update.__name__
             denormalized_model_classes = progress(
@@ -188,6 +250,43 @@ class Command(BaseCommand):
                 )
                 with connection.cursor() as cursor:
                     cursor.execute(sql, [obj.name, obj.slug, obj.id])
+                    cls._tally(model_class_to_update, denormalized_model_class,
+                               cursor.rowcount)
+
+    #: rows rewritten per (ancestor model, descendant model), so a pass can say
+    #: where its writes went rather than only how long it took. A descendant
+    #: rewritten once per matching ancestor shows up here as a multiple of its
+    #: row count, which is the thing worth noticing.
+    written = None
+
+    @classmethod
+    def _tally(cls, ancestor_model, descendant_model, rows):
+        if cls.written is None:
+            cls.written = {}
+        key = (ancestor_model.__name__, descendant_model.__name__)
+        got = cls.written.setdefault(key, [0, 0])
+        got[0] += 1
+        got[1] += max(rows, 0)
+
+    @classmethod
+    def _update_denorm_fields_in_one_pass(cls, model_class_to_update, report=None):
+        """One statement per descendant table; see the SQL builder for why."""
+        for descendant in cls.DENORMALIZED_MODEL_CLASSES_TO_UPDATE_DICT[
+                model_class_to_update.__name__]:
+            field_name = model_class_to_update.__name__.lower()
+            model_name = descendant.__name__.lower()
+            sql = cls.get_sql_for_update_denorm_fields_in_one_pass(
+                model_name, field_name, model_class_to_update._meta.db_table,
+            )
+            started = datetime.now()
+            with connection.cursor() as cursor:
+                cursor.execute(sql)
+                rows = cursor.rowcount
+                cls._tally(model_class_to_update, descendant, rows)
+            if report:
+                report('  {} -> {}: {} rows in {}'.format(
+                    model_class_to_update.__name__, descendant.__name__,
+                    rows, datetime.now() - started))
 
     @classmethod
     @transaction.atomic
@@ -469,9 +568,17 @@ class Command(BaseCommand):
 
         if not options.get('no_clean_before'):
             self.clean_denorm_fields_before_update()
+        self.written = {}
         for model_class in model_classes:
+            started = datetime.now()
             print("{} - updating denorm fields...".format(model_class.__name__))
-            self.update_denorm_fields_for_model_class(model_class)
+            self.update_denorm_fields_for_model_class(
+                model_class, one_pass=options.get('one_pass'),
+                report=self.stdout.write,
+            )
+            self.stdout.write('  {} pushed down in {}'.format(
+                model_class.__name__, datetime.now() - started))
+        self.report_writes()
         if not options.get('no_clean_after'):
             self.clean_denorm_fields_after_update()
             # only meaningful once every place has been pushed down, and the
@@ -479,3 +586,23 @@ class Command(BaseCommand):
             self.update_street_place_field()
         if not options.get('no_search_vector'):
             self.update_search_vector_field()
+
+    def report_writes(self):
+        """
+        How many row rewrites each level cost, and how many rows that is per
+        row of the table.
+
+        Where the time goes is not the statements, it is the writes: every
+        rewrite is a new row version, and with the table packed at fillfactor
+        100 and no index covering the denormalised arrays, each one maintains
+        every index on the table. A ratio well above 1 is the signal that a
+        level is rewriting the same rows repeatedly.
+        """
+        if not self.written:
+            return
+        self.stdout.write('\nrows rewritten:')
+        for (ancestor, descendant), (statements, rows) in sorted(self.written.items()):
+            live = apps.get_model('locations', descendant).objects.count() or 1
+            self.stdout.write('  {:>14} -> {:<14} {:>12} rows in {:>6} statement(s)'
+                              '  ({:.2f} per row)'.format(
+                                  ancestor, descendant, rows, statements, rows / live))

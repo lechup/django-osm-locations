@@ -56,7 +56,7 @@ class TestItIsActuallyCalled:
         monkeypatch.setattr(Denorm, 'clean_denorm_fields_before_update',
                             classmethod(lambda cls: calls.append('clean_before')))
         monkeypatch.setattr(Denorm, 'update_denorm_fields_for_model_class',
-                            classmethod(lambda cls, model: None))
+                            classmethod(lambda cls, model, **kwargs: None))
         monkeypatch.setattr(Denorm, 'clean_denorm_fields_after_update',
                             classmethod(lambda cls: calls.append('clean_after')))
         monkeypatch.setattr(Denorm, 'update_street_place_field',
@@ -73,7 +73,7 @@ class TestItIsActuallyCalled:
         """The top-down walk cleans once around the whole thing."""
         calls = []
         monkeypatch.setattr(Denorm, 'update_denorm_fields_for_model_class',
-                            classmethod(lambda cls, model: None))
+                            classmethod(lambda cls, model, **kwargs: None))
         monkeypatch.setattr(Denorm, 'update_street_place_field',
                             classmethod(lambda cls: calls.append('street_place')))
         monkeypatch.setattr(Denorm, 'update_search_vector_field',
