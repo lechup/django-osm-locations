@@ -112,6 +112,12 @@ class Command(BaseCommand):
                 # and the OSM-id fallback rate unmoved at 27.7%.
                 with self.timed('streets without a place'):
                     RecalculateDenormalizedFields.update_street_place_field()
+                # Immediately after, because the street's place is final here
+                # and the place's own ancestry was settled by the two levels
+                # above. Two containment passes over 2.8 million streets
+                # become one join.
+                with self.timed('streets inherit from their place'):
+                    RecalculateDenormalizedFields.inherit_street_ancestry_from_place()
             with self.timed('slugs: {}'.format(descendant)):
                 call_command('locations_recalculate_slugs', descendant)
         # After the walk, because it copies each place's finished ancestry and

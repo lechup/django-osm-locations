@@ -28,17 +28,18 @@ class Command(BaseCommand):
     MODEL_CASSES_TO_SEARCH_UPDATE = DENORMALIZED_MODEL_CLASSES
     #: Which descendants each ancestor is pushed onto by containment.
     #:
-    #: Address is absent from three of the four on purpose. It used to be in
-    #: all of them, which meant four point-in-polygon passes over 11 million
-    #: rows -- and an address inside a place is inside that place's country and
-    #: country subarea by construction, so three of those four were computing
-    #: what a join already knew. inherit_address_ancestry_from_place does the
-    #: one spatial pass that is genuinely needed and joins the rest. Its place
-    #: subarea stays a containment test: those borders are small, and there is
-    #: nothing above a place subarea for an address to inherit from.
+    #: Address and Street are absent from the top levels on purpose. Both used
+    #: to be in all four, and measured on this data a street was rewritten 7.01
+    #: times per row and an address 3.89 -- because a row in a place is in that
+    #: place's country and country subarea by construction, so those passes were
+    #: computing what a join already knew. inherit_address_ancestry_from_place
+    #: and inherit_street_ancestry_from_place do the joins; after the first of
+    #: them an address is rewritten 1.00 times. Their place subarea stays a
+    #: containment test, because there is nothing above a place subarea to
+    #: inherit from.
     DENORMALIZED_MODEL_CLASSES_TO_UPDATE_DICT = {
-        'Country': [CountrySubarea, Place, PlaceSubarea, Street],
-        'CountrySubarea': [CountrySubarea, Place, PlaceSubarea, Street],
+        'Country': [CountrySubarea, Place, PlaceSubarea],
+        'CountrySubarea': [CountrySubarea, Place, PlaceSubarea],
         'Place': [Place, PlaceSubarea, Street],
         'PlaceSubarea': [PlaceSubarea, Street, Address],
     }
@@ -592,6 +593,44 @@ class Command(BaseCommand):
             JOIN "locations_place" p ON p.id = m.place_id
             WHERE d.id = m.address_id;
         """
+
+    @classmethod
+    def get_sql_for_street_inherited_ancestry(cls):
+        """
+        Copy the place's country and country subarea onto its streets.
+
+        Same reasoning as for addresses, and the measurements say the same: a
+        street was rewritten 7.01 times per row against an address's 1.00,
+        because it still went through all four levels by containment while an
+        address went through one. A street in a place is in that place's
+        country and country subarea, so two of those four were computing what a
+        join already knew.
+
+        The place's slug is read from the street's own array, and from either
+        position: the containment pass appends after the placeholder, while
+        update_street_place_field overwrites the array outright, so the slug
+        sits at element 1 for some streets and 2 for others. This is the same
+        coalesce the slug pass uses on the country array for the same reason.
+        """
+        return """
+            UPDATE "locations_street" AS s SET
+                country = p.country,
+                countrysubarea = p.countrysubarea
+            FROM "locations_place" p
+            WHERE p.slug = coalesce(nullif(s.place[1][2], ''), s.place[2][2])
+              AND coalesce(nullif(s.place[1][2], ''), s.place[2][2]) IS NOT NULL;
+        """
+
+    @classmethod
+    @transaction.atomic
+    def inherit_street_ancestry_from_place(cls):
+        """One join, replacing two point-in-polygon passes over 2.8m streets."""
+        started = datetime.now()
+        print("Street - inheriting country and country subarea from its place...")
+        with connection.cursor() as cursor:
+            cursor.execute(cls.get_sql_for_street_inherited_ancestry())
+            print("  {} streets in {}".format(
+                cursor.rowcount, datetime.now() - started))
 
     @classmethod
     @transaction.atomic

@@ -145,3 +145,75 @@ class TestTheContainmentPassesAreGone:
         assert 'inherit_address_ancestry_from_place' in source
         assert source.index('inherit_address_ancestry_from_place') < \
             source.index('clean_denorm_fields_after_update')
+
+
+@pytest.mark.django_db(transaction=True)
+class TestAStreetInheritsToo:
+    """
+    Measured on this data, a street was rewritten 7.01 times per row against an
+    address's 1.00, because it still went through all four levels by containment
+    while an address went through one.
+    """
+
+    @staticmethod
+    def street_in(place_pair):
+        from django.contrib.gis.geos import LineString, MultiLineString
+
+        from django_osm_locations.models import Street
+
+        return Street.objects.create(
+            name='Testowa', slug='testowa',
+            lines=MultiLineString(LineString((20.4, 50.4), (20.6, 50.6))),
+            country=[['', '']], countrysubarea=[['', '']], place=place_pair)
+
+    def test_it_takes_the_country_from_its_place(self, hierarchy):
+        street = self.street_in([['', ''], ['Small', 'small']])
+        Denorm.inherit_street_ancestry_from_place()
+        street.refresh_from_db()
+        assert ['Testland', 'testland'] in [list(p) for p in street.country]
+        assert ['Region', 'region'] in [list(p) for p in street.countrysubarea]
+
+    def test_it_works_when_the_place_was_overwritten_not_appended(self, hierarchy):
+        """
+        update_street_place_field replaces the array outright, so the slug sits
+        at element 1 there and at element 2 after the containment pass. Both
+        have to be read.
+        """
+        street = self.street_in([['Small', 'small']])
+        Denorm.inherit_street_ancestry_from_place()
+        street.refresh_from_db()
+        assert ['Testland', 'testland'] in [list(p) for p in street.country]
+
+    def test_a_street_with_no_place_is_left_alone(self, hierarchy):
+        street = self.street_in([['', '']])
+        Denorm.inherit_street_ancestry_from_place()
+        street.refresh_from_db()
+        assert [list(p) for p in street.country] == [['', '']]
+
+
+class TestStreetsLeaveTheTopLevels:
+    @pytest.mark.parametrize('ancestor', ['Country', 'CountrySubarea'])
+    def test_no_longer_pushed_down_by_containment(self, ancestor):
+        from django_osm_locations.models import Street
+
+        assert Street not in Denorm.DENORMALIZED_MODEL_CLASSES_TO_UPDATE_DICT[ancestor]
+
+    @pytest.mark.parametrize('ancestor', ['Place', 'PlaceSubarea'])
+    def test_but_its_place_and_subarea_still_are(self, ancestor):
+        """That is how a street gets a place at all."""
+        from django_osm_locations.models import Street
+
+        assert Street in Denorm.DENORMALIZED_MODEL_CLASSES_TO_UPDATE_DICT[ancestor]
+
+    def test_the_walk_inherits_right_after_the_place_is_settled(self):
+        import inspect
+
+        from django_osm_locations.management.commands.locations_recalculate_all import (
+            Command as RecalculateAll,
+        )
+
+        source = inspect.getsource(RecalculateAll.handle)
+        assert source.index('update_street_place_field') < \
+            source.index('inherit_street_ancestry_from_place')
+        assert source.index('inherit_street_ancestry_from_place') < \
+            source.index('clean_denorm_fields_after_update')

@@ -33,6 +33,7 @@ class TestWalkOrder:
             side_effect=lambda name, *a, **kw: calls.append((name, a)),
         ), mock.patch.object(Denorm, 'clean_denorm_fields_before_update'), \
                 mock.patch.object(Denorm, 'inherit_address_ancestry_from_place'), \
+                mock.patch.object(Denorm, 'inherit_street_ancestry_from_place'), \
                 mock.patch.object(Denorm, 'update_address_street_field'), \
                 mock.patch.object(Denorm, 'update_address_slugs'), \
                 mock.patch.object(Denorm, 'clean_denorm_fields_after_update'), \
@@ -70,6 +71,7 @@ class TestWalkOrder:
         """
         with mock.patch.object(Denorm, 'update_search_vector_field') as build, \
                 mock.patch.object(Denorm, 'inherit_address_ancestry_from_place'), \
+                mock.patch.object(Denorm, 'inherit_street_ancestry_from_place'), \
                 mock.patch(
                     'django_osm_locations.management.commands.'
                     'locations_recalculate_all.call_command'
@@ -85,6 +87,7 @@ class TestWalkOrder:
     def test_the_arrays_are_cleaned_once_around_the_whole_walk(self):
         with mock.patch.object(Denorm, 'clean_denorm_fields_before_update') as before, \
                 mock.patch.object(Denorm, 'inherit_address_ancestry_from_place'), \
+                mock.patch.object(Denorm, 'inherit_street_ancestry_from_place'), \
                 mock.patch.object(Denorm, 'update_address_street_field'), \
                 mock.patch.object(Denorm, 'update_address_slugs'), \
                 mock.patch.object(Denorm, 'clean_denorm_fields_after_update') as after, \

@@ -268,6 +268,27 @@ Do not add an index over `country`, `countrysubarea`, `place`, `placesubarea` or
 every one of those rewrites non-HOT again, whatever the fillfactor. There is a
 test that fails if one appears.
 
+A row in a place is in that place's country and country subarea by
+construction, so pushing those down by point-in-polygon computes what a join
+already knows. Addresses and streets therefore inherit them from their place
+instead of being tested against every ancestor's border. Measured on Poland and
+Denmark, rewrites per row:
+
+| table | before | after |
+|---|---|---|
+| `locations_address` | 3.89 | **1.00** |
+| `locations_street` | 7.01 | expected ~3 |
+
+The phase timings say the same thing. `ancestry: Country down` was 3h10m51s and
+became 43m13s; `ancestry: CountrySubarea down` had never finished — eight hours
+got 11.5% of the way — and finished in 1h13m48s.
+
+Three shapes of the per-ancestor statement were measured first and none helped:
+27,993 statements at 1.88s each extrapolates to 14h36m, one statement for the
+whole level ran past 45 minutes, and batches of 2,000 past 25. The cost is the
+containment test, not the statement issuing it, which is why the fix is to stop
+doing the test rather than to issue it differently.
+
 `locations_recalculate_all` reports what each phase cost, and the denormalised
 pass reports rows rewritten per level with a per-row ratio — a ratio well above
 1 means a level is rewriting the same rows repeatedly.
