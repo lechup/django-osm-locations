@@ -368,6 +368,23 @@ class Command(BaseCommand):
     #: that the next street over does not vote.
     ADDRESS_MATCH_METRES = 100
 
+    #: A box, in degrees, around which to look before matching by name.
+    #:
+    #: Matching an address to a street by name first means matching it against
+    #: every street of that name in the country: 7,964 streets called Polna
+    #: against 49,368 addresses on one, 393 million pairs for that name alone,
+    #: each paying for a geography distance -- and the planner put the whole
+    #: settlement query at 5.7 billion cost units. Looking in a small box first
+    #: lets the GiST index on the address centre do the narrowing, and the name
+    #: and exact distance then check a few dozen candidates: 27.9 million, a
+    #: 200th of it.
+    #:
+    #: 0.005 degrees must contain ADDRESS_MATCH_METRES in every direction, or
+    #: the box would drop genuine matches. It is 556m north-south everywhere,
+    #: and east-west still 181m at 71 degrees north, the top of Norway -- so
+    #: nothing within 100m is lost anywhere this package imports.
+    MATCH_BOX_DEGREES = 0.005
+
     @classmethod
     def get_sql_for_address_street_link(cls):
         """
@@ -387,6 +404,7 @@ class Command(BaseCommand):
                     SELECT name, slug
                     FROM "locations_street"
                     WHERE NOT is_merged
+                      AND center && ST_Expand(a2.center, {box})
                       AND name = a2.street_name
                       AND center IS NOT NULL
                       AND ST_DWithin(center::geography, a2.center::geography, %s)
@@ -396,7 +414,7 @@ class Command(BaseCommand):
                 WHERE a2.street_name <> '' AND a2.center IS NOT NULL
             ) AS x
             WHERE a.id = x.id;
-        """
+        """.format(box=cls.MATCH_BOX_DEGREES)
 
     @classmethod
     def get_sql_for_street_settlement_from_addresses(cls):
@@ -423,7 +441,8 @@ class Command(BaseCommand):
                         SELECT st.id AS street_id, a.settlement_name, count(*) AS votes
                         FROM "locations_street" st
                         JOIN "locations_address" a
-                          ON a.street_name = st.name
+                          ON a.center && ST_Expand(st.center, {box})
+                         AND a.street_name = st.name
                          AND a.settlement_name <> ''
                          AND ST_DWithin(a.center::geography, st.center::geography, %s)
                         WHERE NOT st.is_merged AND st.center IS NOT NULL
@@ -448,7 +467,7 @@ class Command(BaseCommand):
                 ) p
             ) AS x
             WHERE s.id = x.street_id;
-        """
+        """.format(box=cls.MATCH_BOX_DEGREES)
 
     @classmethod
     def get_sql_for_street_place_field(cls):

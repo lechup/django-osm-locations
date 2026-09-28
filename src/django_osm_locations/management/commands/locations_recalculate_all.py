@@ -1,7 +1,7 @@
 from contextlib import contextmanager
 from datetime import datetime
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.core.management import call_command
 from django.db import connection
 
@@ -48,16 +48,33 @@ class Command(BaseCommand):
         change had achieved. Each phase now prints when it starts and what it
         cost, and the totals are repeated at the end.
         """
+        self.labels_seen.append(label)
+        if self.start_from and not self.reached:
+            if label != self.start_from:
+                self.stdout.write('skipping {}'.format(label))
+                yield False
+                return
+            self.reached = True
+
         start = datetime.now()
         self.stdout.write('{} - {}...'.format(start.strftime('%H:%M:%S'), label))
         try:
-            yield
+            yield True
         finally:
             took = datetime.now() - start
             self.timings.append((label, took))
             self.stdout.write('  {} took {}'.format(label, took))
 
     def add_arguments(self, parser):
+        parser.add_argument(
+            '--from', dest='start_from', default=None, metavar='PHASE',
+            help='Skip every phase before PHASE and run from there -- the '
+                 'label as the log prints it, e.g. "streets without a place". '
+                 'For resuming after a phase was killed: each phase commits '
+                 'on its own, so the ones before it are already in the '
+                 'database. The skipping happens on the same code path as a '
+                 'full run, so the order cannot drift from it.',
+        )
         parser.add_argument(
             '--one-pass', action='store_true', default=False,
             help='Push each ancestor level down in one statement instead of one '
@@ -87,57 +104,71 @@ class Command(BaseCommand):
         the whole walk rather than per level.
         """
         self.timings = []
+        self.labels_seen = []
+        self.start_from = options.get('start_from')
+        self.reached = False
         started = datetime.now()
-        with self.timed('areas and lengths'):
-            call_command('locations_recalculate_areas_and_lengths')
+        with self.timed('areas and lengths') as run:
+            if run:
+                call_command('locations_recalculate_areas_and_lengths')
 
-        with self.timed('cleaning denorm fields'):
-            RecalculateDenormalizedFields.clean_denorm_fields_before_update()
+        with self.timed('cleaning denorm fields') as run:
+            if run:
+                RecalculateDenormalizedFields.clean_denorm_fields_before_update()
         # Countries have nothing to be qualified by, so their slugs are
         # already final and the walk can start by pushing them down.
-        with self.timed('slugs: Country'):
-            call_command('locations_recalculate_slugs', 'Country')
+        with self.timed('slugs: Country') as run:
+            if run:
+                call_command('locations_recalculate_slugs', 'Country')
         for ancestor, descendant in self.LEVELS:
-            with self.timed('ancestry: {} down'.format(ancestor)):
-                call_command(
-                    'locations_recalculate_denormalized_fields', ancestor,
-                    no_clean_before=True, no_clean_after=True, no_search_vector=True,
-                    one_pass=options.get('one_pass', False),
-                )
+            with self.timed('ancestry: {} down'.format(ancestor)) as run:
+                if run:
+                    call_command(
+                        'locations_recalculate_denormalized_fields', ancestor,
+                        no_clean_before=True, no_clean_after=True, no_search_vector=True,
+                        one_pass=options.get('one_pass', False),
+                    )
             if ancestor == 'Place':
                 # Streets inside no place border take the nearest one, and it
                 # has to happen here: the slug pass qualifies a duplicate by
                 # its place, so running this after the walk -- as it first did
                 # -- left 771,321 streets slugged with nothing to qualify by,
                 # and the OSM-id fallback rate unmoved at 27.7%.
-                with self.timed('streets without a place'):
-                    RecalculateDenormalizedFields.update_street_place_field()
+                with self.timed('streets without a place') as run:
+                    if run:
+                        RecalculateDenormalizedFields.update_street_place_field()
                 # Immediately after, because the street's place is final here
                 # and the place's own ancestry was settled by the two levels
                 # above. Two containment passes over 2.8 million streets
                 # become one join.
-                with self.timed('streets inherit from their place'):
-                    RecalculateDenormalizedFields.inherit_street_ancestry_from_place()
-            with self.timed('slugs: {}'.format(descendant)):
-                call_command('locations_recalculate_slugs', descendant)
+                with self.timed('streets inherit from their place') as run:
+                    if run:
+                        RecalculateDenormalizedFields.inherit_street_ancestry_from_place()
+            with self.timed('slugs: {}'.format(descendant)) as run:
+                if run:
+                    call_command('locations_recalculate_slugs', descendant)
         # After the walk, because it copies each place's finished ancestry and
         # final slug onto the addresses inside it, and before the placeholder
         # is stripped, so the copy lands in the same shape the containment pass
         # produced.
-        with self.timed('addresses inherit from their place'):
-            RecalculateDenormalizedFields.inherit_address_ancestry_from_place()
+        with self.timed('addresses inherit from their place') as run:
+            if run:
+                RecalculateDenormalizedFields.inherit_address_ancestry_from_place()
 
         # After the streets are slugged, because an address stores its
         # street's slug, and by name rather than by containment -- an address
         # says which street it is on, and a point is not inside a line.
-        with self.timed('addresses to streets'):
-            RecalculateDenormalizedFields.update_address_street_field()
-        with self.timed('stripping placeholders'):
-            RecalculateDenormalizedFields.clean_denorm_fields_after_update()
+        with self.timed('addresses to streets') as run:
+            if run:
+                RecalculateDenormalizedFields.update_address_street_field()
+        with self.timed('stripping placeholders') as run:
+            if run:
+                RecalculateDenormalizedFields.clean_denorm_fields_after_update()
         # After the strip: an address's slug reads its parent from element [1],
         # which until now was the placeholder.
-        with self.timed('address slugs'):
-            RecalculateDenormalizedFields.update_address_slugs()
+        with self.timed('address slugs') as run:
+            if run:
+                RecalculateDenormalizedFields.update_address_slugs()
 
         # The tsvector columns are not rebuilt here. Search moved to
         # OpenSearch, where an edge n-gram analyser does the prefix matching
@@ -146,6 +177,10 @@ class Command(BaseCommand):
         # every recalculation, most of it one UPDATE over 2.8 million streets.
         # The columns are left in place for anything downstream still reading
         # them; run locations_recalculate_denormalized_fields to refresh them.
+
+        if self.start_from and not self.reached:
+            raise CommandError('No phase called {!r}. The phases are: {}.'.format(
+                self.start_from, ', '.join(repr(l) for l in self.labels_seen)))
 
         self.report_write_amplification()
 
