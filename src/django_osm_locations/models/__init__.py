@@ -68,6 +68,12 @@ class Place(LocationMergableBase, LocationOSMBorderBase):
 
     class Meta:
         ordering = ['-area']
+        # A street takes the settlement its addresses name, and then the
+        # nearest place of that name -- a lookup by name for every addressed
+        # street. Without an index each one read all 195,000 places: a 1%
+        # sample of that step took 6m07s, and 22s with it. Name is not one of
+        # the denormalised arrays, so this makes no ancestry rewrite non-HOT.
+        indexes = [models.Index(fields=['name'], name='locations_place_name_idx')]
 
     @property
     def subareas(self):

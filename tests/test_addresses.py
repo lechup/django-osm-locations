@@ -244,7 +244,7 @@ class TestTheSettlementJoinIsDeterministic:
     def test_it_picks_the_nearest_place_of_that_name(self):
         sql = Denorm.get_sql_for_street_settlement_from_addresses()
         assert 'p.name = ranked.settlement_name' in sql
-        assert 'ORDER BY p.center <-> st2.center' in sql
+        assert 'ORDER BY ST_Distance(p.center, st2.center)' in sql
         assert 'LIMIT 1' in sql
 
     def test_it_is_a_lateral_not_a_join(self):

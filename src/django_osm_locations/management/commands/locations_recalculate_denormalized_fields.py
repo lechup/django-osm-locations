@@ -457,12 +457,18 @@ class Command(BaseCommand):
                 -- wins. Keep this comment free of the percent character:
                 -- psycopg2 scans the whole string for placeholders, comments
                 -- included, and a stray one shifts the parameter count.
+                -- By name first, then distance: most place names belong to a
+                -- handful of places, so reading those few through the name
+                -- index beats walking the spatial index outward until the
+                -- name turns up. ST_Distance rather than the KNN operator,
+                -- because the operator would steer the planner back to the
+                -- spatial walk.
                 CROSS JOIN LATERAL (
                     SELECT name, slug
                     FROM "locations_place" p
                     WHERE p.name = ranked.settlement_name
                       AND NOT p.is_merged AND p.center IS NOT NULL
-                    ORDER BY p.center <-> st2.center
+                    ORDER BY ST_Distance(p.center, st2.center)
                     LIMIT 1
                 ) p
             ) AS x

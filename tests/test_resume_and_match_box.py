@@ -107,3 +107,29 @@ class TestTheMatchBox:
         box = Denorm.MATCH_BOX_DEGREES
         assert box * metres_per_degree_lat > Denorm.ADDRESS_MATCH_METRES
         assert box * metres_per_degree_lon > Denorm.ADDRESS_MATCH_METRES
+
+
+class TestThePlaceIsFoundByName:
+    """
+    A 1% sample of the settlement step took 6m07s with no index on place names
+    and 22s with one -- every addressed street looks up the nearest place of
+    the name its addresses give.
+    """
+
+    def test_place_names_are_indexed(self):
+        from django_osm_locations.models import Place
+
+        indexed = [tuple(index.fields) for index in Place._meta.indexes]
+        assert ('name',) in indexed
+
+    def test_the_lookup_orders_by_distance_not_the_knn_operator(self):
+        sql = Denorm.get_sql_for_street_settlement_from_addresses()
+        lookup = sql[sql.index('CROSS JOIN LATERAL'):]
+        assert 'ORDER BY ST_Distance(p.center, st2.center)' in lookup
+        assert '<->' not in lookup
+
+    def test_the_comment_keeps_the_placeholder_count(self):
+        """The SQL carries comments now, and psycopg2 counts placeholders in them."""
+        sql = Denorm.get_sql_for_street_settlement_from_addresses()
+        assert sql.count('%s') == 1
+        assert sql.count('%') == 1
