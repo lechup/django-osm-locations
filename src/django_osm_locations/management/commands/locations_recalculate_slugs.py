@@ -68,10 +68,10 @@ class Command(BaseCommand):
     #: slug does not drag a street's geometry or a tsvector across the wire.
     MAYBE_HEAVY = ('border', 'lines', 'search_vector', 'search_vector_name')
 
-    #: The country a row belongs to, whether or not the placeholder is still
-    #: there. clean_denorm_fields_before_update puts ['',''] at position 1 and
-    #: array_cat appends after it, so mid-walk the real ancestor sits at 2 and
-    #: after the strip at 1. Both, in one expression.
+    #: The country a row belongs to. Element 1 of the array is the real
+    #: ancestor now that the walk writes no placeholder; element 2 is still
+    #: read, because a database recalculated by the older walk can hold the
+    #: placeholder at 1 until it is next recalculated.
     SCOPE_SQL = "coalesce(nullif(country[1][2], ''), country[2][2])"
 
     def add_arguments(self, parser):

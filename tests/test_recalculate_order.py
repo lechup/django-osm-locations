@@ -84,7 +84,12 @@ class TestWalkOrder:
 
         build.assert_not_called()
 
-    def test_the_arrays_are_cleaned_once_around_the_whole_walk(self):
+    def test_the_arrays_are_cleaned_once_and_never_stripped(self):
+        """
+        Emptied once before the walk. There is no strip after it any more: the
+        walk appends two-dimensional rows, so it never writes a placeholder
+        that would need taking out -- a pass that cost 1h28m.
+        """
         with mock.patch.object(Denorm, 'clean_denorm_fields_before_update') as before, \
                 mock.patch.object(Denorm, 'inherit_address_ancestry_from_place'), \
                 mock.patch.object(Denorm, 'inherit_street_ancestry_from_place'), \
@@ -99,7 +104,7 @@ class TestWalkOrder:
             RecalculateAll().handle()
 
         assert before.call_count == 1
-        assert after.call_count == 1
+        assert after.call_count == 0
 
 
 class TestHeavyFieldsAreDeferred:

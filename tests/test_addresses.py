@@ -279,11 +279,12 @@ class TestTheSettlementJoinIsDeterministic:
         assert street.place != [['Kowale', 'kowale-2']]
 
 
-class TestSlugsRunAfterTheStrip:
-    def test_the_walk_derives_address_slugs_after_cleaning(self):
+class TestSlugsRunLast:
+    def test_the_walk_derives_address_slugs_after_linking(self):
         """
-        Until the placeholder is stripped, element [1] is ['',''] and the real
-        parent sits at [2]; deriving before that would read an empty slug.
+        The slug reads the linked street from element [1], so it has to come
+        after the link. There is no strip between them any more: the walk
+        writes no placeholder, so element [1] is the parent from the start.
         """
         from unittest import mock
 
@@ -306,7 +307,7 @@ class TestSlugsRunAfterTheStrip:
                                   side_effect=lambda: order.append('slugs')):
             RecalculateAll().handle()
 
-        assert order == ['link', 'clean', 'slugs']
+        assert order == ['link', 'slugs']
 
 
 class TestParameterisedSqlIsSafeToExecute:

@@ -126,7 +126,7 @@ class Command(BaseCommand):
         """
         return """
             UPDATE "locations_{model_name}" SET {field_name} =
-            array_cat({field_name}, ARRAY[%s, %s]::varchar[]) WHERE
+            array_cat({field_name}, ARRAY[ARRAY[%s, %s]]::varchar[]) WHERE
               ST_Intersects(center, (SELECT border FROM "{ancestor_table}" WHERE id = %s))
             ;
         """.format(**{
@@ -330,14 +330,24 @@ class Command(BaseCommand):
     @transaction.atomic
     def clean_denorm_fields_before_update(cls):
         """
-        Set dummy empty element {'', ''}, as a default to all denorm fields. We need it during
-        cls.update_denorm_fields() because postgres needs element to concat multidimensional arrays.
+        Empty every denormalised array before the walk fills them again.
+
+        These used to be set to a placeholder, [['', '']], because the walk
+        appended each ancestor as a one-dimensional pair, and appending that to
+        an empty array gives a one-dimensional result rather than a first row.
+        The placeholder made the array two-dimensional from the start, and a
+        whole pass at the end rewrote every row again to take it back out --
+        1h28m of the last recalculation, most of it on 11 million addresses.
+
+        Every append is a two-dimensional row now, ARRAY[ARRAY[name, slug]],
+        and PostgreSQL makes an empty array into a one-row matrix from that
+        directly. So empty is enough, and nothing has to be stripped.
         """
         for model_class_to_clean in cls.MODEL_CLASSES_TO_CLEAN:
             print("{} - cleaning denorm fields before update...".format(model_class_to_clean.__name__))
             update_dict = {}
             for field_name in model_class_to_clean.denorm_fields:
-                update_dict[field_name] = [['', '']]
+                update_dict[field_name] = []
 
             if hasattr(model_class_to_clean, 'objects_all'):
                 model_class_to_clear_all = model_class_to_clean.objects_all
@@ -611,15 +621,15 @@ class Command(BaseCommand):
         specific one is the better answer -- where the old pass appended both,
         ordered by size.
 
-        Run before the placeholder is stripped: the place's arrays still carry
-        it at element 1, so a straight copy lands in the shape the per-ancestor
-        pass produced and the strip removes it from both.
+        The place's arrays are copied as they are: they hold only real
+        ancestors, since the walk no longer writes a placeholder, so the copy
+        is already in its final shape.
         """
         return """
             UPDATE "locations_address" AS d SET
                 country = p.country,
                 countrysubarea = p.countrysubarea,
-                place = array_cat(d.place, ARRAY[p.name, p.slug]::varchar[])
+                place = array_cat(d.place, ARRAY[ARRAY[p.name, p.slug]]::varchar[])
             FROM (
                 SELECT DISTINCT ON (address_id) address_id, place_id
                 FROM "address_place"

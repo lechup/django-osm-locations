@@ -148,9 +148,7 @@ class Command(BaseCommand):
                 if run:
                     call_command('locations_recalculate_slugs', descendant)
         # After the walk, because it copies each place's finished ancestry and
-        # final slug onto the addresses inside it, and before the placeholder
-        # is stripped, so the copy lands in the same shape the containment pass
-        # produced.
+        # final slug onto the addresses inside it.
         with self.timed('addresses inherit from their place') as run:
             if run:
                 RecalculateDenormalizedFields.inherit_address_ancestry_from_place()
@@ -161,11 +159,11 @@ class Command(BaseCommand):
         with self.timed('addresses to streets') as run:
             if run:
                 RecalculateDenormalizedFields.update_address_street_field()
-        with self.timed('stripping placeholders') as run:
-            if run:
-                RecalculateDenormalizedFields.clean_denorm_fields_after_update()
-        # After the strip: an address's slug reads its parent from element [1],
-        # which until now was the placeholder.
+        # Last, because an address's slug reads its parent -- its street, or
+        # failing that its place -- from element [1] of those arrays, and both
+        # are only final once the steps above have run. There used to be a
+        # pass here stripping a placeholder out of every array first; the walk
+        # no longer writes one, so there is nothing to strip.
         with self.timed('address slugs') as run:
             if run:
                 RecalculateDenormalizedFields.update_address_slugs()

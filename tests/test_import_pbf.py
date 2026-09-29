@@ -204,3 +204,72 @@ def test_house_numbers_sort_the_way_a_street_is_walked(imported):
         .values_list('house_number', flat=True)[:40]
     )
     assert numbers == sorted(numbers, key=int)
+
+
+@pytest.fixture(scope='module')
+def recalculated(imported, django_db_blocker):
+    """The whole walk over the real extract, once, for the checks below."""
+    with django_db_blocker.unblock():
+        from django.core.management import call_command
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            call_command('locations_recalculate_all', stdout=io.StringIO())
+        yield
+
+
+def _denorm_models():
+    from django_osm_locations.models import (
+        Address, CountrySubarea, Place, PlaceSubarea, Street,
+    )
+    return (CountrySubarea, Place, PlaceSubarea, Street, Address)
+
+
+def test_no_placeholder_survives_the_walk(recalculated):
+    """
+    The walk used to write [['', '']] into every array and spend a whole pass
+    stripping it again. It appends two-dimensional rows now and writes no
+    placeholder at all -- so none may be left anywhere, on any model.
+    """
+    from django.db import connection
+
+    for model in _denorm_models():
+        table = model._meta.db_table
+        for field in model.denorm_fields:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    'SELECT count(*) FROM "{}" WHERE {} @> ARRAY[ARRAY[\'\',\'\']]::varchar[]'
+                    .format(table, field))
+                assert cursor.fetchone()[0] == 0, '{}.{}'.format(table, field)
+
+
+def test_every_filled_array_is_a_matrix_of_pairs(recalculated):
+    """
+    Appending a one-dimensional pair to an empty array gives a flat array, not
+    a first row -- the reason the placeholder existed. Every append has to be
+    two-dimensional for that to hold.
+    """
+    from django.db import connection
+
+    for model in _denorm_models():
+        table = model._meta.db_table
+        for field in model.denorm_fields:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    'SELECT count(*) FROM "{0}" WHERE cardinality({1}) > 0 '
+                    'AND (array_ndims({1}) <> 2 OR array_length({1}, 2) <> 2)'
+                    .format(table, field))
+                assert cursor.fetchone()[0] == 0, '{}.{}'.format(table, field)
+
+
+def test_streets_and_addresses_know_their_country(recalculated):
+    """Both inherit it from their place now; check they still get one."""
+    from django_osm_locations.models import Address, Street
+
+    streets = Street.objects.filter(is_merged=False)
+    with_country = [s for s in streets if s.country and s.country[0][1]]
+    assert len(with_country) / max(streets.count(), 1) > 0.9
+
+    addresses = Address.objects.all()
+    placed = [a for a in addresses if a.place and a.place[0][1]]
+    assert placed, 'no address found its place'
+    assert all(a.country and a.country[0][1] == 'isle-of-man' for a in placed)

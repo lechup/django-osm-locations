@@ -34,16 +34,16 @@ def hierarchy(db):
         border=square(20, 50, 4))
     subarea = CountrySubarea.objects.create(
         name='Region', slug='region', border=square(20, 50, 3),
-        country=[['', ''], ['Testland', 'testland']],
-        countrysubarea=[['', ''], ['Region', 'region']])
+        country=[['Testland', 'testland']],
+        countrysubarea=[['Region', 'region']])
     big = Place.objects.create(
         name='Big', slug='big', border=square(20, 50, 2), area=4.0,
-        country=[['', ''], ['Testland', 'testland']],
-        countrysubarea=[['', ''], ['Region', 'region']])
+        country=[['Testland', 'testland']],
+        countrysubarea=[['Region', 'region']])
     small = Place.objects.create(
         name='Small', slug='small', border=square(20, 50, 1), area=1.0,
-        country=[['', ''], ['Testland', 'testland']],
-        countrysubarea=[['', ''], ['Region', 'region']])
+        country=[['Testland', 'testland']],
+        countrysubarea=[['Region', 'region']])
     return country, subarea, big, small
 
 
@@ -92,15 +92,16 @@ class TestWhatAnAddressInherits:
         assert ['Big', 'big'] in named
         assert ['Small', 'small'] not in named
 
-    def test_the_placeholder_survives_for_the_strip_to_remove(self, hierarchy):
+    def test_the_first_element_is_the_real_ancestor(self, hierarchy):
         """
-        It runs before clean_denorm_fields_after_update, so the copied arrays
-        must still carry the placeholder at element 1 like every other row.
+        No placeholder any more: element [1] is the country itself, which is
+        what the slug and scope expressions read.
         """
-        address = address_at(20.5, 50.5)
+        address = address_at(20.5, 50.5, country=[], countrysubarea=[], place=[])
         Denorm.inherit_address_ancestry_from_place()
         address.refresh_from_db()
-        assert list(address.country[0]) == ['', '']
+        assert list(address.country[0]) == ['Testland', 'testland']
+        assert list(address.place[0]) == ['Small', 'small']
 
 
 @pytest.mark.django_db(transaction=True)
@@ -144,7 +145,7 @@ class TestTheContainmentPassesAreGone:
         source = inspect.getsource(RecalculateAll.handle)
         assert 'inherit_address_ancestry_from_place' in source
         assert source.index('inherit_address_ancestry_from_place') < \
-            source.index('clean_denorm_fields_after_update')
+            source.index('update_address_slugs')
 
 
 @pytest.mark.django_db(transaction=True)
@@ -216,4 +217,4 @@ class TestStreetsLeaveTheTopLevels:
         assert source.index('update_street_place_field') < \
             source.index('inherit_street_ancestry_from_place')
         assert source.index('inherit_street_ancestry_from_place') < \
-            source.index('clean_denorm_fields_after_update')
+            source.index("'slugs: {}'")
