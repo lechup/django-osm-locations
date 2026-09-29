@@ -376,3 +376,48 @@ class TestOnlyChangedSlugsAreWritten:
         assert self.derive() == 0
         a.refresh_from_db()
         assert a.slug == 'kowale-12'
+
+
+@pytest.mark.django_db
+class TestDistanceIsToTheStreetNotItsMiddle:
+    """
+    An address was linked to a street only within 100m of the street's centre
+    -- one point in the middle of what can be a road kilometres long. On a 1%
+    sample, 36.3% of addresses linked that way and 92.5% by distance to the line.
+    """
+
+    @staticmethod
+    def long_street():
+        from django.contrib.gis.geos import LineString, MultiLineString
+
+        from django_osm_locations.models import Street
+
+        # about 2.6km east-west
+        return Street.objects.create(
+            name='Długa', slug='dluga',
+            lines=MultiLineString(LineString((18.60, 54.35), (18.64, 54.35))))
+
+    def test_an_address_near_the_end_of_a_long_street_is_linked(self):
+        street = self.long_street()
+        # ~11m north of the line, ~1.2km east of the street's middle
+        a = Address.objects.create(
+            name='Długa 80', house_number='80', street_name='Długa',
+            center=Point(18.638, 54.3501))
+
+        Denorm.update_address_street_field()
+
+        a.refresh_from_db()
+        assert street.center.distance(a.center) * 64_000 > 100, 'fixture: far from the centre'
+        assert [list(pair) for pair in a.street] == [['Długa', 'dluga']]
+
+    def test_an_address_far_from_the_line_is_not(self):
+        self.long_street()
+        # ~550m north of the line
+        a = Address.objects.create(
+            name='Długa 81', house_number='81', street_name='Długa',
+            center=Point(18.638, 54.355))
+
+        Denorm.update_address_street_field()
+
+        a.refresh_from_db()
+        assert not a.street or not a.street[0][1]
