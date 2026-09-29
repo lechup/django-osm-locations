@@ -15,6 +15,25 @@ from .localize import ancestor_keys, apply_language, fetch_ancestor_names
 from .queries import QueryError, build_body, parse_types
 
 
+def add_path(hit):
+    """
+    The hit's ancestry and its own name as one readable path.
+
+    ancestry keeps every level separately, which is what filtering needs -- a
+    city with county rights is a county, a commune and a place, three entities
+    with three slugs that all happen to be called Żory. Printed as they are
+    that reads "Polska › śląskie › Żory › Żory › Żory › Rogoźna", so the path
+    collapses a name repeated by the next level. Only the display: ancestry
+    and ancestry_slugs are left exactly as they were.
+    """
+    path = []
+    for name in [entry.get('name') for entry in hit.get('ancestry') or []] + [hit.get('name')]:
+        if name and (not path or path[-1] != name):
+            path.append(name)
+    hit['path'] = path
+    return hit
+
+
 def format_hit(hit):
     """One OpenSearch hit as an API result."""
     source = dict(hit.get('_source') or {})
@@ -95,6 +114,9 @@ class SearchView(APIView):
                 hits, language,
                 fetch_ancestor_names(client, ancestor_keys(hits), language, prefix),
             )
+        # after the language, so the path is in it too
+        for hit in payload.get('results', []):
+            add_path(hit)
         return Response(payload)
 
 
@@ -169,7 +191,7 @@ class DetailView(APIView):
                     client, ancestor_keys([payload]), language, get_index_prefix(),
                 ),
             )
-        return Response(payload)
+        return Response(add_path(payload))
 
     def _ambiguous(self, slug, hits):
         """

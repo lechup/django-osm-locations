@@ -156,11 +156,18 @@ Types are `countries`, `country-subareas`, `places`, `place-subareas`,
       "population": 26218,
       "osm": {"node_id": null, "way_id": null, "relation_id": 1234},
       "ancestry": [{"level": "country", "slug": "isle-of-man", "name": "Isle of Man"}],
-      "ancestry_slugs": ["isle-of-man"]
+      "ancestry_slugs": ["isle-of-man"],
+      "path": ["Isle of Man", "Douglas"]
     }
   ]
 }
 ```
+
+`path` is the ancestry and the location's own name ready to print, in the
+requested `lang`. It collapses a name repeated by the next level: a city with
+county rights is a county, a commune and a place all called Żory, three levels
+in `ancestry` — each with its own slug, which is what `within=` filters on —
+and once in `path`.
 
 Geometry is stored in the index as `geo_shape` and returned by the detail
 endpoint, or by any list request with `?geometry=true`. It is excluded from
