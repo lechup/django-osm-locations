@@ -497,6 +497,38 @@ class Command(BaseCommand):
             WHERE s.id = x.street_id;
         """.format(box=cls.MATCH_BOX_DEGREES)
 
+    #: A street with no place yet, in any of the shapes the array can take.
+    PLACELESS = """(s.place IS NULL
+                   OR array_length(s.place, 1) IS NULL
+                   OR s.place = ARRAY[ARRAY['','']]::varchar[])"""
+
+    @classmethod
+    def get_sql_for_placeless_street_country(cls):
+        """
+        Give a street that is in no place its country, by its own border.
+
+        A street takes its country from its place, and a place is inside its
+        country by construction -- except where the place was only the nearest
+        one, which the fallback below chooses from up to 25km away. Near a
+        border that can be across it, and the street would inherit the wrong
+        country. So the streets that will take the fallback are placed in a
+        country first, by containment, and the fallback then looks only
+        within that country.
+
+        Only those streets: everything else already has a place, and testing
+        all 2.8 million against the country borders is the pass inheritance
+        exists to avoid.
+        """
+        return """
+            UPDATE "locations_street" AS s
+            SET country = ARRAY[ARRAY[c.name, c.slug]]::varchar[]
+            FROM "locations_country" c
+            WHERE {placeless}
+              AND s.center IS NOT NULL AND NOT s.is_merged
+              AND c.border IS NOT NULL
+              AND ST_Intersects(s.center, c.border);
+        """.format(placeless=cls.PLACELESS)
+
     @classmethod
     def get_sql_for_street_place_field(cls):
         """
@@ -523,8 +555,14 @@ class Command(BaseCommand):
                 FROM "locations_street" s2
                 CROSS JOIN LATERAL (
                     SELECT name, slug, center
-                    FROM "locations_place"
+                    FROM "locations_place" pl
                     WHERE center IS NOT NULL AND NOT is_merged
+                      -- The nearest place in the street's own country, where
+                      -- the street has one: without this a street near a
+                      -- border takes a place across it and inherits that
+                      -- country. See get_sql_for_placeless_street_country.
+                      AND (array_length(s2.country, 1) IS NULL
+                           OR pl.country[1][2] = s2.country[1][2])
                     ORDER BY center <-> s2.center
                     LIMIT 1
                 ) p
@@ -735,6 +773,10 @@ class Command(BaseCommand):
                 [cls.ADDRESS_MATCH_METRES],
             )
             print("  {} from addresses".format(cursor.rowcount))
+
+            print("Street - placing the rest in a country by its border...")
+            cursor.execute(cls.get_sql_for_placeless_street_country())
+            print("  {} placed".format(cursor.rowcount))
 
             print("Street - attaching what is left to the nearest place...")
             cursor.execute(

@@ -139,3 +139,82 @@ class TestItToleratesThePlaceholder:
         """
         sql = Denorm.get_sql_for_street_place_field()
         assert "ARRAY[ARRAY['','']]::varchar[]" in sql
+
+
+@pytest.mark.django_db(transaction=True)
+class TestTheFallbackStaysInTheStreetsCountry:
+    """
+    A street in no place takes the nearest one, up to 25km away, and then
+    inherits that place's country. Near a border the nearest place can be
+    across it. The street is placed in a country by its own border first, and
+    the fallback looks only within that country.
+    """
+
+    @pytest.fixture
+    def border(self):
+        from django.contrib.gis.geos import (
+            LineString, MultiLineString, MultiPolygon, Point, Polygon,
+        )
+
+        from django_osm_locations.models import Country, Place, Street
+
+        def box(x0, x1):
+            return MultiPolygon(Polygon(((x0, 50.0), (x1, 50.0), (x1, 51.0), (x0, 51.0), (x0, 50.0))))
+
+        # Westland is x < 20, Eastland x >= 20
+        Country.objects.create(name='Westland', slug='westland', iso2='W1', iso3='WS1',
+                               un=931, border=box(19.0, 20.0))
+        Country.objects.create(name='Eastland', slug='eastland', iso2='E1', iso3='ES1',
+                               un=932, border=box(20.0, 21.0))
+        # a place just across the border, and one further back at home
+        Place.objects.create(name='Across', slug='across', center=Point(20.01, 50.5),
+                             country=[['Eastland', 'eastland']])
+        Place.objects.create(name='Home', slug='home', center=Point(19.90, 50.5),
+                             country=[['Westland', 'westland']])
+        # a street in Westland, 1.4km from Across and 6.4km from Home
+        street = Street.objects.create(
+            name='Graniczna', slug='graniczna', country=[], place=[],
+            lines=MultiLineString(LineString((19.989, 50.5), (19.991, 50.5))))
+        return street
+
+    def test_the_street_takes_a_place_in_its_own_country(self, border):
+        from django.db import connection
+
+        with connection.cursor() as cursor:
+            cursor.execute(Denorm.get_sql_for_placeless_street_country())
+            cursor.execute(Denorm.get_sql_for_street_place_field(),
+                           [Denorm.NEAREST_PLACE_KM * 1000])
+        border.refresh_from_db()
+        assert [list(p) for p in border.place] == [['Home', 'home']]
+
+    def test_and_so_inherits_the_right_country(self, border):
+        from django.db import connection
+
+        with connection.cursor() as cursor:
+            cursor.execute(Denorm.get_sql_for_placeless_street_country())
+            cursor.execute(Denorm.get_sql_for_street_place_field(),
+                           [Denorm.NEAREST_PLACE_KM * 1000])
+        Denorm.inherit_street_ancestry_from_place()
+        border.refresh_from_db()
+        assert [list(p) for p in border.country] == [['Westland', 'westland']]
+
+    def test_without_the_country_it_would_have_crossed(self, border):
+        """The fixture has to reproduce the bug, or it proves nothing."""
+        from django.db import connection
+
+        with connection.cursor() as cursor:
+            cursor.execute(Denorm.get_sql_for_street_place_field(),
+                           [Denorm.NEAREST_PLACE_KM * 1000])
+        border.refresh_from_db()
+        assert [list(p) for p in border.place] == [['Across', 'across']]
+
+    def test_a_street_that_already_has_a_place_is_not_tested(self, border):
+        """The containment test is for the placeless ones only."""
+        from django.db import connection
+
+        from django_osm_locations.models import Street
+
+        Street.objects.filter(pk=border.pk).update(place=[['Home', 'home']])
+        with connection.cursor() as cursor:
+            cursor.execute(Denorm.get_sql_for_placeless_street_country())
+            assert cursor.rowcount == 0
