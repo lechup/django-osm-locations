@@ -142,7 +142,7 @@ class TestTheContainmentPassesAreGone:
             Command as RecalculateAll,
         )
 
-        source = inspect.getsource(RecalculateAll.handle)
+        source = inspect.getsource(RecalculateAll._walk)
         assert 'inherit_address_ancestry_from_place' in source
         assert source.index('inherit_address_ancestry_from_place') < \
             source.index('update_address_slugs')
@@ -213,7 +213,7 @@ class TestStreetsLeaveTheTopLevels:
             Command as RecalculateAll,
         )
 
-        source = inspect.getsource(RecalculateAll.handle)
+        source = inspect.getsource(RecalculateAll._walk)
         assert source.index('update_street_place_field') < \
             source.index('inherit_street_ancestry_from_place')
         assert source.index('inherit_street_ancestry_from_place') < \

@@ -7,6 +7,7 @@ from django.db.models import Count, F, Func, Q
 from ...utils.progress import progress
 from ...utils.bulk_writes import relax_durability
 from ...utils.query_log import stop_logging_queries
+from ...utils.recalc_scope import RecalcScope
 
 from .. import Country, CountrySubarea, Place, PlaceSubarea, Street
 from ...utils.slugify import slugify
@@ -80,10 +81,31 @@ class Command(BaseCommand):
             help='Model names to recalculate. Defaults to all of them.',
         )
 
+    @staticmethod
+    def _scoped(model_class):
+        """
+        Whether a scoped recalculation restricts this model.
+
+        Not Country: country slugs are what every other scope is keyed by and
+        have to stay unique worldwide, so they are always resolved together --
+        nine rows, whatever the scope.
+        """
+        return RecalcScope.active() and 'country' in (
+            getattr(model_class, 'denorm_fields', None) or ())
+
+    @classmethod
+    def _scope_sql(cls, model_class, table):
+        if not cls._scoped(model_class):
+            return ''
+        return RecalcScope.sql(model_class.__name__.lower(), '"{}"'.format(table))
+
     @classmethod
     def set_default_slugs(cls, model_class):
         """Base slug from the name, via the database's own slugify()."""
-        model_class.objects.annotate(slugified=Func(F('name'), function='slugify')).update(
+        rows = model_class.objects.all()
+        if cls._scoped(model_class):
+            rows = RecalcScope.filter(rows)
+        rows.annotate(slugified=Func(F('name'), function='slugify')).update(
             slug=F('slugified')
         )
 
@@ -182,7 +204,8 @@ class Command(BaseCommand):
             return
         with connection.cursor() as cursor:
             cursor.execute(
-                'SELECT slug, {} FROM "{}"'.format(cls.SCOPE_SQL, table)
+                'SELECT slug, {} FROM "{}" WHERE true{}'.format(
+                    cls.SCOPE_SQL, table, cls._scope_sql(model_class, table))
             )
             while True:
                 rows = cursor.fetchmany(10000)
@@ -210,9 +233,11 @@ class Command(BaseCommand):
             cursor.execute("""
                 SELECT {scope} AS scope, slug, array_agg(id) AS ids
                 FROM "{table}"
+                WHERE true{restrict}
                 GROUP BY {group_by}
                 HAVING count(*) > 1
-            """.format(scope=scope, table=table, group_by=group_by))
+            """.format(scope=scope, table=table, group_by=group_by,
+                       restrict=cls._scope_sql(model_class, table)))
             return cursor.fetchall()
 
     @classmethod

@@ -8,6 +8,8 @@ from django.db import connection
 from .locations_recalculate_areas_and_lengths import Command as RecalculateAreasAndLengthCommand
 from .locations_recalculate_slugs import Command as RecalculateSlugs
 from .locations_recalculate_denormalized_fields import Command as RecalculateDenormalizedFields
+from .. import Address, Country, CountrySubarea, Place, PlaceSubarea, Street
+from ...utils.recalc_scope import RecalcScope
 
 
 class Command(BaseCommand):
@@ -67,6 +69,14 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument(
+            '--country', default=None,
+            help='Recalculate one country only, named as the importer is: '
+                 'poland, united-kingdom. The rest of the database is left '
+                 'exactly as it is -- slugs are unique per country, so adding '
+                 'or re-importing one changes nothing in another, and without '
+                 'this every country was recalculated every time.',
+        )
+        parser.add_argument(
             '--from', dest='start_from', default=None, metavar='PHASE',
             help='Skip every phase before PHASE and run from there -- the '
                  'label as the log prints it, e.g. "streets without a place". '
@@ -108,6 +118,50 @@ class Command(BaseCommand):
         self.start_from = options.get('start_from')
         self.reached = False
         started = datetime.now()
+
+        country = self._resolve_country(options.get('country'))
+        if country is not None:
+            if options.get('one_pass'):
+                raise CommandError(
+                    '--one-pass cannot be combined with --country: it has not '
+                    'been taught the scope, and would push every country down.')
+            self.stdout.write('scoping the recalculation to {}...'.format(country.name))
+            RecalcScope.build(country, self.SCOPED_MODELS, report=self.stdout.write)
+        try:
+            self._walk(options)
+        finally:
+            if country is not None:
+                RecalcScope.clear()
+
+        if self.start_from and not self.reached:
+            raise CommandError('No phase called {!r}. The phases are: {}.'.format(
+                self.start_from, ', '.join(repr(l) for l in self.labels_seen)))
+
+        self.report_write_amplification()
+        self.report_timings(started)
+
+    #: What a scoped run restricts itself to. Country is handled apart: its own
+    #: slugs stay global, and the walk pushes down only the one country.
+    SCOPED_MODELS = (CountrySubarea, Place, PlaceSubarea, Street, Address)
+
+    @staticmethod
+    def _resolve_country(name):
+        """The Country row for an importer's name, the way locations_reindex does it."""
+        if not name:
+            return None
+        from .importers import registry
+
+        importers = registry()
+        importer = importers.get(name)
+        if importer is None:
+            raise CommandError('Unknown country: {}. Known: {}.'.format(
+                name, ', '.join(sorted(importers))))
+        try:
+            return Country.objects.get(slug=importer.country_slug)
+        except Country.DoesNotExist:
+            raise CommandError('No row for {} yet; import it first.'.format(name))
+
+    def _walk(self, options):
         with self.timed('areas and lengths') as run:
             if run:
                 call_command('locations_recalculate_areas_and_lengths')
@@ -176,12 +230,7 @@ class Command(BaseCommand):
         # The columns are left in place for anything downstream still reading
         # them; run locations_recalculate_denormalized_fields to refresh them.
 
-        if self.start_from and not self.reached:
-            raise CommandError('No phase called {!r}. The phases are: {}.'.format(
-                self.start_from, ', '.join(repr(l) for l in self.labels_seen)))
-
-        self.report_write_amplification()
-
+    def report_timings(self, started):
         total = datetime.now() - started
         self.stdout.write('\nwhere the time went:')
         for label, took in sorted(self.timings, key=lambda pair: -pair[1]):

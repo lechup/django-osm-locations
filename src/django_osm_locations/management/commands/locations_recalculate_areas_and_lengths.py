@@ -7,6 +7,7 @@ from django.db.models.functions import Cast
 
 from .. import Country, CountrySubarea, Place, PlaceSubarea, Street
 from ...utils.bulk_writes import relax_durability
+from ...utils.recalc_scope import RecalcScope
 from ...utils.query_log import stop_logging_queries
 
 
@@ -25,21 +26,21 @@ class Command(BaseCommand):
         which is what the division was always for. ``set_length`` below has
         always done the same cast.
         """
-        model_class.objects.exclude(border=None).annotate(
+        RecalcScope.filter(model_class.objects.exclude(border=None)).annotate(
             border_as_geography=Cast('border', MultiPolygonField(geography=True)),
         ).annotate(
             gis_area=Area('border_as_geography')
         ).update(area=F('gis_area') / 1000000)
-        model_class.objects.filter(border=None).update(area=0)
+        RecalcScope.filter(model_class.objects.filter(border=None)).update(area=0)
 
     @classmethod
     def set_length(cls, model_class):
-        model_class.objects.exclude(lines=None).annotate(
+        RecalcScope.filter(model_class.objects.exclude(lines=None)).annotate(
             lines2=Cast('lines', MultiLineStringField(geography=True))
         ).annotate(
             gis_length=Length('lines2')
         ).update(length=F('gis_length'))
-        model_class.objects.filter(lines=None).update(length=0)
+        RecalcScope.filter(model_class.objects.filter(lines=None)).update(length=0)
 
     @classmethod
     def set_center_inside_border(cls, model_class):
@@ -54,14 +55,14 @@ class Command(BaseCommand):
         encircle -- 102 of them in Poland alone. The seat now has its own
         field; this repairs rows imported before it did.
         """
-        outside = model_class.objects.exclude(border=None).exclude(center=None).exclude(
-            center__intersects=F('border')
-        )
+        outside = RecalcScope.filter(
+            model_class.objects.exclude(border=None).exclude(center=None)
+        ).exclude(center__intersects=F('border'))
         outside.update(center=PointOnSurface('border'))
 
     @classmethod
     def set_center_for_lines(cls, model_class):
-        model_class.objects.exclude(lines=None).annotate(
+        RecalcScope.filter(model_class.objects.exclude(lines=None)).annotate(
             new_center=PointOnSurface('lines')
         ).update(center=F('new_center'))
 
@@ -70,19 +71,19 @@ class Command(BaseCommand):
         relax_durability(self.stdout)
         border_model_classes = [Country, CountrySubarea, Place, PlaceSubarea]
         for border_model_class in border_model_classes:
-            print('{} - calculating areas...'.format(border_model_class.__name__).encode('utf-8'))
+            print('{} - calculating areas...'.format(border_model_class.__name__))
             with transaction.atomic():
                 self.set_area(border_model_class)
             print('{} - moving centres back inside...'.format(
-                border_model_class.__name__).encode('utf-8'))
+                border_model_class.__name__))
             with transaction.atomic():
                 self.set_center_inside_border(border_model_class)
 
         lines_model_classes = [Street]
         for lines_model_class in lines_model_classes:
-            print('{} - calculating lengths...'.format(lines_model_class.__name__).encode('utf-8'))
+            print('{} - calculating lengths...'.format(lines_model_class.__name__))
             with transaction.atomic():
                 self.set_length(lines_model_class)
-            print('{} - calculating centers...'.format(lines_model_class.__name__).encode('utf-8'))
+            print('{} - calculating centers...'.format(lines_model_class.__name__))
             with transaction.atomic():
                 self.set_center_for_lines(lines_model_class)

@@ -7,6 +7,7 @@ from django.utils.text import slugify
 from ...utils.progress import progress
 from ...utils.bulk_writes import relax_durability
 from ...utils.query_log import stop_logging_queries
+from ...utils.recalc_scope import RecalcScope
 
 from .. import Address, Country, CountrySubarea, Place, PlaceSubarea, Street
 
@@ -127,12 +128,13 @@ class Command(BaseCommand):
         return """
             UPDATE "locations_{model_name}" SET {field_name} =
             array_cat({field_name}, ARRAY[ARRAY[%s, %s]]::varchar[]) WHERE
-              ST_Intersects(center, (SELECT border FROM "{ancestor_table}" WHERE id = %s))
+              ST_Intersects(center, (SELECT border FROM "{ancestor_table}" WHERE id = %s)){scope}
             ;
         """.format(**{
             'model_name': model_name,
             'field_name': field_name,
             'ancestor_table': ancestor_table,
+            'scope': RecalcScope.sql(model_name, '"locations_{}"'.format(model_name)),
         })
 
     @classmethod
@@ -238,8 +240,9 @@ class Command(BaseCommand):
         if one_pass:
             return cls._update_denorm_fields_in_one_pass(model_class_to_update, report)
 
-        objects = model_class_to_update.objects.exclude(border=None).only('name', 'slug').iterator()
-        objects_count = model_class_to_update.objects.exclude(border=None).count()
+        ancestors = RecalcScope.filter(model_class_to_update.objects.exclude(border=None))
+        objects = ancestors.only('name', 'slug').iterator()
+        objects_count = ancestors.count()
         if report:
             report('{} - pushing down from {} ancestors, one statement each'.format(
                 model_class_to_update.__name__, objects_count))
@@ -354,7 +357,7 @@ class Command(BaseCommand):
             else:
                 model_class_to_clear_all = model_class_to_clean.objects
 
-            model_class_to_clear_all.all().update(
+            RecalcScope.filter(model_class_to_clear_all.all()).update(
                 **update_dict
             )
 
@@ -432,10 +435,10 @@ class Command(BaseCommand):
                     ORDER BY lines <-> a2.center
                     LIMIT 1
                 ) s
-                WHERE a2.street_name <> '' AND a2.center IS NOT NULL
+                WHERE a2.street_name <> '' AND a2.center IS NOT NULL{scope}
             ) AS x
             WHERE a.id = x.id;
-        """.format(box=cls.MATCH_BOX_DEGREES)
+        """.format(box=cls.MATCH_BOX_DEGREES, scope=RecalcScope.sql('address', 'a2'))
 
     @classmethod
     def get_sql_for_street_settlement_from_addresses(cls):
@@ -467,7 +470,7 @@ class Command(BaseCommand):
                          AND a.settlement_name <> ''
                          AND ST_DWithin(a.center::geography, st.lines::geography, %s)
                         WHERE NOT st.is_merged AND st.center IS NOT NULL
-                          AND st.lines IS NOT NULL
+                          AND st.lines IS NOT NULL{scope}
                         GROUP BY st.id, a.settlement_name
                     ) v
                     ORDER BY v.street_id, v.votes DESC, v.settlement_name
@@ -495,7 +498,7 @@ class Command(BaseCommand):
                 ) p
             ) AS x
             WHERE s.id = x.street_id;
-        """.format(box=cls.MATCH_BOX_DEGREES)
+        """.format(box=cls.MATCH_BOX_DEGREES, scope=RecalcScope.sql('street', 'st'))
 
     #: A street with no place yet, in any of the shapes the array can take.
     PLACELESS = """(s.place IS NULL
@@ -526,8 +529,8 @@ class Command(BaseCommand):
             WHERE {placeless}
               AND s.center IS NOT NULL AND NOT s.is_merged
               AND c.border IS NOT NULL
-              AND ST_Intersects(s.center, c.border);
-        """.format(placeless=cls.PLACELESS)
+              AND ST_Intersects(s.center, c.border){scope};
+        """.format(placeless=cls.PLACELESS, scope=RecalcScope.sql('street', 's'))
 
     @classmethod
     def get_sql_for_street_place_field(cls):
@@ -566,7 +569,7 @@ class Command(BaseCommand):
                     ORDER BY center <-> s2.center
                     LIMIT 1
                 ) p
-                WHERE s2.center IS NOT NULL
+                WHERE s2.center IS NOT NULL{scope}
                   AND (s2.place IS NULL
                        OR array_length(s2.place, 1) IS NULL
                        -- mid-walk the arrays still carry the placeholder, and
@@ -577,7 +580,7 @@ class Command(BaseCommand):
                   AND ST_DWithin(p.center::geography, s2.center::geography, %s)
             ) AS x
             WHERE s.id = x.id;
-        """
+        """.format(scope=RecalcScope.sql('street', 's2'))
 
     @classmethod
     def get_sql_for_address_slugs(cls):
@@ -591,8 +594,8 @@ class Command(BaseCommand):
         Derived is still derived; it just has to be derived after the street
         is linked. Mirrors Address.slugify exactly, so the two never drift.
 
-        Runs after the placeholder is stripped: until then element [1] is
-        ['',''] and the real parent sits at [2].
+        Runs last, after the street link, because it reads the linked street
+        from element [1].
         """
         # Only the rows whose slug actually changes. slug carries two indexes,
         # so a rewrite of it can never be HOT: every one maintains all
@@ -609,10 +612,11 @@ class Command(BaseCommand):
                         THEN slugify(place[1][2] || '-' || house_number)
                     ELSE slugify(name)
                 END AS slug
-                FROM "locations_address"
+                FROM "locations_address" a0
+                WHERE true{scope}
             ) AS n
             WHERE a.id = n.id AND a.slug IS DISTINCT FROM n.slug;
-        """
+        """.format(scope=RecalcScope.sql('address', 'a0'))
 
     @classmethod
     @transaction.atomic
@@ -656,10 +660,11 @@ class Command(BaseCommand):
             SELECT a.id AS address_id, p.id AS place_id, p.area AS place_area
             FROM "locations_address" a
             JOIN "locations_place" p
-              ON p.border IS NOT NULL AND ST_Intersects(a.center, p.border);
+              ON p.border IS NOT NULL AND ST_Intersects(a.center, p.border)
+            WHERE true{scope};
             CREATE INDEX "address_place_idx" ON "address_place" (address_id, place_area);
             ANALYZE "address_place";
-        """
+        """.format(scope=RecalcScope.sql('address', 'a'))
 
     @classmethod
     def get_sql_for_address_inherited_ancestry(cls):
@@ -701,20 +706,42 @@ class Command(BaseCommand):
         country and country subarea, so two of those four were computing what a
         join already knew.
 
-        The place's slug is read from the street's own array, and from either
-        position: the containment pass appends after the placeholder, while
-        update_street_place_field overwrites the array outright, so the slug
-        sits at element 1 for some streets and 2 for others. This is the same
-        coalesce the slug pass uses on the country array for the same reason.
+        The street records its place by name and slug, and a slug is unique
+        within a country, not across countries -- 84 place slugs are shared
+        between Poland, Denmark and Britain, "centrum" and "berlin" between the
+        first two. Joined on the slug alone, an UPDATE ... FROM that matched two
+        places took whichever came first: a run that did so left 674 streets
+        outside Denmark labelled Danish, 55 outside Poland labelled Polish and
+        183 outside Britain labelled British, and the per-country index picks
+        its rows by exactly that label. So of the places bearing the slug the
+        nearest one is taken, which is right however the street got its place
+        -- the one containing it, the nearest namesake the vote chose, or the
+        nearest place in its country the fallback chose; a namesake in another
+        country is hundreds of kilometres further off.
+
+        The slug is read from element 1 or 2 of the array, for data written by
+        the older walk that still carried a placeholder at 1.
         """
+        slug = "coalesce(nullif(s2.place[1][2], ''), s2.place[2][2])"
         return """
             UPDATE "locations_street" AS s SET
-                country = p.country,
-                countrysubarea = p.countrysubarea
-            FROM "locations_place" p
-            WHERE p.slug = coalesce(nullif(s.place[1][2], ''), s.place[2][2])
-              AND coalesce(nullif(s.place[1][2], ''), s.place[2][2]) IS NOT NULL;
-        """
+                country = m.country,
+                countrysubarea = m.countrysubarea
+            FROM (
+                SELECT s2.id, pl.country, pl.countrysubarea
+                FROM "locations_street" s2
+                CROSS JOIN LATERAL (
+                    SELECT p.country, p.countrysubarea
+                    FROM "locations_place" p
+                    WHERE p.slug = {slug}
+                      AND p.center IS NOT NULL
+                    ORDER BY ST_Distance(p.center, s2.center), p.id
+                    LIMIT 1
+                ) pl
+                WHERE {slug} IS NOT NULL AND s2.center IS NOT NULL{scope}
+            ) AS m
+            WHERE s.id = m.id;
+        """.format(slug=slug, scope=RecalcScope.sql('street', 's2'))
 
     @classmethod
     @transaction.atomic

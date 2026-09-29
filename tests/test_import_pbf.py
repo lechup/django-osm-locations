@@ -273,3 +273,43 @@ def test_streets_and_addresses_know_their_country(recalculated):
     placed = [a for a in addresses if a.place and a.place[0][1]]
     assert placed, 'no address found its place'
     assert all(a.country and a.country[0][1] == 'isle-of-man' for a in placed)
+
+
+def _digest():
+    """Every slug and denormalised array, per table, as one checksum each."""
+    from django.db import connection
+
+    out = {}
+    for model in _denorm_models():
+        columns = ["coalesce(slug, '')"] + [
+            "coalesce({}::text, '')".format(field) for field in model.denorm_fields]
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT md5(string_agg(id || \':\' || {}, \'|\' ORDER BY id)) FROM "{}"'.format(
+                " || ':' || ".join(columns), model._meta.db_table))
+            out[model.__name__] = cursor.fetchone()[0]
+    return out
+
+
+def test_a_scoped_run_rebuilds_exactly_what_a_full_one_did(recalculated, django_db_blocker):
+    """
+    Everything is wiped first -- arrays emptied, slugs replaced -- so a row the
+    scope missed would stay wiped and show up here. Comparing without wiping
+    would pass even if the scope selected nothing, because every row would
+    simply keep what the full run gave it.
+    """
+    from django.core.management import call_command
+    from django.db import connection
+
+    with django_db_blocker.unblock():
+        expected = _digest()
+        for model in _denorm_models():
+            assignments = ', '.join(["{} = '{{}}'".format(f) for f in model.denorm_fields]
+                                    + ["slug = 'wiped-' || id"])
+            with connection.cursor() as cursor:
+                cursor.execute('UPDATE "{}" SET {}'.format(model._meta.db_table, assignments))
+        assert _digest() != expected, 'the wipe changed nothing'
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            call_command('locations_recalculate_all', country='isle-of-man', stdout=io.StringIO())
+
+        assert _digest() == expected
