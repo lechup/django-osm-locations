@@ -534,14 +534,24 @@ class Command(BaseCommand):
         Runs after the placeholder is stripped: until then element [1] is
         ['',''] and the real parent sits at [2].
         """
+        # Only the rows whose slug actually changes. slug carries two indexes,
+        # so a rewrite of it can never be HOT: every one maintains all
+        # seventeen indexes on the table. Writing all 11 million rows took
+        # 2h02m, a quarter of the whole recalculation, and on a re-run of the
+        # same data almost none of them change.
         return """
-            UPDATE "locations_address" SET slug = CASE
-                WHEN street[1][2] IS NOT NULL AND street[1][2] <> ''
-                    THEN slugify(street[1][2] || '-' || house_number)
-                WHEN place[1][2] IS NOT NULL AND place[1][2] <> ''
-                    THEN slugify(place[1][2] || '-' || house_number)
-                ELSE slugify(name)
-            END;
+            UPDATE "locations_address" AS a SET slug = n.slug
+            FROM (
+                SELECT id, CASE
+                    WHEN street[1][2] IS NOT NULL AND street[1][2] <> ''
+                        THEN slugify(street[1][2] || '-' || house_number)
+                    WHEN place[1][2] IS NOT NULL AND place[1][2] <> ''
+                        THEN slugify(place[1][2] || '-' || house_number)
+                    ELSE slugify(name)
+                END AS slug
+                FROM "locations_address"
+            ) AS n
+            WHERE a.id = n.id AND a.slug IS DISTINCT FROM n.slug;
         """
 
     @classmethod

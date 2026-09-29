@@ -337,3 +337,41 @@ class TestParameterisedSqlIsSafeToExecute:
     ])
     def test_no_stray_percent_character(self, sql):
         assert self.STRAY.search(sql) is None, self.STRAY.search(sql)
+
+
+@pytest.mark.django_db
+class TestOnlyChangedSlugsAreWritten:
+    """
+    slug is indexed twice, so a rewrite of it is never HOT and maintains all
+    seventeen indexes on the table. Writing every address took 2h02m, a quarter
+    of the recalculation, and a re-run of the same data changes almost none.
+    """
+
+    @staticmethod
+    def derive():
+        from django.db import connection
+
+        with connection.cursor() as cursor:
+            cursor.execute(Denorm.get_sql_for_address_slugs())
+            return cursor.rowcount
+
+    def test_a_first_pass_writes_what_changes(self):
+        a = Address(name='Łąkowa 5', house_number='5', center=Point(18.6, 54.35))
+        a.save()
+        Address.objects.filter(pk=a.pk).update(street=[['Łąkowa', 'lakowa-gdansk']])
+        assert self.derive() == 1
+
+    def test_a_second_pass_writes_nothing(self):
+        a = Address(name='Łąkowa 5', house_number='5', center=Point(18.6, 54.35))
+        a.save()
+        Address.objects.filter(pk=a.pk).update(street=[['Łąkowa', 'lakowa-gdansk']])
+        self.derive()
+        assert self.derive() == 0
+
+    def test_an_already_correct_slug_is_not_touched(self):
+        """No parent: the import slug is already the derived one."""
+        a = Address(name='Kowale 12', house_number='12', center=Point(18.6, 54.35))
+        a.save()
+        assert self.derive() == 0
+        a.refresh_from_db()
+        assert a.slug == 'kowale-12'
