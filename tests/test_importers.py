@@ -79,6 +79,13 @@ def test_germany_city_relations_are_places_not_subareas():
     assert GermanyImporter._is_relation_countrysubarea(1, region, []) is True
 
 
+def test_germany_a_region_without_de_place_is_still_a_region():
+    """Most Länder and Kreise carry no de:place; they were all being dropped."""
+    for level in ('4', '5', '6', '7'):
+        assert GermanyImporter._is_relation_countrysubarea(1, admin(level), []) is True
+        assert GermanyImporter._is_relation_place(1, admin(level), []) is False
+
+
 def test_germany_whitelists_its_own_tag():
     assert 'de:place' in GermanyImporter.whitelist_tags
     # the base tags must survive subclassing

@@ -186,3 +186,36 @@ class TestWritersAreNotDeclaredInAdvance:
         })
         importer._flush_writes()
         assert model.objects.filter(node_osm_id=12345).exists()
+
+
+class TestStatisticsKeepUp:
+    """
+    A country's database starts with tables never analysed, and the import is
+    one transaction autovacuum cannot see into: every lookup of a batch's ids
+    was planned as a scan of the whole table.
+    """
+
+    def analyses(self, writer, rows):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(connection) as queries:
+            for osm_id in range(1, rows + 1):
+                writer.add(osm_id, {'name': 'Road {}'.format(osm_id), 'lines': line()})
+            writer.flush()
+        return [q['sql'] for q in queries if q['sql'].startswith('ANALYZE')]
+
+    def test_the_table_is_analysed_once_it_has_grown(self):
+        writer = BatchUpserter(Street, 'way_osm_id', batch_size=2)
+        writer.ANALYZE_FROM = 4
+        assert self.analyses(writer, 4) == ['ANALYZE "locations_street"']
+
+    def test_then_each_time_it_doubles(self):
+        writer = BatchUpserter(Street, 'way_osm_id', batch_size=2)
+        writer.ANALYZE_FROM = 4
+        # at 4, 8 and 16 rows; not at every batch in between
+        assert len(self.analyses(writer, 16)) == 3
+
+    def test_a_small_import_never_pays_for_it(self):
+        writer = BatchUpserter(Street, 'way_osm_id', batch_size=2)
+        assert self.analyses(writer, 6) == []

@@ -213,6 +213,11 @@ class Command(BaseCommand):
         with self.timed('addresses to streets') as run:
             if run:
                 RecalculateDenormalizedFields.update_address_street_field()
+        # After the street link, which places most of the addresses no place
+        # contains; this takes the rest by border and the nearest place.
+        with self.timed('addresses outside every place') as run:
+            if run:
+                RecalculateDenormalizedFields.place_addresses_outside_places()
         # Last, because an address's slug reads its parent -- its street, or
         # failing that its place -- from element [1] of those arrays, and both
         # are only final once the steps above have run. There used to be a

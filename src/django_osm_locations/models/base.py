@@ -112,7 +112,9 @@ class LocationBase(gis_models.Model):
 
     def _presave_slug(self, *args, **kwargs):
         if not self.slug:
-            self.slug = self.slugify
+            # Transliteration can lengthen a name -- a 255-character name
+            # in Cyrillic slugifies longer than the column -- so it is cut.
+            self.slug = self.slugify[:self._meta.get_field('slug').max_length]
 
     @classmethod
     def _save_hooks(cls):

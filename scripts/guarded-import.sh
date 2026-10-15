@@ -134,6 +134,11 @@ sweep_index
 # because a missing cap is worth knowing about.
 LIMITS=(-p MemorySwapMax=0)
 [ -n "$LIMIT" ] && LIMITS+=(-p MemoryMax="$LIMIT")
+# Behind the desktop for CPU and disk: an import runs for hours on a machine
+# someone is using, and it only has to finish, not to win. Weights only bite
+# under contention -- alone, it runs at full speed. CPU_WEIGHT=100 IO_WEIGHT=100
+# NICE=0 put it back level with everything else.
+LIMITS+=(-p CPUWeight="${CPU_WEIGHT:-20}" -p IOWeight="${IO_WEIGHT:-20}" --nice="${NICE:-10}")
 
 SCOPE=()
 MODE=plain

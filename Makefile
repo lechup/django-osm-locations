@@ -5,7 +5,10 @@
 #   local -- persistent volumes, tuned for bulk imports         (ports 55433/59201)
 # They use different compose project names, so both can run at once.
 
-PYTHON      ?= python
+# The project's own .venv (made by `make install`), unless a virtualenv is
+# already active -- then that one, as before.
+VENV        := .venv
+PYTHON      ?= $(if $(VIRTUAL_ENV),python,$(VENV)/bin/python)
 COUNTRY     ?= poland
 PBF         ?=
 
@@ -18,7 +21,7 @@ PBF         ?=
 # Scoped to these targets on purpose: doing it for every goal would break
 # ordinary invocations like `make clean build`, where "build" is a real target
 # and not an argument.
-COUNTRY_TARGETS := import import-guarded update merge process
+COUNTRY_TARGETS := import import-guarded update merge process country-db
 ifneq ($(filter $(firstword $(MAKECMDGOALS)),$(COUNTRY_TARGETS)),)
   COUNTRY_ARGS := $(filter-out $(firstword $(MAKECMDGOALS)),$(MAKECMDGOALS))
   ifneq ($(COUNTRY_ARGS),)
@@ -26,6 +29,16 @@ ifneq ($(filter $(firstword $(MAKECMDGOALS)),$(COUNTRY_TARGETS)),)
     $(eval $(COUNTRY_ARGS):;@:)
   endif
 endif
+# The same for `make os-index remove delete`: words, not flags, because make
+# reads anything starting with a dash as its own option (-r, -m, ...).
+ifeq ($(firstword $(MAKECMDGOALS)),os-index)
+  OS_INDEX_ARGS := $(filter-out os-index,$(MAKECMDGOALS))
+  ifneq ($(OS_INDEX_ARGS),)
+    $(eval $(OS_INDEX_ARGS):;@:)
+  endif
+endif
+KEEP          ?= 1
+ISO           ?=
 # systemd-oomd kills on memory pressure across the whole user session, and a
 # shell started from an editor shares that editor's cgroup: a France import
 # that overran once took VS Code, dbus and pipewire down with it. Run the
@@ -36,16 +49,28 @@ IMPORT_LIMIT  ?= 8G
 CAPPED        := $(shell systemctl --user show-environment >/dev/null 2>&1 \
                    && echo systemd-run --user --scope -p MemoryMax=$(IMPORT_LIMIT) --quiet --)
 
+# GeoDjango needs GDAL and GEOS. Without the system packages (gdal-bin,
+# libgeos-c1v5) the copies bundled in the pyogrio and shapely wheels serve,
+# which `make install` brings in anyway. A path already set wins.
+ifeq ($(GDAL_LIBRARY_PATH)$(shell ldconfig -p 2>/dev/null | grep -c 'libgdal\.so'),0)
+  WHEELS := $(shell $(PYTHON) -c "import sysconfig; print(sysconfig.get_paths()['purelib'])" 2>/dev/null)
+  export GDAL_LIBRARY_PATH := $(firstword $(wildcard $(WHEELS)/pyogrio.libs/libgdal*.so*))
+  ifeq ($(GEOS_LIBRARY_PATH),)
+    export GEOS_LIBRARY_PATH := $(firstword $(wildcard $(WHEELS)/shapely.libs/libgeos_c*.so*))
+    export LD_LIBRARY_PATH := $(WHEELS)/shapely.libs$(if $(LD_LIBRARY_PATH),:$(LD_LIBRARY_PATH))
+  endif
+endif
+
 TEST_COMPOSE  := docker compose -f docker-compose.test.yml
 LOCAL_COMPOSE := docker compose -f docker-compose.local.yml
 LOCAL_ENV     := DJANGO_SETTINGS_MODULE=local.settings
 
 .DEFAULT_GOAL := help
 .PHONY: help install test-up test-down test-reset test test-search test-pbf test-all \
-        local-up local-down local-reset migrate import import-guarded update merge \
+        local-up local-stop local-down local-reset migrate import import-guarded update merge \
         coastline clip \
         snapshot pack load-snapshot snapshots \
-        recalculate reindex index-status index-cleanup process demo shell dbshell \
+        recalculate reindex index-status os-index country-db process demo shell dbshell \
         build check bench clean
 
 ## meta
@@ -55,7 +80,8 @@ help:  ## Show this help
 		/^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2 } \
 		/^## /{ h = $$0; gsub(/^## *-*|-* *$$/, "", h); printf "\n\033[1m%s\033[0m\n", h }' $(MAKEFILE_LIST)
 
-install:  ## Install the package and its development extras
+install:  ## Install the package and its development extras (into .venv)
+	@$(if $(VIRTUAL_ENV),,test -x $(VENV)/bin/python || python3 -m venv $(VENV))
 	$(PYTHON) -m pip install -e '.[dev]'
 
 ## test stack  (tmpfs, wiped every run)
@@ -89,7 +115,10 @@ local-up:  ## Start the persistent stack for real imports
 	$(LOCAL_COMPOSE) up -d
 	@$(MAKE) --no-print-directory wait-healthy CONTAINERS="locations-local-postgis-1 locations-local-opensearch-1"
 
-local-down:  ## Stop the persistent stack, keeping its data
+local-stop:  ## Stop the persistent stack's containers; local-up starts the same ones again
+	$(LOCAL_COMPOSE) stop
+
+local-down:  ## Remove the persistent stack's containers, keeping its data volumes
 	$(LOCAL_COMPOSE) down
 
 local-reset:  ## Stop the persistent stack and DELETE its data
@@ -152,8 +181,30 @@ reindex: local-up  ## Rebuild the search index and swap the aliases
 index-status: local-up  ## Compare database counts with the live index
 	$(LOCAL_ENV) $(PYTHON) -m django locations_index_status
 
-index-cleanup: local-up  ## Drop superseded indexes
-	$(LOCAL_ENV) $(PYTHON) -m django locations_index_cleanup
+os-index: local-up  ## Search indexes: make os-index [list | remove [delete] | rollback|forward [apply]] [KEEP=1] [ISO=pl]
+	@case "$(firstword $(OS_INDEX_ARGS))" in \
+		""|list) mode=--list ;; \
+		remove) case "$(word 2,$(OS_INDEX_ARGS))" in \
+			"") mode= ;; \
+			delete|rm) mode=--delete ;; \
+			*) echo "unknown: $(word 2,$(OS_INDEX_ARGS)); make os-index remove [delete]"; exit 1 ;; \
+		esac ;; \
+		rollback|forward) case "$(word 2,$(OS_INDEX_ARGS))" in \
+			"") mode=--$(firstword $(OS_INDEX_ARGS)) ;; \
+			apply) mode="--$(firstword $(OS_INDEX_ARGS)) --apply" ;; \
+			*) echo "unknown: $(word 2,$(OS_INDEX_ARGS)); make os-index $(firstword $(OS_INDEX_ARGS)) [apply] ISO=pl"; exit 1 ;; \
+		esac ;; \
+		*) echo "unknown: $(firstword $(OS_INDEX_ARGS)); make os-index [list | remove [delete] | rollback|forward [apply]]"; exit 1 ;; \
+	esac; \
+	$(LOCAL_ENV) $(PYTHON) -m django locations_index_cleanup $$mode --keep $(KEEP) \
+		$(if $(ISO),--country $(ISO),)
+
+country-db:  ## One country in its own database, import to pack: make country-db germany [KEEP_DB=1]
+	@# PostgreSQL only: OpenSearch's 3GB would sit idle through the import,
+	@# and the script starts it for the reindex and stops it after the pack
+	$(LOCAL_COMPOSE) up -d postgis
+	@$(MAKE) --no-print-directory wait-healthy CONTAINERS="locations-local-postgis-1"
+	$(LOCAL_ENV) PYTHON=$(PYTHON) ./scripts/country-db.sh $(COUNTRY) $(if $(KEEP_DB),--keep,)
 
 process: migrate import recalculate reindex  ## Full pipeline: make process poland
 	@echo "$(COUNTRY): imported, recalculated and indexed"

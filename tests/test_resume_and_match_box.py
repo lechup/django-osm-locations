@@ -24,7 +24,8 @@ from django_osm_locations.management.commands.locations_recalculate_denormalized
 EFFECTFUL = (
     'clean_denorm_fields_before_update', 'update_street_place_field',
     'inherit_street_ancestry_from_place', 'inherit_address_ancestry_from_place',
-    'update_address_street_field', 'clean_denorm_fields_after_update',
+    'update_address_street_field', 'place_addresses_outside_places',
+    'clean_denorm_fields_after_update',
     'update_address_slugs',
 )
 
@@ -82,10 +83,11 @@ class TestResuming:
 
 class TestTheMatchBox:
     def test_both_name_matches_look_in_the_box_first(self):
-        for sql in (Denorm.get_sql_for_street_settlement_from_addresses(),
-                    Denorm.get_sql_for_address_street_link()):
-            assert 'ST_Expand' in sql
-            assert sql.index('ST_Expand') < sql.index('street_name')
+        for sql, name_match in (
+                (Denorm.get_sql_for_street_settlement_from_addresses(), 'a.street_name = st.name'),
+                (Denorm.get_sql_for_address_street_link(), 'name = a2.street_name')):
+            assert 'ST_Expand' in sql and name_match in sql
+            assert sql.index('ST_Expand') < sql.index(name_match)
 
     def test_each_still_takes_exactly_one_parameter(self):
         """

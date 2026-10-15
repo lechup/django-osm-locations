@@ -56,3 +56,22 @@ def test_empty_names_are_skipped():
 
 def test_no_ancestry_is_just_the_name():
     assert add_path({'name': 'Isle of Man'})['path'] == ['Isle of Man']
+
+
+class TestNoNumericId:
+    """Each country is built in its own database; row ids repeat across them."""
+
+    def test_a_result_carries_no_id(self):
+        from django_osm_locations.api.views import format_hit
+
+        hit = {'_source': {'id': 17, 'slug': 'douglas', 'name': 'Douglas'}, '_score': 1.0}
+        result = format_hit(hit)
+        assert 'id' not in result
+        assert result['slug'] == 'douglas' and result['score'] == 1.0
+
+    def test_the_hit_itself_is_not_changed(self):
+        from django_osm_locations.api.views import format_hit
+
+        source = {'id': 17, 'slug': 'douglas'}
+        format_hit({'_source': source})
+        assert source['id'] == 17

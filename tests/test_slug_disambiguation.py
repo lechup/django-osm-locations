@@ -190,3 +190,21 @@ class TestOtherLevels:
         found = sorted(CountrySubarea.objects.values_list('slug', flat=True))
         assert found[0] == 'middle'
         assert found[1] != 'middle', found
+
+
+class TestSlugsFitTheColumn:
+    """Transliteration and qualifiers can each push a slug past 255."""
+
+    def test_a_qualified_slug_keeps_its_qualifier(self):
+        from django_osm_locations.management.commands.locations_recalculate_slugs import (
+            Command as Slugs, SLUG_LENGTH,
+        )
+        slug = Slugs._qualified('a' * 300, 'gdansk')
+        assert len(slug) == SLUG_LENGTH
+        assert slug.endswith('-gdansk')
+
+    def test_a_short_one_is_unchanged(self):
+        from django_osm_locations.management.commands.locations_recalculate_slugs import (
+            Command as Slugs,
+        )
+        assert Slugs._qualified('main', 'gdansk') == 'main-gdansk'

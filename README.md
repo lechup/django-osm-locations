@@ -146,7 +146,6 @@ Types are `countries`, `country-subareas`, `places`, `place-subareas`,
   "results": [
     {
       "type": "places",
-      "id": 17,
       "name": "Douglas",
       "slug": "douglas",
       "score": 8.4,
@@ -162,6 +161,13 @@ Types are `countries`, `country-subareas`, `places`, `place-subareas`,
   ]
 }
 ```
+
+A location is identified by its `type`, its country and its `slug`: a slug
+is unique within one country and one type, not across countries — `centrum`
+is a place in Poland and in Denmark. That triple is what the detail endpoint
+takes, `/<type>/<slug>/?within=<country-slug>`. There is no numeric `id`:
+each country is built in a database of its own, so row ids repeat between
+countries and would mean nothing outside one.
 
 `path` is the ancestry and the location's own name ready to print, in the
 requested `lang`. It collapses a name repeated by the next level: a city with
@@ -373,7 +379,10 @@ python manage.py locations_reindex --dry-run          # report only
 python manage.py locations_reindex places streets     # selected types
 python manage.py locations_reindex --no-promote       # build, inspect, swap later
 python manage.py locations_reindex --tolerance 10     # allow a small shortfall
-python manage.py locations_index_cleanup --keep 1     # drop older indexes
+python manage.py locations_index_cleanup --list       # every index, its size and status
+python manage.py locations_index_cleanup              # what would be removed
+python manage.py locations_index_cleanup --delete     # remove it
+python manage.py locations_index_cleanup --rollback --country pl --apply
 ```
 
 ## Progress output
@@ -677,7 +686,7 @@ everything in the file is imported, which is the behaviour this replaced.
 | `locations_update` | Fetch OSM diffs, reimport, recalculate and reindex |
 | `locations_reindex` | Rebuild the search index and swap the alias |
 | `locations_index_status` | Compare database row counts with the live index |
-| `locations_index_cleanup` | Remove superseded indexes no alias points at |
+| `locations_index_cleanup` | List indexes, or remove superseded ones no alias points at (reports only without `--delete`) |
 | `locations_load_land_polygons` | Load the coastline shapefile into PostGIS |
 | `locations_clip_borders_to_land` | Trim borders back to that coastline |
 | `locations_export_snapshot` | Package a country's live indexes for publication |
@@ -877,13 +886,20 @@ make local-up                      # persistent PostGIS + OpenSearch
 make process poland                # migrate, import, recalculate, reindex
 make import denmark norway         # several at once
 make index-status                  # database counts against the live index
+make os-index                      # every search index: live, rollback or stale
+make os-index remove               # what would be removed (KEEP=1 ISO=pl narrow it)
+make os-index remove delete        # remove it
+make os-index rollback ISO=pl      # which previous indexes would go back live
+make os-index rollback apply ISO=pl  # switch to them
+make os-index forward apply ISO=pl   # and back
 make demo                          # the Leaflet page on :8000
-make local-down                    # stop, keeping the data
+make local-stop                    # stop the containers; local-up resumes them
+make local-down                    # remove the containers, keeping the data
 make local-reset                   # stop and DELETE the data
 ```
 
 Individual steps are available too: `make import`, `make update`, `make merge`,
-`make recalculate`, `make reindex`, `make index-cleanup`, `make shell`,
+`make recalculate`, `make reindex`, `make os-index`, `make shell`,
 `make dbshell`, `make bench`.
 
 

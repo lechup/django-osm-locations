@@ -111,6 +111,7 @@ class TestTheWalkRunsItInTimeToMatter:
                 mock.patch.object(Denorm, 'inherit_address_ancestry_from_place'), \
                 mock.patch.object(Denorm, 'inherit_street_ancestry_from_place'), \
                 mock.patch.object(Denorm, 'update_address_street_field'), \
+                mock.patch.object(Denorm, 'place_addresses_outside_places'), \
                 mock.patch.object(Denorm, 'update_address_slugs'), \
                 mock.patch.object(Denorm, 'clean_denorm_fields_after_update'), \
                 mock.patch.object(Denorm, 'update_street_place_field',
@@ -181,6 +182,8 @@ class TestTheFallbackStaysInTheStreetsCountry:
         from django.db import connection
 
         with connection.cursor() as cursor:
+            for statement in Denorm.SQL_FOR_COUNTRY_TILES:
+                cursor.execute(statement)
             cursor.execute(Denorm.get_sql_for_placeless_street_country())
             cursor.execute(Denorm.get_sql_for_street_place_field(),
                            [Denorm.NEAREST_PLACE_KM * 1000])
@@ -191,6 +194,8 @@ class TestTheFallbackStaysInTheStreetsCountry:
         from django.db import connection
 
         with connection.cursor() as cursor:
+            for statement in Denorm.SQL_FOR_COUNTRY_TILES:
+                cursor.execute(statement)
             cursor.execute(Denorm.get_sql_for_placeless_street_country())
             cursor.execute(Denorm.get_sql_for_street_place_field(),
                            [Denorm.NEAREST_PLACE_KM * 1000])
@@ -216,5 +221,7 @@ class TestTheFallbackStaysInTheStreetsCountry:
 
         Street.objects.filter(pk=border.pk).update(place=[['Home', 'home']])
         with connection.cursor() as cursor:
+            for statement in Denorm.SQL_FOR_COUNTRY_TILES:
+                cursor.execute(statement)
             cursor.execute(Denorm.get_sql_for_placeless_street_country())
             assert cursor.rowcount == 0

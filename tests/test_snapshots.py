@@ -371,3 +371,43 @@ class TestThePackageCommand:
         self._patch(monkeypatch, client)
         with pytest.raises(CommandError, match='PARTIAL'):
             call_command('locations_export_snapshot', 'pl')
+
+
+class TestLoadingNeedsNoDatabase:
+    """
+    A consumer of the published packs runs OpenSearch and the API, and no
+    PostgreSQL: the import side is the only one that needs it. Loading a pack
+    must therefore never open a database connection.
+    """
+
+    def test_a_pack_loads_with_the_database_unreachable(self, monkeypatch):
+        from io import StringIO
+        from unittest import mock
+
+        from django.core.management import call_command
+        from django.db.backends.base.base import BaseDatabaseWrapper
+
+        def refuse(*args, **kwargs):
+            raise AssertionError('loading a pack opened a database connection')
+
+        monkeypatch.setattr(BaseDatabaseWrapper, 'ensure_connection', refuse)
+
+        from django_osm_locations.search.client import get_index_prefix
+
+        prefix = get_index_prefix()
+        client = FakeClient()
+        indexes = ['{}-streets-pl-20261002'.format(prefix), '{}-addresses-pl-20261002'.format(prefix)]
+        client.snapshot.get = lambda repository, snapshot: {'snapshots': [{
+            'snapshot': snapshot, 'state': 'SUCCESS', 'indices': indexes,
+            'shards': {'successful': 2, 'total': 2}}]}
+
+        out = StringIO()
+        with mock.patch(
+                'django_osm_locations.management.commands.locations_import_snapshot.get_client',
+                return_value=client), \
+                mock.patch('django_osm_locations.search.snapshots.get_client', return_value=client):
+            call_command('locations_import_snapshot', 'pl-2026-10-02', stdout=out)
+
+        assert client.snapshot.restored, 'nothing was restored'
+        assert {a['add']['alias'] for a in client.indices.alias_actions} == {
+            '{}-streets'.format(prefix), '{}-addresses'.format(prefix)}

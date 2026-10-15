@@ -9,6 +9,8 @@ database, and only then moves the alias across.
 from datetime import datetime, timezone
 
 from django.conf import settings
+from django.db import connection, transaction
+from django.db.models.expressions import RawSQL
 
 from ..utils.progress import progress
 from .client import get_client, get_index_prefix
@@ -83,9 +85,19 @@ class Reindexer:
         if not self.country:
             return queryset
         if 'country' in (getattr(self.index.model, 'denorm_fields', None) or ()):
-            return queryset.filter(
-                country__contains=[[self.country.name, self.country.slug]]
-            )
+            # The expression migration 0042 indexes, written out the same way
+            # so the planner recognises it. country__contains asked the same
+            # question of an unindexed array: every country's addresses were
+            # found by reading the whole 12GB table, and a country imported
+            # last waited for the scan to reach its rows before the first
+            # document went out.
+            column = '"{}"."country"'.format(self.index.model._meta.db_table)
+            # and unordered: a document's id is its row's, so the order is
+            # nobody's concern, and sorting Germany's 20 million addresses
+            # spilled 12GB to disk before the first one went out
+            return queryset.annotate(_country_slug=RawSQL(
+                "coalesce(nullif({0}[1][2], ''), {0}[2][2])".format(column), (),
+            )).filter(_country_slug=self.country.slug).order_by()
         return queryset.filter(pk=self.country.pk)
 
     def database_count(self):
@@ -132,13 +144,32 @@ class Reindexer:
             }
 
     def populate(self, total=None):
+        """
+        Stream the queryset into the index.
+
+        Inside a transaction, because outside one Django declares the
+        server-side cursor WITH HOLD, and Postgres answers that by writing the
+        whole result to a temporary file before handing over the first row: 25
+        minutes of silence before Poland's 6.9 million addresses, 20 before
+        Denmark's 2.6 million. Without the hold, rows arrive as they are read.
+
+        A cursor is planned for its first tenth of rows, and for a fast start
+        the planner walks the primary key and tests every row's country:
+        Germany's streets came out of all 11 million at 25 a second, where
+        the country index and a sort fetch them all in minutes. Every row is
+        read, so the cursor is planned for all of them.
+        """
         bulk = _load_bulk()
-        success, errors = bulk(
-            self.client,
-            self._actions(total=total),
-            chunk_size=self.batch_size,
-            raise_on_error=True,
-        )
+        with transaction.atomic():
+            if connection.vendor == 'postgresql':
+                with connection.cursor() as cursor:
+                    cursor.execute('SET LOCAL cursor_tuple_fraction = 1.0')
+            success, errors = bulk(
+                self.client,
+                self._actions(total=total),
+                chunk_size=self.batch_size,
+                raise_on_error=True,
+            )
         self.indexed = success
         self.client.indices.refresh(index=self.index_name)
         return success, errors

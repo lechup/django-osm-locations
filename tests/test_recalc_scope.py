@@ -92,6 +92,19 @@ class TestWhatBelongsToACountry:
         lost = street('F', 'f', 19.5, y=48.0)
         assert lost.id not in self.members(west)
 
+    def test_a_fresh_row_off_the_neighbours_coast_is_the_neighbours(self, two_countries, scope_off):
+        """Within reach of both, nearer the east: the nearest border decides."""
+        west, _ = two_countries
+        pier = street('G', 'g', 20.01, y=49.99)
+        assert pier.id not in self.members(west)
+
+    def test_the_border_tiles_are_gone_afterwards(self, two_countries, scope_off):
+        west, _ = two_countries
+        self.members(west)
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT to_regclass('locations_recalc_border_tiles')")
+            assert cursor.fetchone()[0] is None
+
 
 class TestEveryStepIsRestricted:
     """Each builder takes the scope clause when a scope is set, and none when not."""
@@ -106,6 +119,7 @@ class TestEveryStepIsRestricted:
         'street inherit': Denorm.get_sql_for_street_inherited_ancestry,
         'address map': Denorm.get_sql_for_address_place_map,
         'address slugs': Denorm.get_sql_for_address_slugs,
+        'addresses outside places': Denorm.get_sql_for_address_outside_places,
     }
 
     @pytest.mark.parametrize('name', sorted(BUILDERS))

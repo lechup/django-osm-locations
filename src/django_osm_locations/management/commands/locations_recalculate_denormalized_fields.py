@@ -7,7 +7,7 @@ from django.utils.text import slugify
 from ...utils.progress import progress
 from ...utils.bulk_writes import relax_durability
 from ...utils.query_log import stop_logging_queries
-from ...utils.recalc_scope import RecalcScope
+from ...utils.recalc_scope import RecalcScope, assigned
 
 from .. import Address, Country, CountrySubarea, Place, PlaceSubarea, Street
 
@@ -329,6 +329,19 @@ class Command(BaseCommand):
                     model_class_to_update.__name__, descendant.__name__,
                     rows, datetime.now() - started))
 
+    #: Fields left as they are when the arrays are emptied, per model.
+    #:
+    #: An address's country is indexed (migration 0042), so emptying it made
+    #: every one of a country's addresses a non-HOT update of all seventeen of
+    #: the table's indexes -- and the inheritance step then wrote it back,
+    #: the same again. For Germany's 20.6 million addresses the two took
+    #: 4h57m and over 12h. Nothing needs it emptied: the inheritance step
+    #: overwrites it for every address inside a place, a fresh import has it
+    #: empty already, and an address outside every place keeps what the last
+    #: run worked out for it. Its place is still emptied -- inheritance
+    #: appends to that one.
+    KEPT_ON_CLEAN = {'Address': ('country',)}
+
     @classmethod
     @transaction.atomic
     def clean_denorm_fields_before_update(cls):
@@ -348,16 +361,27 @@ class Command(BaseCommand):
         """
         for model_class_to_clean in cls.MODEL_CLASSES_TO_CLEAN:
             print("{} - cleaning denorm fields before update...".format(model_class_to_clean.__name__))
+            kept = cls.KEPT_ON_CLEAN.get(model_class_to_clean.__name__, ())
             update_dict = {}
             for field_name in model_class_to_clean.denorm_fields:
-                update_dict[field_name] = []
+                if field_name not in kept:
+                    update_dict[field_name] = []
+            if not update_dict:
+                continue
 
             if hasattr(model_class_to_clean, 'objects_all'):
                 model_class_to_clear_all = model_class_to_clean.objects_all
             else:
                 model_class_to_clear_all = model_class_to_clean.objects
 
-            RecalcScope.filter(model_class_to_clear_all.all()).update(
+            # Only rows with something to empty. A country fresh from its
+            # import has nothing in these yet, and rewriting every row anyway
+            # -- each one through every index on the table -- kept the
+            # Netherlands' 9.9 million addresses busy for over an hour to
+            # change none of them.
+            RecalcScope.filter(model_class_to_clear_all.all()).exclude(
+                **update_dict
+            ).update(
                 **update_dict
             )
 
@@ -418,14 +442,38 @@ class Command(BaseCommand):
         address states: addr:street says which street, addr:city or addr:place
         says which settlement. Geometry only breaks ties -- the nearest street
         of that name, within ADDRESS_MATCH_METRES.
+
+        An address that no place contains takes its country, country subarea
+        and place from that street. Containment is how an address gets them,
+        and a village is a place node with no border, so an address in one is
+        contained by nothing: 1,635,466 of Poland's 8.5 million addresses,
+        418,762 of Austria's, had no country at all, and the per-country index
+        -- which picks rows by country -- left every one of them out. The
+        street has an answer for all three: its own, or failing that the
+        settlement its addresses name, or the nearest place in its country.
         """
+        unplaced = '{} IS NULL'.format(assigned('a'))
         return """
-            UPDATE "locations_address" AS a SET street = x.pair
+            UPDATE "locations_address" AS a SET
+                street = x.pair,
+                country = CASE WHEN {unplaced} THEN x.country ELSE a.country END,
+                countrysubarea = CASE WHEN {unplaced} THEN x.countrysubarea
+                                      ELSE a.countrysubarea END,
+                place = CASE WHEN {unplaced} THEN x.place ELSE a.place END
             FROM (
-                SELECT a2.id, ARRAY[ARRAY[s.name, s.slug]]::varchar[] AS pair
-                FROM "locations_address" a2
+                SELECT a2.id, ARRAY[ARRAY[s.name, s.slug]]::varchar[] AS pair,
+                       s.country, s.countrysubarea, s.place
+                -- OFFSET 0 keeps the filter inside: without it the planner
+                -- ran the lookup below for every row of the table and joined
+                -- the scope afterwards -- 16 million addresses walked for
+                -- Poland's 8.5 million.
+                FROM (
+                    SELECT * FROM "locations_address" a2
+                    WHERE a2.street_name <> '' AND a2.center IS NOT NULL{scope}
+                    OFFSET 0
+                ) a2
                 CROSS JOIN LATERAL (
-                    SELECT name, slug
+                    SELECT name, slug, country, countrysubarea, place
                     FROM "locations_street"
                     WHERE NOT is_merged
                       AND lines && ST_Expand(a2.center, {box})
@@ -435,10 +483,75 @@ class Command(BaseCommand):
                     ORDER BY lines <-> a2.center
                     LIMIT 1
                 ) s
-                WHERE a2.street_name <> '' AND a2.center IS NOT NULL{scope}
             ) AS x
             WHERE a.id = x.id;
-        """.format(box=cls.MATCH_BOX_DEGREES, scope=RecalcScope.sql('address', 'a2'))
+        """.format(box=cls.MATCH_BOX_DEGREES, scope=RecalcScope.sql('address', 'a2'),
+                   unplaced=unplaced)
+
+    #: How many of the nearest places an address outside every place looks
+    #: through for one in its own country. Near a border the nearest few can
+    #: all be across it; 32 is a wide margin for that, and still an index
+    #: walk rather than a scan.
+    NEAREST_PLACES_CONSIDERED = 32
+
+    @classmethod
+    def get_sql_for_address_outside_places(cls):
+        """
+        Place the addresses neither a place nor a street placed.
+
+        Those with no street name, or one no street within reach bears: a
+        farm, a hamlet's houses along an unnamed track. The country is the one
+        whose border contains the address, tested against the borders cut into
+        tiles; the place is the nearest one in that country, within
+        NEAREST_PLACE_KM, as for a street no place contains; the country
+        subarea is that place's. An address beyond any place in reach still
+        gets its country, so the country's index carries it.
+        """
+        return """
+            UPDATE "locations_address" AS a SET
+                country = ARRAY[ARRAY[x.country_name, x.country_slug]]::varchar[],
+                countrysubarea = coalesce(x.countrysubarea, a.countrysubarea),
+                place = coalesce(x.place, a.place)
+            FROM (
+                SELECT a2.id, c.name AS country_name, c.slug AS country_slug,
+                       p.countrysubarea,
+                       ARRAY[ARRAY[p.name, p.slug]]::varchar[] AS place
+                FROM (
+                    SELECT * FROM "locations_address" a2
+                    WHERE {unplaced} AND a2.center IS NOT NULL{scope}
+                    OFFSET 0
+                ) a2
+                CROSS JOIN LATERAL (
+                    SELECT t.country_id FROM "address_country_tiles" t
+                    WHERE t.geom && a2.center AND ST_Intersects(t.geom, a2.center)
+                    LIMIT 1
+                ) t
+                JOIN "locations_country" c ON c.id = t.country_id
+                -- The nearest places first, by the spatial index alone, and
+                -- the country and the distance tested on those. Put in the
+                -- same WHERE, the country let the planner answer from the
+                -- country index instead: every place in the country read and
+                -- sorted for each address, 20 addresses a second for Austria's
+                -- 22,830 places and hopeless for Poland's 533,820.
+                LEFT JOIN LATERAL (
+                    SELECT near.name, near.slug, near.countrysubarea
+                    FROM (
+                        SELECT pl.name, pl.slug, pl.countrysubarea, pl.country, pl.center
+                        FROM "locations_place" pl
+                        WHERE pl.center IS NOT NULL AND NOT pl.is_merged
+                        ORDER BY pl.center <-> a2.center
+                        LIMIT {nearest}
+                    ) near
+                    WHERE {place_country} = c.slug
+                      AND ST_DWithin(near.center::geography, a2.center::geography, %s)
+                    ORDER BY near.center <-> a2.center
+                    LIMIT 1
+                ) p ON true
+            ) AS x
+            WHERE a.id = x.id;
+        """.format(unplaced='{} IS NULL'.format(assigned('a2')),
+                   place_country=assigned('near'), nearest=cls.NEAREST_PLACES_CONSIDERED,
+                   scope=RecalcScope.sql('address', 'a2'))
 
     @classmethod
     def get_sql_for_street_settlement_from_addresses(cls):
@@ -522,15 +635,29 @@ class Command(BaseCommand):
         all 2.8 million against the country borders is the pass inheritance
         exists to avoid.
         """
+        # Against the borders cut into tiles (SQL_FOR_COUNTRY_TILES), not
+        # the borders whole: a join on the whole borders tested each street
+        # against every country in turn, the prepared-geometry cache never
+        # held, and Britain's 537,135-vertex border was re-read per street --
+        # half an hour and counting for one country's strays.
         return """
             UPDATE "locations_street" AS s
             SET country = ARRAY[ARRAY[c.name, c.slug]]::varchar[]
-            FROM "locations_country" c
-            WHERE {placeless}
-              AND s.center IS NOT NULL AND NOT s.is_merged
-              AND c.border IS NOT NULL
-              AND ST_Intersects(s.center, c.border){scope};
-        """.format(placeless=cls.PLACELESS, scope=RecalcScope.sql('street', 's'))
+            FROM (
+                SELECT s2.id, t.country_id
+                FROM "locations_street" s2
+                CROSS JOIN LATERAL (
+                    SELECT t.country_id FROM "address_country_tiles" t
+                    WHERE t.geom && s2.center AND ST_Intersects(t.geom, s2.center)
+                    LIMIT 1
+                ) t
+                WHERE {placeless2}
+                  AND s2.center IS NOT NULL AND NOT s2.is_merged{scope}
+            ) AS m
+            JOIN "locations_country" c ON c.id = m.country_id
+            WHERE s.id = m.id;
+        """.format(placeless2=cls.PLACELESS.replace('s.', 's2.'),
+                   scope=RecalcScope.sql('street', 's2'))
 
     @classmethod
     def get_sql_for_street_place_field(cls):
@@ -555,7 +682,20 @@ class Command(BaseCommand):
             UPDATE "locations_street" AS s SET place = x.pair
             FROM (
                 SELECT s2.id, ARRAY[ARRAY[p.name, p.slug]]::varchar[] AS pair
-                FROM "locations_street" s2
+                -- OFFSET 0 keeps the filter inside: without it the planner
+                -- ran the lookup below for every row of the table and joined
+                -- the scope afterwards -- 16 million addresses walked for
+                -- Poland's 8.5 million.
+                FROM (
+                    SELECT * FROM "locations_street" s2
+                    WHERE s2.center IS NOT NULL{scope}
+                      AND (s2.place IS NULL
+                           OR array_length(s2.place, 1) IS NULL
+                           -- an array holding only the old placeholder is an
+                           -- empty one
+                           OR s2.place = ARRAY[ARRAY['','']]::varchar[])
+                    OFFSET 0
+                ) s2
                 CROSS JOIN LATERAL (
                     SELECT name, slug, center
                     FROM "locations_place" pl
@@ -569,15 +709,7 @@ class Command(BaseCommand):
                     ORDER BY center <-> s2.center
                     LIMIT 1
                 ) p
-                WHERE s2.center IS NOT NULL{scope}
-                  AND (s2.place IS NULL
-                       OR array_length(s2.place, 1) IS NULL
-                       -- mid-walk the arrays still carry the placeholder, and
-                       -- an array holding only ['',''] is an empty one. This
-                       -- has to run before streets are slugged, or the 771,321
-                       -- strays are qualified with no place to qualify by.
-                       OR s2.place = ARRAY[ARRAY['','']]::varchar[])
-                  AND ST_DWithin(p.center::geography, s2.center::geography, %s)
+                WHERE ST_DWithin(p.center::geography, s2.center::geography, %s)
             ) AS x
             WHERE s.id = x.id;
         """.format(scope=RecalcScope.sql('street', 's2'))
@@ -605,13 +737,15 @@ class Command(BaseCommand):
         return """
             UPDATE "locations_address" AS a SET slug = n.slug
             FROM (
-                SELECT id, CASE
+                -- left(): a street slug near the limit plus a house number
+                -- runs past the column
+                SELECT id, left(CASE
                     WHEN street[1][2] IS NOT NULL AND street[1][2] <> ''
                         THEN slugify(street[1][2] || '-' || house_number)
                     WHEN place[1][2] IS NOT NULL AND place[1][2] <> ''
                         THEN slugify(place[1][2] || '-' || house_number)
                     ELSE slugify(name)
-                END AS slug
+                END, 255) AS slug
                 FROM "locations_address" a0
                 WHERE true{scope}
             ) AS n
@@ -729,7 +863,11 @@ class Command(BaseCommand):
                 countrysubarea = m.countrysubarea
             FROM (
                 SELECT s2.id, pl.country, pl.countrysubarea
-                FROM "locations_street" s2
+                FROM (
+                    SELECT * FROM "locations_street" s2
+                    WHERE {slug} IS NOT NULL AND s2.center IS NOT NULL{scope}
+                    OFFSET 0
+                ) s2
                 CROSS JOIN LATERAL (
                     SELECT p.country, p.countrysubarea
                     FROM "locations_place" p
@@ -738,7 +876,6 @@ class Command(BaseCommand):
                     ORDER BY ST_Distance(p.center, s2.center), p.id
                     LIMIT 1
                 ) pl
-                WHERE {slug} IS NOT NULL AND s2.center IS NOT NULL{scope}
             ) AS m
             WHERE s.id = m.id;
         """.format(slug=slug, scope=RecalcScope.sql('street', 's2'))
@@ -761,6 +898,13 @@ class Command(BaseCommand):
         started = datetime.now()
         with connection.cursor() as cursor:
             print("Address - finding the place that contains each address...")
+            # No shared hash for this join. A parallel hash lives in the
+            # dynamic shared memory under /dev/shm, and Germany's 20.6 million
+            # addresses grew it past the container's 1GB in seven seconds:
+            # "could not resize shared memory segment ... No space left on
+            # device". Without it the workers still run in parallel, each
+            # with its own private hash. SET LOCAL ends with the transaction.
+            cursor.execute('SET LOCAL enable_parallel_hash = off')
             cursor.execute(cls.get_sql_for_address_place_map())
             cursor.execute('SELECT count(*) FROM "address_place"')
             matches = cursor.fetchone()[0]
@@ -772,6 +916,31 @@ class Command(BaseCommand):
             cursor.execute(cls.get_sql_for_address_inherited_ancestry())
             print("  {} addresses in {}".format(
                 cursor.rowcount, datetime.now() - inherited))
+
+    #: Country borders cut into tiles, for testing many points against them.
+    #: Norway's border is 1.95 million vertices; a tile is at most 256.
+    SQL_FOR_COUNTRY_TILES = [
+        'DROP TABLE IF EXISTS "address_country_tiles"',
+        'CREATE TEMPORARY TABLE "address_country_tiles" AS '
+        'SELECT id AS country_id, ST_Subdivide(border, 256) AS geom '
+        'FROM "locations_country" WHERE border IS NOT NULL',
+        'CREATE INDEX ON "address_country_tiles" USING gist (geom)',
+        'ANALYZE "address_country_tiles"',
+    ]
+
+    @classmethod
+    @transaction.atomic
+    def place_addresses_outside_places(cls):
+        print("Address - placing those no place or street placed...")
+        started = datetime.now()
+        with connection.cursor() as cursor:
+            for statement in cls.SQL_FOR_COUNTRY_TILES:
+                cursor.execute(statement)
+            cursor.execute(cls.get_sql_for_address_outside_places(),
+                           [cls.NEAREST_PLACE_KM * 1000])
+            placed = cursor.rowcount
+            cursor.execute('DROP TABLE "address_country_tiles"')
+            print("  {} placed in {}".format(placed, datetime.now() - started))
 
     @classmethod
     @transaction.atomic
@@ -802,8 +971,11 @@ class Command(BaseCommand):
             print("  {} from addresses".format(cursor.rowcount))
 
             print("Street - placing the rest in a country by its border...")
+            for statement in cls.SQL_FOR_COUNTRY_TILES:
+                cursor.execute(statement)
             cursor.execute(cls.get_sql_for_placeless_street_country())
             print("  {} placed".format(cursor.rowcount))
+            cursor.execute('DROP TABLE "address_country_tiles"')
 
             print("Street - attaching what is left to the nearest place...")
             cursor.execute(

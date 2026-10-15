@@ -35,8 +35,17 @@ def add_path(hit):
 
 
 def format_hit(hit):
-    """One OpenSearch hit as an API result."""
+    """
+    One OpenSearch hit as an API result.
+
+    Without ``id``: it is the row's primary key in the database the country
+    was built in, and each country is built in a database of its own, so two
+    countries hand out the same ids. A location is identified by its type, its
+    country and its slug -- unique together, and what the detail endpoint
+    looks it up by. The index keeps ``id`` as the document key.
+    """
     source = dict(hit.get('_source') or {})
+    source.pop('id', None)
     source['score'] = hit.get('_score')
     return source
 

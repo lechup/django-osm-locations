@@ -66,6 +66,9 @@ coastline = [
 
 dev = [
     "django-osm-locations[api,search,importers,coastline]",
+    # The package leaves the database driver to the project using it; the test
+    # and local stacks need one.
+    "psycopg2-binary>=2.9",
     "pytest>=7.0",
     "pytest-django>=4.5",
 ]

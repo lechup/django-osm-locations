@@ -4,6 +4,7 @@ from django.contrib.gis.db.models.functions import Distance
 from django.core.management.base import BaseCommand
 from django.db import connection, transaction
 from django.db.models import Count, F, Func, Q
+from django.db.models.functions import Left
 from ...utils.progress import progress
 from ...utils.bulk_writes import relax_durability
 from ...utils.query_log import stop_logging_queries
@@ -11,6 +12,10 @@ from ...utils.recalc_scope import RecalcScope
 
 from .. import Country, CountrySubarea, Place, PlaceSubarea, Street
 from ...utils.slugify import slugify
+
+
+#: The slug column's length; every slug built here is cut to it.
+SLUG_LENGTH = 255
 
 
 class Command(BaseCommand):
@@ -105,7 +110,8 @@ class Command(BaseCommand):
         rows = model_class.objects.all()
         if cls._scoped(model_class):
             rows = RecalcScope.filter(rows)
-        rows.annotate(slugified=Func(F('name'), function='slugify')).update(
+        # Left(), because transliteration can lengthen a name past the column
+        rows.annotate(slugified=Left(Func(F('name'), function='slugify'), SLUG_LENGTH)).update(
             slug=F('slugified')
         )
 
@@ -299,12 +305,21 @@ class Command(BaseCommand):
             if qualifier == base_slug:
                 # 'douglas' in Douglas adds nothing
                 continue
-            candidate = '{}-{}'.format(base_slug, slugify(qualifier))
+            candidate = cls._qualified(base_slug, slugify(qualifier))
             if candidate not in taken:
                 return candidate
 
         osm_id = obj.relation_osm_id or obj.way_osm_id or obj.node_osm_id or obj.id
-        return '{}-{}'.format(base_slug, osm_id)
+        return cls._qualified(base_slug, osm_id)
+
+    @staticmethod
+    def _qualified(base_slug, qualifier):
+        """
+        base-qualifier, within the column: the base gives way, not the
+        qualifier, since the qualifier is what makes it unique.
+        """
+        suffix = '-{}'.format(qualifier)[:SLUG_LENGTH // 2]
+        return base_slug[:SLUG_LENGTH - len(suffix)] + suffix
 
     def handle(self, *args, **options):
         stop_logging_queries(self.stdout)

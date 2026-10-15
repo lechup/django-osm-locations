@@ -282,3 +282,74 @@ class TestASimplerBorderIsAChangeToo:
         """
         assert '%s' not in Clip.sql_for_apply('country')
         assert '%s' not in Clip.sql_for_count('country')
+
+
+@pytest.mark.django_db(transaction=True)
+class TestClippingOneCountry:
+    """
+    Clipping was global, so each import re-clipped every country before it.
+    Norway's clipped border -- 1.95 million vertices -- made that an hour.
+    """
+
+    LAND = 'test_clip_land'
+
+    @pytest.fixture
+    def world(self, settings):
+        from django.contrib.gis.geos import MultiPolygon, Polygon
+        from django.db import connection
+
+        def box(x0, x1, y0=50.0, y1=51.0):
+            return MultiPolygon(Polygon(((x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0))))
+
+        with connection.cursor() as cursor:
+            cursor.execute('DROP TABLE IF EXISTS "{0}"; DROP TABLE IF EXISTS "{0}_subdivided"'.format(self.LAND))
+            # land is everything south of 50.8; north of it is sea
+            cursor.execute(
+                'CREATE TABLE "{}" AS SELECT ST_GeomFromText('
+                "'POLYGON((18 49, 22 49, 22 50.8, 18 50.8, 18 49))', 4326) AS geom".format(self.LAND))
+        settings.LOCATIONS_LAND_POLYGONS_TABLE = self.LAND
+        west = Country.objects.create(name='Westland', slug='westland', iso2='W1', iso3='WS1',
+                                      un=931, border=box(19.0, 20.0))
+        east = Country.objects.create(name='Eastland', slug='eastland', iso2='E1', iso3='ES1',
+                                      un=932, border=box(20.0, 21.0))
+        yield west, east
+        with connection.cursor() as cursor:
+            cursor.execute('DROP TABLE IF EXISTS "{0}"; DROP TABLE IF EXISTS "{0}_subdivided"'.format(self.LAND))
+
+    def clip(self, country=None):
+        from unittest import mock
+        with mock.patch.object(Clip, 'resolve_country', return_value=country):
+            Clip().handle(types=['Country'], table=None, resubdivide=False, dry_run=False,
+                          country='whatever' if country else None)
+
+    def test_only_that_country_is_clipped(self, world):
+        west, east = world
+        self.clip(west)
+        west.refresh_from_db(); east.refresh_from_db()
+        assert west.border.extent[3] == pytest.approx(50.8)
+        assert east.border.extent[3] == pytest.approx(51.0)
+
+    def test_without_it_every_country_is(self, world):
+        west, east = world
+        self.clip()
+        west.refresh_from_db(); east.refresh_from_db()
+        assert west.border.extent[3] == pytest.approx(50.8)
+        assert east.border.extent[3] == pytest.approx(50.8)
+
+    def test_pieces_give_the_whole_borders_answer(self, world):
+        """A border cut before clipping comes back as one, of the same area."""
+        from django.db import connection
+        west, _ = world
+        with connection.cursor() as cursor:
+            # a many-vertex border, so it really is cut into many pieces
+            cursor.execute(
+                "UPDATE locations_country SET border = ST_Multi(ST_Buffer("
+                "ST_SetSRID(ST_MakePoint(19.5, 50.8), 4326), 0.4, 2000)) WHERE id = %s", [west.id])
+            cursor.execute(
+                'SELECT ST_Area(ST_Intersection(border, (SELECT geom FROM "{}"))) '
+                'FROM locations_country WHERE id = %s'.format(self.LAND), [west.id])
+            whole = cursor.fetchone()[0]
+        self.clip(west)
+        west.refresh_from_db()
+        assert west.border.area == pytest.approx(whole, rel=1e-9)
+        assert len(west.border) == 1

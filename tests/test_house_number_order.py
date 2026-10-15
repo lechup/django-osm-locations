@@ -44,6 +44,16 @@ class TestTheSortKey:
         """
         assert BaseImporter._house_number_sort_key(number) is None
 
+    @pytest.mark.parametrize('number,key', [
+        ('2147483647', 2 ** 31 - 1),     # the largest the column holds
+        ('2147483648', None),            # one more no longer fits
+        ('07700900123', None),           # a mobile number in addr:housenumber
+        ('100012345678 Flat 2', None),   # a property reference
+    ])
+    def test_digits_too_long_for_the_column_sort_last(self, number, key):
+        """One of these stopped Britain's import: "integer out of range"."""
+        assert BaseImporter._house_number_sort_key(number) == key
+
     def test_it_is_derived_at_import(self):
         d = BaseImporter._address_defaults(
             {'addr:housenumber': '12a', 'addr:street': 'Łąkowa'})
@@ -118,3 +128,34 @@ class TestTheDefaultForAddresses:
         """/api/addresses/ carries no ?type=; the view passes what it is pinned to."""
         body, _, _ = build_body({'within': 'lakowa-gdansk'}, ['addresses'])
         assert body['sort'] == NUMBER_SORT
+
+
+class TestValuesLongerThanTheirColumns:
+    """
+    Britain's import stopped with "value too long for type character
+    varying(64)": an addr:housenumber listing every flat of a block. One such
+    value fails the whole batch it is written with.
+    """
+
+    def test_a_list_keeps_its_first_number(self):
+        flats = ';'.join(str(n) for n in range(1, 40))
+        d = BaseImporter._address_defaults({'addr:housenumber': flats, 'addr:street': 'High Street'})
+        assert d['house_number'] == '1'
+        assert d['house_number_sort'] == 1
+        assert d['name'] == 'High Street 1'
+
+    def test_a_single_number_is_left_alone(self):
+        d = BaseImporter._address_defaults({'addr:housenumber': '12a', 'addr:street': 'Łąkowa'})
+        assert d['house_number'] == '12a'
+
+    @pytest.mark.parametrize('field,tag,limit', [
+        ('house_number', 'addr:housenumber', 64),
+        ('postcode', 'addr:postcode', 32),
+        ('street_name', 'addr:street', 255),
+        ('settlement_name', 'addr:city', 255),
+    ])
+    def test_every_text_value_fits_its_column(self, field, tag, limit):
+        d = BaseImporter._address_defaults({tag: 'x' * (limit + 50), 'addr:housenumber': '1'}
+                                           if tag != 'addr:housenumber' else {tag: 'x' * (limit + 50)})
+        assert len(d[field]) == limit
+        assert len(d['name']) <= 255

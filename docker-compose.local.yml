@@ -66,6 +66,14 @@ services:
     # than itself. It has happened twice. The cap is the structural fix: what
     # postgres cannot allocate, it cannot take from the desktop.
     mem_limit: 8g
+    # Behind the desktop for CPU and disk as well (cpu.weight and io.weight 21
+    # against the default 100). Weights only matter under contention: alone,
+    # an import runs at full speed; next to someone working, it yields.
+    # blkio weight is Docker's old 10-1000 scale, mapped onto io.weight's
+    # 1-10000, so 12 here is about 21 there -- 100 would be 910, above default.
+    cpu_shares: 128
+    blkio_config:
+      weight: 12
 
   opensearch:
     image: opensearchproject/opensearch:2.18.0
@@ -103,6 +111,10 @@ services:
     # 3g heap plus Lucene's off-heap mmap; see the postgis note on why a
     # container here needs a ceiling at all.
     mem_limit: 6g
+    # behind the desktop, as postgis is
+    cpu_shares: 128
+    blkio_config:
+      weight: 12
 
 volumes:
   postgis-data:

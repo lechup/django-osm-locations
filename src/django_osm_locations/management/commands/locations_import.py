@@ -4,6 +4,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 from .. import Country
 from ...conf import get_data_dir
+from ...utils.extracts import is_stale, merge_extracts
 from ...utils.query_log import stop_logging_queries
 from .importers import get_importer, known_countries
 
@@ -79,10 +80,44 @@ class Command(BaseCommand):
         }
 
     def _download_osm_file(self, country):
-        import requests  # optional: only needed when actually downloading an extract
+        return self._download(self._get_osm_url(country), self._get_osm_file_path(country))
 
-        osm_file = self._get_osm_file_path(country)
-        osm_url = self._get_osm_url(country)
+    def _extra_extracts(self, country):
+        """``(url, local path)`` of every further extract the country needs."""
+        found = []
+        for extra in get_importer(country).extra_extracts:
+            path, _, name = extra.rpartition('/')
+            file_name = self._get_osm_file_name(name)
+            url = self.osm_repository_url % {
+                'country_path': path + '/' if path else '', 'file_name': file_name}
+            found.append((url, os.path.join(self.data_dir, file_name)))
+        return found
+
+    def _merged_osm_file_path(self, country):
+        return os.path.join(self.data_dir, '%s-merged-latest.osm.pbf' % country)
+
+    def _osm_file_to_read(self, country, update=False):
+        """
+        The extract the importer reads: the country's own, or -- when parts of
+        it are in other extracts -- all of them merged into one file.
+        """
+        main = self._get_osm_file_path(country)
+        extras = self._extra_extracts(country)
+        if not extras:
+            return main
+        for url, path in extras:
+            if not os.path.exists(path) or update:
+                self._download(url, path)
+        sources = [main] + [path for _, path in extras]
+        merged = self._merged_osm_file_path(country)
+        if is_stale(merged, sources):
+            print("Merging %s into %s ..." % (', '.join(os.path.basename(p) for p in sources), merged))
+            written = merge_extracts(sources, merged)
+            print("Merged: %d objects.\n" % written)
+        return merged
+
+    def _download(self, osm_url, osm_file):
+        import requests  # optional: only needed when actually downloading an extract
 
         r = requests.head(osm_url)
         if 'content-length' in r.headers:
@@ -152,7 +187,7 @@ class Command(BaseCommand):
                 importer_class = get_importer(osm_repository_country)
                 importer = importer_class(
                     importer_class.country_slug,
-                    self._get_osm_file_path(osm_repository_country),
+                    self._osm_file_to_read(osm_repository_country, options['update']),
                     show_progress=self.show_progress(options),
                 )
 

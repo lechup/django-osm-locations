@@ -20,13 +20,27 @@ been through one, such as those of a fresh import. So a row is in scope when
   nearest country, within ORPHAN_DEGREES.
 
 The last rule cannot pull in a neighbour's rows across a land border: those
-lie inside the neighbour's border, which the second rule's counterpart for the
-neighbour claims first, and the NOT EXISTS below excludes them here.
+lie inside the neighbour's border, so the nearest border to them is at distance
+zero, and the rule takes only rows whose nearest border is further than that.
+
+Both geometric rules run against the borders cut into small tiles, not against
+the borders themselves. Norway's clipped border has millions of vertices, and
+every fresh row tested against it whole -- and measured to every country's
+border in turn to find the nearest -- kept the scope building for half an hour
+before it reached the streets. A tile is a few hundred vertices, found through
+its own index.
 """
 from django.db import connection
 from django.db.models.expressions import RawSQL
 
 TABLE = 'locations_recalc_scope'
+
+#: Every country's border cut into tiles, for the duration of a build.
+TILES = 'locations_recalc_border_tiles'
+
+#: Vertices per tile: ST_Subdivide's own default, and a size at which a
+#: point-in-polygon test is no longer worth measuring.
+TILE_VERTICES = 256
 
 #: How far outside every border an unplaced row may be and still be claimed by
 #: the nearest country: about 5km, enough for a pier or a bridge off a clipped
@@ -48,9 +62,22 @@ PLACED_BY = {
 #: recalculated by the older walk may still hold a placeholder at 1.
 ASSIGNED = "coalesce(nullif(t.country[1][2], ''), t.country[2][2])"
 
-#: A row no recalculation has placed yet.
-UNPLACED = ("(t.country IS NULL OR cardinality(t.country) = 0 "
-            "OR t.country = ARRAY[ARRAY['','']]::varchar[])")
+#: A row no recalculation has placed yet: one whose ASSIGNED is null, which
+#: covers a NULL array, an empty one and the old ['',''] placeholder alike.
+#: Written in terms of ASSIGNED rather than the array's shapes so the index on
+#: that expression (migration 0042) answers it too: listing the fresh rows of
+#: a country otherwise read the whole 12GB address table.
+UNPLACED = '({} IS NULL)'.format(ASSIGNED)
+
+
+def assigned(alias):
+    """ASSIGNED for a table aliased other than t."""
+    return ASSIGNED.replace('t.', alias + '.')
+
+
+def unplaced(alias):
+    """UNPLACED for a table aliased other than t."""
+    return UNPLACED.replace('t.', alias + '.')
 
 
 class RecalcScope:
@@ -72,6 +99,18 @@ class RecalcScope:
 
     @classmethod
     def sql_for_members(cls, model_name, table, country_id):
+        """
+        The three rules as one INSERT, reading the tiles build() made.
+
+        The third rule asks the tile index for the nearest tile: if it is at
+        distance zero the row lies inside some border and the rule is not for
+        it; otherwise the nearest tile's country, within ORPHAN_DEGREES, is the
+        one that claims it.
+
+        Its prefilter box is an uncorrelated subquery, so it is computed once.
+        Written against a joined country row, ST_Expand(c.border) was
+        evaluated per row -- Norway's 31MB border unpacked for every street.
+        """
         placed_by = PLACED_BY[model_name]
         return """
             INSERT INTO "{scope}" (model, id)
@@ -79,31 +118,44 @@ class RecalcScope:
             WHERE c.id = {country_id}
               AND {assigned} = c.slug
             UNION
-            SELECT '{model}', t.id FROM "{table}" t, "locations_country" c
-            WHERE c.id = {country_id} AND c.border IS NOT NULL
-              AND {unplaced}
-              AND {placed_by} && c.border
-              AND ST_Intersects({placed_by}, c.border)
+            SELECT '{model}', t.id FROM "{table}" t
+            WHERE {unplaced}
+              AND EXISTS (
+                  SELECT 1 FROM "{tiles}" b
+                  WHERE b.country_id = {country_id}
+                    AND b.geom && {placed_by}
+                    AND ST_Intersects(b.geom, {placed_by}))
             UNION
-            SELECT '{model}', t.id FROM "{table}" t, "locations_country" c
-            WHERE c.id = {country_id} AND c.border IS NOT NULL
-              AND {unplaced}
-              AND {placed_by} && ST_Expand(c.border, {orphan})
-              AND NOT EXISTS (
-                  SELECT 1 FROM "locations_country" c2
-                  WHERE c2.border IS NOT NULL
-                    AND {placed_by} && c2.border
-                    AND ST_Intersects({placed_by}, c2.border))
-              AND ST_DWithin({placed_by}, c.border, {orphan})
-              AND c.id = (
-                  SELECT c3.id FROM "locations_country" c3
-                  WHERE c3.border IS NOT NULL
-                  ORDER BY ST_Distance(c3.border, {placed_by}), c3.id
-                  LIMIT 1)
+            SELECT '{model}', t.id
+            FROM "{table}" t
+            CROSS JOIN LATERAL (
+                SELECT b.country_id, b.geom FROM "{tiles}" b
+                ORDER BY b.geom <-> {placed_by}
+                LIMIT 1
+            ) n
+            WHERE {unplaced}
+              AND {placed_by} && (
+                  SELECT ST_Expand(ST_Envelope(border), {orphan})
+                  FROM "locations_country" WHERE id = {country_id})
+              AND n.country_id = {country_id}
+              AND NOT ST_Intersects(n.geom, {placed_by})
+              AND ST_DWithin(n.geom, {placed_by}, {orphan})
             ON CONFLICT DO NOTHING;
-        """.format(scope=TABLE, model=model_name, table=table, country_id=int(country_id),
-                   assigned=ASSIGNED, unplaced=UNPLACED, placed_by=placed_by,
-                   orphan=ORPHAN_DEGREES)
+        """.format(scope=TABLE, tiles=TILES, model=model_name, table=table,
+                   country_id=int(country_id), assigned=ASSIGNED, unplaced=UNPLACED,
+                   placed_by=placed_by, orphan=ORPHAN_DEGREES)
+
+    @classmethod
+    def sql_for_tiles(cls):
+        return [
+            'DROP TABLE IF EXISTS "{}"'.format(TILES),
+            'CREATE TEMPORARY TABLE "{tiles}" AS '
+            'SELECT id AS country_id, ST_Subdivide(border, {n}) AS geom '
+            'FROM "locations_country" WHERE border IS NOT NULL'.format(
+                tiles=TILES, n=TILE_VERTICES),
+            'CREATE INDEX ON "{}" USING gist (geom)'.format(TILES),
+            'ANALYZE "{}"'.format(TILES),
+        ]
 
     @classmethod
     def build(cls, country, models, report=None):
@@ -118,11 +170,14 @@ class RecalcScope:
             cursor.execute(
                 'CREATE UNLOGGED TABLE "{}" (model varchar(32) NOT NULL, id integer NOT NULL, '
                 'PRIMARY KEY (model, id))'.format(TABLE))
+            for statement in cls.sql_for_tiles():
+                cursor.execute(statement)
             for model in models:
                 name = model.__name__.lower()
                 cursor.execute(cls.sql_for_members(name, model._meta.db_table, country.id))
                 if report:
                     report('  {}: {} rows in {}'.format(model.__name__, cursor.rowcount, country.name))
+            cursor.execute('DROP TABLE "{}"'.format(TILES))
             cursor.execute('ANALYZE "{}"'.format(TABLE))
         cls.country = country
 

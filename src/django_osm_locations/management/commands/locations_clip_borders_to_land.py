@@ -33,6 +33,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import connection, transaction
 
 from .. import Country, CountrySubarea, Place, PlaceSubarea
+from ...utils.recalc_scope import assigned, unplaced
 
 #: Tiles bigger than this cost more to intersect than they save.
 SUBDIVIDE_VERTICES = 256
@@ -117,6 +118,12 @@ class Command(BaseCommand):
             '--dry-run', action='store_true', default=False,
             help='Report what would change without writing anything.',
         )
+        parser.add_argument(
+            '--country', default=None,
+            help="Clip only this country's borders, by importer name (norway). "
+                 "Its own row, rows a recalculation already gave it, and fresh "
+                 "rows around it -- what a country's import has just added.",
+        )
 
     @classmethod
     def selected_model_classes(cls, names):
@@ -169,30 +176,68 @@ class Command(BaseCommand):
         ]
 
     @classmethod
-    def sql_for_clip(cls, model_name, table):
+    def sql_for_clip(cls, model_name, table, country_id=None):
         """
         Build the clipped geometry for every border, into a staging table.
 
         ST_CollectionExtract takes the polygons only: where a border merely
         grazes a tile edge the intersection is a point or a line, and a union
         containing those is a GeometryCollection the column will not accept.
+
+        The border is cut into pieces before it meets the land tiles, as the
+        land itself is. Intersecting whole borders made each land tile read the
+        entire border it overlapped: harmless for a gmina, but Norway's clipped
+        border is 1.95 million vertices over 118,373 islands, and the land
+        tiles in its bounding box number in the thousands. Re-clipping the
+        countries after Finland's import ran for an hour without finishing.
+        The union of the pieces' intersections is the intersection of the
+        whole, so the answer is the same.
         """
         return """
             DROP TABLE IF EXISTS "{staging}";
             CREATE TEMPORARY TABLE "{staging}" AS
             SELECT loc.id,
                    ST_Multi(ST_CollectionExtract(
-                       ST_Union(ST_Intersection(loc.border, land.geom)), 3
+                       ST_Union(ST_Intersection(loc.piece, land.geom)), 3
                    ))::geometry(MultiPolygon, 4326) AS border
-            FROM "locations_{model_name}" loc
-            JOIN "{subdivided}" land ON loc.border && land.geom
-            WHERE loc.border IS NOT NULL
-            GROUP BY loc.id, loc.border;
+            FROM (
+                SELECT loc.id, ST_Subdivide(loc.border, {vertices}) AS piece
+                FROM "locations_{model_name}" loc
+                WHERE loc.border IS NOT NULL{scope}
+            ) loc
+            JOIN "{subdivided}" land ON loc.piece && land.geom
+            GROUP BY loc.id;
         """.format(
             staging=cls.staging_name(model_name),
             model_name=model_name,
             subdivided=cls.subdivided_name(table),
+            vertices=SUBDIVIDE_VERTICES,
+            scope=cls.sql_for_scope(model_name, country_id),
         )
+
+    @staticmethod
+    def sql_for_scope(model_name, country_id):
+        """
+        Which rows a --country clip takes, as an AND clause; nothing without one.
+
+        The country's own row, and for the rest: rows a recalculation already
+        placed in it, and rows no recalculation has placed yet whose border
+        overlaps the country's box -- which, run straight after an import, is
+        the import. Unlike the recalculation's scope this needs no exact
+        containment: clipping a neighbour's fresh row too does it no harm.
+        """
+        if country_id is None:
+            return ''
+        country_id = int(country_id)
+        if model_name == 'country':
+            return ' AND loc.id = {}'.format(country_id)
+        return """
+                  AND (
+                      {assigned} = (SELECT slug FROM "locations_country" WHERE id = {id})
+                   OR ({unplaced} AND loc.border && (
+                          SELECT ST_Envelope(border) FROM "locations_country"
+                          WHERE id = {id}))
+                  )""".format(assigned=assigned('loc'), unplaced=unplaced('loc'), id=country_id)
 
     @staticmethod
     def staging_name(model_name):
@@ -286,6 +331,15 @@ class Command(BaseCommand):
             for statement in self.sql_for_subdivide(table):
                 cursor.execute(statement)
 
+    @staticmethod
+    def resolve_country(name):
+        """The Country row for an importer's name, as the recalculation does it."""
+        if not name:
+            return None
+        from .locations_recalculate_all import Command as RecalculateAll
+
+        return RecalculateAll._resolve_country(name)
+
     def handle(self, *args, **options):
         table = options.get('table') or land_polygons_table()
         if not table:
@@ -300,14 +354,18 @@ class Command(BaseCommand):
 
         model_classes = self.selected_model_classes(options.get('types'))
         dry_run = options.get('dry_run')
+        country = self.resolve_country(options.get('country'))
+        country_id = country.id if country else None
         self.ensure_subdivided(table, options.get('resubdivide'))
+        if country is not None:
+            self.stdout.write('clipping {} only'.format(country.name))
 
         for model_class in model_classes:
             model_name = model_class.__name__.lower()
             self.stdout.write('{} - clipping borders to land...'.format(model_class.__name__))
             with transaction.atomic():
                 with connection.cursor() as cursor:
-                    cursor.execute(self.sql_for_clip(model_name, table))
+                    cursor.execute(self.sql_for_clip(model_name, table, country_id))
                     cursor.execute(self.sql_for_count(model_name))
                     changed = cursor.fetchone()[0]
                     if dry_run:

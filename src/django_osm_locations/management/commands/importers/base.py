@@ -9,7 +9,7 @@ from django.conf import settings
 from django.contrib.gis.geos import MultiLineString, LineString, Polygon, Point, MultiPolygon
 from django.contrib.gis.geos.error import GEOSException
 from django.contrib.postgres.aggregates.general import ArrayAgg
-from django.db import transaction
+from django.db import connection, transaction
 from django.contrib.gis.db.models.aggregates import Union
 from django.db.models import Count, Min
 from tqdm import tqdm
@@ -156,6 +156,10 @@ class BatchUpserter:
     maintain.
     """
 
+    #: Rows created before the table's statistics are first refreshed; after
+    #: that, each time the count doubles.
+    ANALYZE_FROM = 10000
+
     def __init__(self, model, lookup_field, batch_size=1000):
         self.model = model
         self.lookup_field = lookup_field
@@ -163,6 +167,7 @@ class BatchUpserter:
         self._pending = {}
         self.created = 0
         self.updated = 0
+        self._analyzed_at = 0
 
     @property
     def derived_fields(self):
@@ -213,6 +218,26 @@ class BatchUpserter:
                 fields = sorted(changed_fields | self.derived_fields)
                 self.model.objects.bulk_update(to_update, fields, batch_size=self.batch_size)
                 self.updated += len(to_update)
+        self._refresh_statistics()
+
+    def _refresh_statistics(self):
+        """
+        Tell the planner how big the table has grown.
+
+        A country's own database starts from a template whose tables were
+        never analysed, and the whole import is one transaction, so autovacuum
+        never sees a row of it. Without statistics a lookup of 1,000 ids is
+        estimated at a million rows and planned as a sequential scan: every
+        batch read the whole table, and the Netherlands' addresses slowed to
+        940,000 an hour by the eighth million. ANALYZE inside the transaction
+        counts the rows it inserted, so the lookups go back to the index.
+        """
+        if self.created < max(self.ANALYZE_FROM, 2 * self._analyzed_at):
+            return
+        if connection.vendor == 'postgresql':
+            with connection.cursor() as cursor:
+                cursor.execute('ANALYZE "{}"'.format(self.model._meta.db_table))
+        self._analyzed_at = self.created
 
 
 #: ``name:<suffix>`` keys that are not languages at all.
@@ -264,6 +289,10 @@ class BaseImporter(object):
     #: doubles as the name typed on the command line.
     geofabrik_name = None
     geofabrik_path = 'europe/'
+    #: Further extracts holding parts of the country, as ``path/name`` --
+    #: ``'africa/canary-islands'`` for Spain. They are merged with the main
+    #: one into a single file before the import reads it.
+    extra_extracts = ()
     country_name = None
     country_slug = None
     iso2 = None
@@ -934,6 +963,10 @@ class BaseImporter(object):
     #: Digits at the start of a house number, whatever follows them.
     HOUSE_NUMBER_LEADING_DIGITS = re.compile(r'^\s*(\d+)')
 
+    #: The largest value house_number_sort holds: a 32-bit integer, in
+    #: PostgreSQL and in the OpenSearch mapping alike.
+    HOUSE_NUMBER_SORT_MAX = 2 ** 31 - 1
+
     @classmethod
     def _house_number_sort_key(cls, number):
         """
@@ -957,9 +990,17 @@ class BaseImporter(object):
         need it. The remainder is not house numbers -- units, landmarks,
         Finnish stairwells -- and stripping a leading letter would misplace
         them (A4 in France is a road), so they sort last instead.
+
+        So do digits too long to be a house number -- a phone number or a
+        property reference typed into addr:housenumber. The column and the
+        index field are 32-bit, and one such value stopped Britain's import
+        with "integer out of range".
         """
         match = cls.HOUSE_NUMBER_LEADING_DIGITS.match(number or '')
-        return int(match.group(1)) if match else None
+        if not match:
+            return None
+        key = int(match.group(1))
+        return key if key <= cls.HOUSE_NUMBER_SORT_MAX else None
 
     @classmethod
     def _address_defaults(cls, tags):
@@ -971,8 +1012,8 @@ class BaseImporter(object):
         """
         street = tags.get('addr:street') or ''
         settlement = tags.get('addr:city') or tags.get('addr:place') or ''
-        number = tags.get('addr:housenumber')
-        return {
+        number = cls._fit_house_number(tags.get('addr:housenumber'))
+        return cls._fit_to_columns(Address, {
             'name': '{} {}'.format(street or settlement, number).strip(),
             'names': language_names(tags),
             'house_number': number,
@@ -980,7 +1021,41 @@ class BaseImporter(object):
             'street_name': street,
             'settlement_name': settlement,
             'postcode': tags.get('addr:postcode') or '',
-        }
+        })
+
+    @staticmethod
+    def _fit_house_number(number):
+        """
+        One house number where the tag lists several.
+
+        addr:housenumber is meant to be one number, and OSM separates a list
+        with ";". Britain carries lists long enough to overflow the 64
+        characters the column holds -- every flat of a block, one by one --
+        and one of them stopped the import with "value too long". Its first
+        number is the one the address is found by; the rest would be cut at
+        an arbitrary character anyway.
+        """
+        if number and ';' in number:
+            first = number.split(';', 1)[0].strip()
+            return first or number
+        return number
+
+    @staticmethod
+    def _fit_to_columns(model, values):
+        """
+        Cut each text value to its column's length.
+
+        Free-text tags have no length limit in OSM and the columns do. One
+        value too long fails the whole batch of thousands it is written with,
+        so a value is shortened rather than lost along with its neighbours.
+        """
+        for field_name, value in values.items():
+            if not isinstance(value, str):
+                continue
+            limit = getattr(model._meta.get_field(field_name), 'max_length', None)
+            if limit and len(value) > limit:
+                values[field_name] = value[:limit]
+        return values
 
     @classmethod
     def _get_multipolygon_from_multiline(cls, multiline):

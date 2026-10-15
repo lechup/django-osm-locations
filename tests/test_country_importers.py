@@ -7,12 +7,44 @@ one of these also contains slices of its neighbours.
 """
 import pytest
 
+from django_osm_locations.management.commands.importers.austria import AustriaImporter
+from django_osm_locations.management.commands.importers.belgium import BelgiumImporter
+from django_osm_locations.management.commands.importers.czechia import CzechiaImporter
 from django_osm_locations.management.commands.importers.denmark import DenmarkImporter
 from django_osm_locations.management.commands.importers.france import FranceImporter
 from django_osm_locations.management.commands.importers.finland import FinlandImporter
+from django_osm_locations.management.commands.importers.ireland import IrelandImporter
+from django_osm_locations.management.commands.importers.italy import ItalyImporter
 from django_osm_locations.management.commands.importers.netherlands import NetherlandsImporter
 from django_osm_locations.management.commands.importers.norway import NorwayImporter
+from django_osm_locations.management.commands.importers.portugal import PortugalImporter
+from django_osm_locations.management.commands.importers.romania import RomaniaImporter
+from django_osm_locations.management.commands.importers.spain import SpainImporter
+from django_osm_locations.management.commands.importers.sweden import SwedenImporter
+from django_osm_locations.management.commands.importers.switzerland import SwitzerlandImporter
 from django_osm_locations.management.commands.importers.united_kingdom import UnitedKingdomImporter
+from django_osm_locations.management.commands.importers.bulgaria import BulgariaImporter
+from django_osm_locations.management.commands.importers.greece import GreeceImporter
+from django_osm_locations.management.commands.importers.hungary import HungaryImporter
+from django_osm_locations.management.commands.importers.serbia import SerbiaImporter
+from django_osm_locations.management.commands.importers.slovakia import SlovakiaImporter
+from django_osm_locations.management.commands.importers.slovenia import SloveniaImporter
+from django_osm_locations.management.commands.importers.croatia import CroatiaImporter
+from django_osm_locations.management.commands.importers.luxembourg import LuxembourgImporter
+from django_osm_locations.management.commands.importers.lithuania import LithuaniaImporter
+from django_osm_locations.management.commands.importers.latvia import LatviaImporter
+from django_osm_locations.management.commands.importers.estonia import EstoniaImporter
+from django_osm_locations.management.commands.importers.cyprus import CyprusImporter
+from django_osm_locations.management.commands.importers.iceland import IcelandImporter
+from django_osm_locations.management.commands.importers.albania import AlbaniaImporter
+from django_osm_locations.management.commands.importers.malta import MaltaImporter
+from django_osm_locations.management.commands.importers.north_macedonia import NorthMacedoniaImporter
+from django_osm_locations.management.commands.importers.montenegro import MontenegroImporter
+from django_osm_locations.management.commands.importers.belarus import BelarusImporter
+from django_osm_locations.management.commands.importers.bosnia_herzegovina import BosniaHerzegovinaImporter
+from django_osm_locations.management.commands.importers.moldova import MoldovaImporter
+from django_osm_locations.management.commands.importers.kosovo import KosovoImporter
+from django_osm_locations.management.commands.importers.ukraine import UkraineImporter
 from django_osm_locations.management.commands.importers.nordic import AdminLevelImporter
 
 ADMIN = {'boundary': 'administrative', 'name': 'Somewhere'}
@@ -37,6 +69,57 @@ class TestLevelsPerCountry:
         (UnitedKingdomImporter, ('4', '5', '6', '7'), ('8',), ('9', '10')),
         # France: regions and departements, then 35,099 communes
         (FranceImporter, ('4', '6'), ('8',), ('9', '10', '11')),
+        # Sweden: län, 290 kommuner, stadsdelar; the sparse distrikt at 8 left out
+        (SwedenImporter, ('4',), ('7',), ('9', '10')),
+        # Switzerland: cantons, Bern's regions, districts, then Gemeinden
+        (SwitzerlandImporter, ('4', '5', '6'), ('8',), ('9', '10')),
+        # Austria: Länder and Bezirke, Gemeinden, city districts; no Katastralgemeinden
+        (AustriaImporter, ('4', '6'), ('8',), ('9',)),
+        # Belgium: regions, provinces, arrondissements; gemeenten; deelgemeenten
+        (BelgiumImporter, ('4', '6', '7'), ('8',), ('9',)),
+        # Czechia: kraje and okresy, obce, city districts and části obce
+        (CzechiaImporter, ('4', '5'), ('8',), ('9', '10')),
+        # Portugal: autonomous regions and distritos, concelhos, freguesias
+        (PortugalImporter, ('4', '6'), ('7',), ('8',)),
+        # Romania: județe, municipalities and communes, Bucharest's sectors
+        (RomaniaImporter, ('4',), ('8',), ('9', '10')),
+        # Ireland: provinces to municipal districts; towns are nodes; townlands
+        (IrelandImporter, ('5', '6', '7', '8'), (), ('10',)),
+        # Italy: regioni and province, comuni, then zone, municipi, quartieri
+        (ItalyImporter, ('4', '6'), ('8',), ('9', '10', '11')),
+        # Spain: comunidades and provincias, municipios, then below them
+        (SpainImporter, ('4', '6'), ('8',), ('9', '10', '11')),
+        # Greece: Athos, administrations, regions, units; dimoi; their parts
+        (GreeceImporter, ('3', '4', '5', '6'), ('7',), ('8', '9', '10')),
+        # Hungary: megyék and járások, municipalities, kerületek and below
+        (HungaryImporter, ('6', '7'), ('8',), ('9', '10', '11')),
+        # Slovakia: kraje and okresy; obce, and Bratislava and Košice at 5
+        (SlovakiaImporter, ('4', '6'), ('5', '8'), ('9', '10', '11')),
+        # Bulgaria: oblasti, obshtini, Sofia's raioni; settlements; quarters
+        (BulgariaImporter, ('4', '5', '6'), ('8',), ('9', '10')),
+        # Serbia: everything down to opštine is a division; naselja are places
+        (SerbiaImporter, ('4', '6', '7', '8'), ('9',), ('10',)),
+        # Slovenia: no region covers the country; občine; naselja
+        (SloveniaImporter, (), ('8',), ('9', '10')),
+        (CroatiaImporter, ('4', '7'), ('8',), ('9', '10')),
+        (LuxembourgImporter, ('6',), ('8',), ('9', '10')),
+        (LithuaniaImporter, ('4', '5', '6'), ('8',), ('10',)),
+        # Latvia: pagasti are territory, so a division; towns at 7
+        (LatviaImporter, ('5', '8'), ('7',), ('9', '10')),
+        (EstoniaImporter, ('6', '7'), ('8', '9'), ('10',)),
+        # Cyprus: the whole island; northern municipalities and villages
+        (CyprusImporter, ('3', '5', '6'), ('7', '8'), ('9',)),
+        (IcelandImporter, ('5',), ('6',), ('8', '9', '10')),
+        (AlbaniaImporter, ('6', '7'), ('8',), ('9', '10')),
+        (MaltaImporter, ('7',), ('8',), ('10',)),
+        (NorthMacedoniaImporter, ('6', '7'), ('8',), ('9',)),
+        (MontenegroImporter, ('6',), ('8',), ('9',)),
+        # Belarus: sel'savety at 8 are territory; settlements at 10
+        (BelarusImporter, ('4', '6', '8'), ('10',), ('9',)),
+        (BosniaHerzegovinaImporter, ('4', '5', '6', '7'), ('9',), ('8', '10', '11')),
+        # Moldova: Transnistria and Gagauzia kept as divisions
+        (MoldovaImporter, ('3', '4', '5'), ('8',), ('7', '9')),
+        (KosovoImporter, ('5', '6'), ('8',), ('9', '10')),
     ])
     def test_levels(self, importer, subareas, places, subplaces):
         assert importer.countrysubarea_levels == subareas
@@ -45,7 +128,14 @@ class TestLevelsPerCountry:
 
     @pytest.mark.parametrize('importer', [
         DenmarkImporter, NorwayImporter, FinlandImporter, NetherlandsImporter,
-        UnitedKingdomImporter, FranceImporter,
+        UnitedKingdomImporter, FranceImporter, SwedenImporter, SwitzerlandImporter,
+        AustriaImporter, BelgiumImporter, CzechiaImporter, PortugalImporter, RomaniaImporter,
+        IrelandImporter, ItalyImporter, SpainImporter, GreeceImporter, HungaryImporter,
+        SlovakiaImporter, BulgariaImporter, SerbiaImporter, SloveniaImporter,
+        CroatiaImporter, LuxembourgImporter, LithuaniaImporter, LatviaImporter,
+        EstoniaImporter, CyprusImporter, IcelandImporter, AlbaniaImporter, MaltaImporter,
+        NorthMacedoniaImporter, MontenegroImporter, BelarusImporter,
+        BosniaHerzegovinaImporter, MoldovaImporter, KosovoImporter,
     ])
     def test_a_level_is_never_two_things_at_once(self, importer):
         levels = (importer.countrysubarea_levels + importer.place_levels
@@ -143,6 +233,55 @@ class TestSharedBase:
         assert AdminLevelImporter._is_relation_place(1, admin('8'), []) is False
 
 
+class TestUkraine:
+    """The place tag, not the level, says what a Ukrainian boundary is."""
+
+    def test_a_city_at_any_level_is_a_place(self):
+        for level in ('8', '9', '10', '11'):
+            assert UkraineImporter._is_relation_place(1, admin(level, place='city'), [])
+
+    def test_a_city_raion_at_the_same_level_is_part_of_one(self):
+        raion = admin('10', place='borough')
+        assert not UkraineImporter._is_relation_place(1, raion, [])
+        assert UkraineImporter._is_relation_placesubarea(1, raion, [])
+
+    def test_a_settlement_is_never_also_part_of_one(self):
+        assert not UkraineImporter._is_relation_placesubarea(1, admin('9', place='village'), [])
+
+    def test_allotments_are_neither(self):
+        plots = admin('10', place='allotments')
+        assert not UkraineImporter._is_relation_place(1, plots, [])
+        assert not UkraineImporter._is_relation_placesubarea(1, plots, [])
+
+    def test_the_russian_divisions_of_occupied_areas_are_left_out(self):
+        for tags in (admin('4', **{'disputed_by': 'UA'}),
+                     admin('8', **{'addr:country': 'RU'}),
+                     admin('9', place='town', **{'addr:country': 'RU'})):
+            assert not UkraineImporter._is_relation_countrysubarea(1, tags, [])
+            assert not UkraineImporter._is_relation_place(1, tags, [])
+
+    def test_the_tags_that_tell_them_apart_survive_the_parse(self):
+        """The parse drops every tag not on the list; these were not on it."""
+
+        class Relation:
+            tags = [type('Tag', (), {'k': k, 'v': v}) for k, v in (
+                ('name', 'Республика Крым'), ('admin_level', '4'),
+                ('boundary', 'administrative'), ('addr:country', 'RU'),
+                ('disputed_by', 'UA'))]
+
+        tags = UkraineImporter._tags_to_dict(Relation)
+        assert not UkraineImporter._is_relation_countrysubarea(1, tags, [])
+
+    def test_other_countries_do_not_carry_them(self):
+        from django_osm_locations.management.commands.importers.base import BaseImporter
+
+        assert 'disputed_by' not in BaseImporter.whitelist_tags
+
+    def test_the_ukrainian_ones_disputed_by_russia_are_kept(self):
+        crimea = admin('4', **{'disputed_by': 'RU', 'is_in:country_code': 'UA'})
+        assert UkraineImporter._is_relation_countrysubarea(1, crimea, [])
+
+
 class TestRegistry:
     """
     Adding a country is one file. The class says which extract it reads and
@@ -154,8 +293,14 @@ class TestRegistry:
         from django_osm_locations.management.commands.importers import known_countries
 
         assert known_countries() == [
-            'denmark', 'finland', 'france', 'germany', 'isle-of-man',
-            'netherlands', 'norway', 'poland', 'united-kingdom',
+            'albania', 'austria', 'belarus', 'belgium', 'bosnia-herzegovina', 'bulgaria',
+            'croatia', 'cyprus', 'czech-republic', 'denmark', 'estonia', 'finland',
+            'france', 'germany', 'greece', 'hungary', 'iceland',
+            'ireland-and-northern-ireland', 'isle-of-man', 'italy', 'kosovo', 'latvia',
+            'lithuania', 'luxembourg', 'macedonia', 'malta', 'moldova', 'montenegro',
+            'netherlands', 'norway', 'poland', 'portugal', 'romania', 'serbia',
+            'slovakia', 'slovenia', 'spain', 'sweden', 'switzerland', 'ukraine',
+            'united-kingdom',
         ]
 
     def test_shared_machinery_is_not_mistaken_for_a_country(self):
@@ -184,6 +329,19 @@ class TestRegistry:
 
         url = Command()._get_osm_url('denmark')
         assert url.endswith('europe/denmark-latest.osm.pbf')
+
+    def test_an_extra_extract_is_downloaded_from_its_own_continent(self, tmp_path, settings):
+        from django_osm_locations.management.commands.locations_import import Command
+
+        settings.LOCATIONS_DATA_DIR = str(tmp_path)
+        (url, path), = Command()._extra_extracts('spain')
+        assert url.endswith('/africa/canary-islands-latest.osm.pbf')
+        assert path == str(tmp_path / 'canary-islands-latest.osm.pbf')
+
+    def test_most_countries_need_one_extract(self):
+        from django_osm_locations.management.commands.locations_import import Command
+
+        assert Command()._extra_extracts('portugal') == []
 
     def test_an_unknown_name_is_simply_absent(self):
         from django_osm_locations.management.commands.importers import get_importer
