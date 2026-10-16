@@ -21,7 +21,11 @@ def _importer_modules():
 
 def registry():
     """
-    ``{geofabrik name: importer class}`` for every country that declares itself.
+    ``{name: importer class}`` for every country that declares itself.
+
+    The name is the Geofabrik extract's, unless the class says otherwise:
+    San Marino and the Vatican have no extract of their own and read Italy's,
+    so they need a name of their own beside it.
 
     Built by walking this package, so a new module is picked up with no edit
     anywhere else.
@@ -34,12 +38,12 @@ def registry():
                     and attribute.geofabrik_name
                     # the class must be defined here, not imported into it
                     and attribute.__module__ == module.__name__):
-                found[attribute.geofabrik_name] = attribute
+                found[attribute.name or attribute.geofabrik_name] = attribute
     return found
 
 
 def get_importer(name):
-    """The importer for a Geofabrik name, or None."""
+    """The importer for a country's name, or None."""
     return registry().get(name)
 
 

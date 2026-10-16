@@ -4,7 +4,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 from .. import Country
 from ...conf import get_data_dir
-from ...utils.extracts import is_stale, merge_extracts
+from ...utils.extracts import cut_extract, is_stale, merge_extracts
 from ...utils.query_log import stop_logging_queries
 from .importers import get_importer, known_countries
 
@@ -67,16 +67,21 @@ class Command(BaseCommand):
         os.makedirs(data_dir, exist_ok=True)
         return data_dir
 
+    @staticmethod
+    def _extract_name(country):
+        """The Geofabrik extract a country is read from: San Marino's is Italy's."""
+        return get_importer(country).geofabrik_name
+
     def _get_osm_file_path(self, country):
         return os.path.join(
             self.data_dir,
-            self._get_osm_file_name(country)
+            self._get_osm_file_name(self._extract_name(country))
         )
 
     def _get_osm_url(self, country):
         return self.osm_repository_url % {
             'country_path': get_importer(country).geofabrik_path,
-            'file_name': self._get_osm_file_name(country)
+            'file_name': self._get_osm_file_name(self._extract_name(country))
         }
 
     def _download_osm_file(self, country):
@@ -102,6 +107,14 @@ class Command(BaseCommand):
         it are in other extracts -- all of them merged into one file.
         """
         main = self._get_osm_file_path(country)
+        bbox = get_importer(country).extract_bbox
+        if bbox:
+            cut = os.path.join(self.data_dir, '%s-cut-latest.osm.pbf' % country)
+            if is_stale(cut, [main]):
+                print("Cutting %s out of %s ..." % (country, os.path.basename(main)))
+                written = cut_extract(main, bbox, cut)
+                print("Cut: %d objects.\n" % written)
+            return cut
         extras = self._extra_extracts(country)
         if not extras:
             return main

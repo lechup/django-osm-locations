@@ -45,6 +45,15 @@ from django_osm_locations.management.commands.importers.bosnia_herzegovina impor
 from django_osm_locations.management.commands.importers.moldova import MoldovaImporter
 from django_osm_locations.management.commands.importers.kosovo import KosovoImporter
 from django_osm_locations.management.commands.importers.ukraine import UkraineImporter
+from django_osm_locations.management.commands.importers.andorra import AndorraImporter
+from django_osm_locations.management.commands.importers.monaco import MonacoImporter
+from django_osm_locations.management.commands.importers.liechtenstein import LiechtensteinImporter
+from django_osm_locations.management.commands.importers.georgia import GeorgiaImporter
+from django_osm_locations.management.commands.importers.armenia import ArmeniaImporter
+from django_osm_locations.management.commands.importers.azerbaijan import AzerbaijanImporter
+from django_osm_locations.management.commands.importers.san_marino import SanMarinoImporter
+from django_osm_locations.management.commands.importers.vatican import VaticanImporter
+from django_osm_locations.management.commands.importers.turkey import TurkeyImporter
 from django_osm_locations.management.commands.importers.nordic import AdminLevelImporter
 
 ADMIN = {'boundary': 'administrative', 'name': 'Somewhere'}
@@ -120,6 +129,19 @@ class TestLevelsPerCountry:
         # Moldova: Transnistria and Gagauzia kept as divisions
         (MoldovaImporter, ('3', '4', '5'), ('8',), ('7', '9')),
         (KosovoImporter, ('5', '6'), ('8',), ('9', '10')),
+        (AndorraImporter, (), ('7',), ()),
+        (MonacoImporter, (), ('8',), ('10',)),
+        (LiechtensteinImporter, ('6',), ('8',), ()),
+        # Georgia: Abkhazia and South Ossetia kept as divisions
+        (GeorgiaImporter, ('3', '4', '6'), ('8',), ('10',)),
+        # Armenia: settlements at three levels, all of them places
+        (ArmeniaImporter, ('4', '5'), ('6', '7', '8'), ('10',)),
+        # Azerbaijan: no settlement has a boundary
+        (AzerbaijanImporter, ('4', '6', '7', '8'), (), ()),
+        (SanMarinoImporter, (), ('8',), ('9',)),
+        (VaticanImporter, (), (), ()),
+        # Turkey: iller; an ilçe is the place; mahalleler and köyler below
+        (TurkeyImporter, ('4',), ('6',), ('7', '8', '9', '10')),
     ])
     def test_levels(self, importer, subareas, places, subplaces):
         assert importer.countrysubarea_levels == subareas
@@ -135,7 +157,9 @@ class TestLevelsPerCountry:
         CroatiaImporter, LuxembourgImporter, LithuaniaImporter, LatviaImporter,
         EstoniaImporter, CyprusImporter, IcelandImporter, AlbaniaImporter, MaltaImporter,
         NorthMacedoniaImporter, MontenegroImporter, BelarusImporter,
-        BosniaHerzegovinaImporter, MoldovaImporter, KosovoImporter,
+        BosniaHerzegovinaImporter, MoldovaImporter, KosovoImporter, AndorraImporter,
+        MonacoImporter, LiechtensteinImporter, GeorgiaImporter, ArmeniaImporter,
+        AzerbaijanImporter, SanMarinoImporter, VaticanImporter, TurkeyImporter,
     ])
     def test_a_level_is_never_two_things_at_once(self, importer):
         levels = (importer.countrysubarea_levels + importer.place_levels
@@ -293,14 +317,15 @@ class TestRegistry:
         from django_osm_locations.management.commands.importers import known_countries
 
         assert known_countries() == [
-            'albania', 'austria', 'belarus', 'belgium', 'bosnia-herzegovina', 'bulgaria',
-            'croatia', 'cyprus', 'czech-republic', 'denmark', 'estonia', 'finland',
-            'france', 'germany', 'greece', 'hungary', 'iceland',
-            'ireland-and-northern-ireland', 'isle-of-man', 'italy', 'kosovo', 'latvia',
-            'lithuania', 'luxembourg', 'macedonia', 'malta', 'moldova', 'montenegro',
-            'netherlands', 'norway', 'poland', 'portugal', 'romania', 'serbia',
-            'slovakia', 'slovenia', 'spain', 'sweden', 'switzerland', 'ukraine',
-            'united-kingdom',
+            'albania', 'andorra', 'armenia', 'austria', 'azerbaijan', 'belarus',
+            'belgium', 'bosnia-herzegovina', 'bulgaria', 'croatia', 'cyprus',
+            'czech-republic', 'denmark', 'estonia', 'finland', 'france', 'georgia',
+            'germany', 'greece', 'hungary', 'iceland', 'ireland-and-northern-ireland',
+            'isle-of-man', 'italy', 'kosovo', 'latvia', 'liechtenstein', 'lithuania',
+            'luxembourg', 'macedonia', 'malta', 'moldova', 'monaco', 'montenegro',
+            'netherlands', 'norway', 'poland', 'portugal', 'romania', 'san-marino',
+            'serbia', 'slovakia', 'slovenia', 'spain', 'sweden', 'switzerland', 'turkey',
+            'ukraine', 'united-kingdom', 'vatican',
         ]
 
     def test_shared_machinery_is_not_mistaken_for_a_country(self):
@@ -342,6 +367,27 @@ class TestRegistry:
         from django_osm_locations.management.commands.locations_import import Command
 
         assert Command()._extra_extracts('portugal') == []
+
+    def test_a_country_inside_another_extract_downloads_that_one(self, tmp_path, settings):
+        """San Marino and the Vatican have no extract; they read Italy's."""
+        from django_osm_locations.management.commands.locations_import import Command
+
+        settings.LOCATIONS_DATA_DIR = str(tmp_path)
+        for name in ('san-marino', 'vatican'):
+            assert Command()._get_osm_url(name).endswith('europe/italy-latest.osm.pbf')
+            assert Command()._get_osm_file_path(name) == str(tmp_path / 'italy-latest.osm.pbf')
+        assert Command()._get_osm_url('italy').endswith('europe/italy-latest.osm.pbf')
+
+    def test_only_the_countries_inside_another_cut_their_corner(self):
+        from django_osm_locations.management.commands.importers import registry
+
+        cut = sorted(name for name, imp in registry().items() if imp.extract_bbox)
+        assert cut == ['san-marino', 'vatican']
+
+    def test_asia_is_downloaded_from_asia(self):
+        from django_osm_locations.management.commands.locations_import import Command
+
+        assert Command()._get_osm_url('armenia').endswith('asia/armenia-latest.osm.pbf')
 
     def test_an_unknown_name_is_simply_absent(self):
         from django_osm_locations.management.commands.importers import get_importer

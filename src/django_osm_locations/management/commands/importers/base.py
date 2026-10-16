@@ -289,6 +289,12 @@ class BaseImporter(object):
     #: doubles as the name typed on the command line.
     geofabrik_name = None
     geofabrik_path = 'europe/'
+    #: The name typed on the command line, when it is not the extract's: a
+    #: country inside another's extract, as San Marino is inside Italy's.
+    name = None
+    #: (min lon, min lat, max lon, max lat) to read of the extract, for such a
+    #: country: the corner it sits in is cut out first, and only that is read.
+    extract_bbox = None
     #: Further extracts holding parts of the country, as ``path/name`` --
     #: ``'africa/canary-islands'`` for Spain. They are merged with the main
     #: one into a single file before the import reads it.

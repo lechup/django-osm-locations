@@ -8,7 +8,7 @@ import pytest
 
 osmium = pytest.importorskip('osmium')
 
-from django_osm_locations.utils.extracts import is_stale, merge_extracts  # noqa: E402
+from django_osm_locations.utils.extracts import cut_extract, is_stale, merge_extracts  # noqa: E402
 
 Node = osmium.osm.mutable.Node
 Way = osmium.osm.mutable.Way
@@ -91,3 +91,40 @@ class TestStale:
         assert not is_stale(out, [mainland, islands])
         os.utime(islands, (os.path.getmtime(out) + 10,) * 2)
         assert is_stale(out, [mainland, islands])
+
+
+class TestCut:
+    """San Marino's corner of Italy, without indexing the rest of it."""
+
+    @pytest.fixture
+    def italy(self, tmp_path):
+        return extract(tmp_path / 'italy.osm.pbf', [
+            node(1, x=0.5), node(2, x=0.6),      # inside the corner
+            node(3, x=5.0),                      # outside, on a way that enters it
+            node(4, x=9.0), node(5, x=9.5),      # far away
+            Way(id=10, version=1, nodes=[1, 2]),
+            Way(id=11, version=1, nodes=[2, 3]),
+            Way(id=12, version=1, nodes=[4, 5]),
+            Relation(id=100, version=1, members=[('w', 10, 'outer'), ('w', 11, 'outer')]),
+            Relation(id=101, version=1, members=[('w', 12, 'outer')]),
+            # reaching past the corner: comes through with members missing
+            Relation(id=102, version=1, members=[('w', 11, 'outer'), ('w', 12, 'outer')]),
+        ])
+
+    def test_the_corner_and_what_it_touches(self, tmp_path, italy):
+        out = str(tmp_path / 'san-marino-cut.osm.pbf')
+        cut_extract(italy, (0.0, -1.0, 1.0, 1.0), out)
+        assert [(t, i) for t, i, _ in contents(out)] == [
+            ('n', 1), ('n', 2), ('n', 3), ('w', 10), ('w', 11), ('r', 100), ('r', 102),
+        ]
+
+    def test_a_way_leaving_the_corner_keeps_its_far_node(self, tmp_path, italy):
+        out = str(tmp_path / 'cut.osm.pbf')
+        cut_extract(italy, (0.0, -1.0, 1.0, 1.0), out)
+        far = [obj.location.lon for obj in osmium.FileProcessor(out, osmium.osm.NODE) if obj.id == 3]
+        assert far == [5.0]
+
+    def test_an_empty_corner_writes_an_empty_file(self, tmp_path, italy):
+        out = str(tmp_path / 'cut.osm.pbf')
+        assert cut_extract(italy, (50.0, 50.0, 51.0, 51.0), out) == 0
+        assert contents(out) == []

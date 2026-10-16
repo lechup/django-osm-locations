@@ -1,5 +1,5 @@
 """
-Several Geofabrik extracts read as one.
+Several Geofabrik extracts read as one, and one read in part.
 
 Some countries do not fit one extract: Spain's Canary Islands are in Africa's.
 The importer reads a single file in several passes, so the extracts are merged
@@ -45,6 +45,65 @@ def merge_extracts(paths, out_path):
             written += 1
             for i in same:
                 heads[i] = next(readers[i], None)
+    finally:
+        writer.close()
+    os.replace(partial, out_path)
+    return written
+
+
+def cut_extract(path, bbox, out_path):
+    """
+    The corner of an extract a small country sits in, written to ``out_path``.
+
+    San Marino and the Vatican have no extract of their own, and reading
+    Italy's whole means indexing every Italian node: 11GB of page cache, which
+    took the desktop's memory pressure past the point systemd-oomd kills the
+    session at. Their corner is a few thousand nodes.
+
+    Kept: the nodes inside ``bbox`` -- (min lon, min lat, max lon, max lat) --
+    every way touching one, whole, with the nodes outside that it needs, and
+    every relation with a member among those. A relation reaching far past the
+    corner, Italy's own border, comes through with members missing; the
+    importer already skips a relation it cannot assemble, and the country's
+    border, inside the corner, is complete. Four passes, little memory.
+    """
+    import osmium
+
+    west, south, east, north = bbox
+    inside = set()
+    for node in osmium.FileProcessor(path, osmium.osm.NODE):
+        location = node.location
+        if west <= location.lon <= east and south <= location.lat <= north:
+            inside.add(node.id)
+
+    ways, needed = set(), set(inside)
+    for way in osmium.FileProcessor(path, osmium.osm.WAY):
+        refs = [node.ref for node in way.nodes]
+        if any(ref in inside for ref in refs):
+            ways.add(way.id)
+            needed.update(refs)
+
+    relations = set()
+    for relation in osmium.FileProcessor(path, osmium.osm.RELATION):
+        for member in relation.members:
+            if (member.type == 'w' and member.ref in ways) or (
+                    member.type == 'n' and member.ref in inside):
+                relations.add(relation.id)
+                break
+
+    partial = out_path + '.part'
+    if os.path.exists(partial):
+        os.remove(partial)
+    writer = osmium.SimpleWriter(osmium.io.File(partial, 'pbf'))
+    written = 0
+    try:
+        for kind, ids in ((osmium.osm.NODE, needed), (osmium.osm.WAY, ways),
+                          (osmium.osm.RELATION, relations)):
+            if not ids:
+                continue
+            for obj in osmium.FileProcessor(path, kind).with_filter(osmium.filter.IdFilter(ids)):
+                writer.add(obj)
+                written += 1
     finally:
         writer.close()
     os.replace(partial, out_path)
