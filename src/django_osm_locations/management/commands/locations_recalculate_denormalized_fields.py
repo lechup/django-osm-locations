@@ -127,15 +127,39 @@ class Command(BaseCommand):
         """
         return """
             UPDATE "locations_{model_name}" SET {field_name} =
-            array_cat({field_name}, ARRAY[ARRAY[%s, %s]]::varchar[]) WHERE
-              ST_Intersects(center, (SELECT border FROM "{ancestor_table}" WHERE id = %s)){scope}
+            array_cat({field_name}, ARRAY[ARRAY[%(name)s, %(slug)s]]::varchar[]) WHERE
+              ST_Intersects(center, (SELECT border FROM "{ancestor_table}" WHERE id = %(id)s)){same_level}{scope}
             ;
         """.format(**{
             'model_name': model_name,
             'field_name': field_name,
             'ancestor_table': ancestor_table,
+            'same_level': cls.sql_for_same_level(model_name, ancestor_table),
             'scope': RecalcScope.sql(model_name, '"locations_{}"'.format(model_name)),
         })
+
+    @staticmethod
+    def sql_for_same_level(model_name, ancestor_table):
+        """
+        What a level pushed onto itself also has to check.
+
+        A country subarea is pushed onto the country subareas inside it, a
+        place onto places, a place subarea onto place subareas, and the test is
+        only that the descendant's centre lies in the ancestor's border. Every
+        row's centre lies in its own border, so every one of them listed itself
+        as its own ancestor: Kazimierz under Kazimierz, "powiat krakowski" at
+        the end of its own path. And a centre can lie in something smaller: the
+        middle of powiat krakowski, which rings Kraków, is in gmina Zabierzów,
+        so the gmina became the powiat's ancestor. An ancestor on the same
+        level is a different row, and larger.
+        """
+        if ancestor_table != 'locations_{}'.format(model_name):
+            return ''
+        return (
+            '\n              AND id <> %(id)s'
+            '\n              AND coalesce(area, 0) < coalesce('
+            '(SELECT area FROM "{}" WHERE id = %(id)s), 0)'.format(ancestor_table)
+        )
 
     @classmethod
     def get_sql_for_update_denorm_fields_in_one_pass(cls, model_name, field_name,
@@ -169,7 +193,7 @@ class Command(BaseCommand):
                 FROM "locations_{model_name}" d2
                 JOIN "{ancestor_table}" anc
                   ON anc.border IS NOT NULL
-                 AND ST_Intersects(d2.center, anc.border)
+                 AND ST_Intersects(d2.center, anc.border){not_merged}{same_level}
                 GROUP BY d2.id
             ) AS a
             WHERE d.id = a.id;
@@ -177,6 +201,13 @@ class Command(BaseCommand):
             'model_name': model_name,
             'field_name': field_name,
             'ancestor_table': ancestor_table,
+            # as in the per-ancestor version: a merged duplicate is not an
+            # ancestor, and a level is not its own
+            'not_merged': ('' if ancestor_table == 'locations_country'
+                           else '\n                 AND NOT anc.is_merged'),
+            'same_level': ('' if ancestor_table != 'locations_{}'.format(model_name) else
+                           '\n                 AND anc.id <> d2.id'
+                           '\n                 AND coalesce(d2.area, 0) < coalesce(anc.area, 0)'),
         })
 
     @classmethod
@@ -240,7 +271,13 @@ class Command(BaseCommand):
         if one_pass:
             return cls._update_denorm_fields_in_one_pass(model_class_to_update, report)
 
-        ancestors = RecalcScope.filter(model_class_to_update.objects.exclude(border=None))
+        # Merged rows are duplicates the import resolved -- the same district
+        # drawn twice -- and kept only so a re-import can match them. Pushed
+        # down too, they put every street of Kazimierz under Kazimierz twice.
+        ancestors = model_class_to_update.objects.exclude(border=None)
+        if hasattr(model_class_to_update.objects, 'not_merged'):
+            ancestors = ancestors.filter(is_merged=False)
+        ancestors = RecalcScope.filter(ancestors)
         objects = ancestors.only('name', 'slug').iterator()
         objects_count = ancestors.count()
         if report:
@@ -266,7 +303,7 @@ class Command(BaseCommand):
                     model_name, field_name, model_class_to_update._meta.db_table,
                 )
                 with connection.cursor() as cursor:
-                    cursor.execute(sql, [obj.name, obj.slug, obj.id])
+                    cursor.execute(sql, {'name': obj.name, 'slug': obj.slug, 'id': obj.id})
                     cls._tally(model_class_to_update, denormalized_model_class,
                                cursor.rowcount)
                     ancestor_rows += max(cursor.rowcount, 0)

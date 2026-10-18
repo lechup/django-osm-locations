@@ -21,7 +21,7 @@ from django_osm_locations.models import Country, CountrySubarea, Place, PlaceSub
 class TestTheBorderStaysInTheDatabase:
     def test_the_border_is_read_not_sent(self):
         sql = Denorm.get_sql_for_update_denorm_fields('street', 'country', 'locations_country')
-        assert 'SELECT border FROM "locations_country" WHERE id = %s' in sql
+        assert 'SELECT border FROM "locations_country" WHERE id = %(id)s' in sql
 
     def test_no_geometry_is_decoded_from_a_parameter(self):
         """ST_GeomFromEWKB(decode(...)) is the shape of the old bug."""
@@ -35,8 +35,11 @@ class TestTheBorderStaysInTheDatabase:
 
     def test_exactly_three_parameters(self):
         """name, slug, ancestor id -- all small."""
+        import re
+
         sql = Denorm.get_sql_for_update_denorm_fields('street', 'country', 'locations_country')
-        assert sql.count('%s') == 3
+        assert set(re.findall(r'%\((\w+)\)s', sql)) == {'name', 'slug', 'id'}
+        assert '%s' not in sql
 
     @pytest.mark.parametrize('model_class,table', [
         (Country, 'locations_country'),
@@ -67,9 +70,84 @@ class TestItStillWorks:
 
         sql = Denorm.get_sql_for_update_denorm_fields('place', 'country', 'locations_country')
         with connection.cursor() as cursor:
-            cursor.execute(sql, [country.name, country.slug, country.id])
+            cursor.execute(sql, {'name': country.name, 'slug': country.slug, 'id': country.id})
 
         inside.refresh_from_db()
         outside.refresh_from_db()
         assert ['Testland', 'testland'] in inside.country
         assert ['Testland', 'testland'] not in outside.country
+
+
+def square(x0, y0, x1, y1):
+    from django.contrib.gis.geos import MultiPolygon, Polygon
+
+    return MultiPolygon(Polygon(((x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0))))
+
+
+@pytest.mark.django_db
+class TestALevelPushedOntoItself:
+    """
+    Every row's centre lies in its own border, and a centre can lie in
+    something smaller: Kazimierz was its own ancestor, and gmina Zabierzów an
+    ancestor of the powiat around it.
+    """
+
+    @pytest.fixture
+    def powiat_and_gmina(self):
+        from django.contrib.gis.geos import Point
+
+        powiat = CountrySubarea.objects.create(
+            name='powiat krakowski', slug='powiat-krakowski', border=square(0, 0, 10, 10),
+            center=Point(2, 2), area=100.0, countrysubarea=[])
+        # the powiat's centre falls inside the gmina
+        gmina = CountrySubarea.objects.create(
+            name='gmina Zabierzów', slug='gmina-zabierzow', border=square(1, 1, 3, 3),
+            center=Point(2, 2), area=4.0, countrysubarea=[])
+        return powiat, gmina
+
+    def push(self, ancestor):
+        from django.db import connection
+
+        sql = Denorm.get_sql_for_update_denorm_fields(
+            'countrysubarea', 'countrysubarea', 'locations_countrysubarea')
+        with connection.cursor() as cursor:
+            cursor.execute(sql, {'name': ancestor.name, 'slug': ancestor.slug, 'id': ancestor.id})
+
+    def test_nothing_is_its_own_ancestor(self, powiat_and_gmina):
+        powiat, gmina = powiat_and_gmina
+        self.push(powiat)
+        powiat.refresh_from_db()
+        assert ['powiat krakowski', 'powiat-krakowski'] not in (powiat.countrysubarea or [])
+
+    def test_the_larger_one_is_the_ancestor(self, powiat_and_gmina):
+        powiat, gmina = powiat_and_gmina
+        self.push(powiat)
+        gmina.refresh_from_db()
+        assert ['powiat krakowski', 'powiat-krakowski'] in gmina.countrysubarea
+
+    def test_a_smaller_one_never_is(self, powiat_and_gmina):
+        powiat, gmina = powiat_and_gmina
+        self.push(gmina)
+        powiat.refresh_from_db()
+        assert ['gmina Zabierzów', 'gmina-zabierzow'] not in (powiat.countrysubarea or [])
+
+    def test_another_table_is_unaffected(self):
+        assert Denorm.sql_for_same_level('street', 'locations_countrysubarea') == ''
+
+
+@pytest.mark.django_db
+class TestAMergedDuplicateIsNoAncestor:
+    def test_a_district_drawn_twice_is_pushed_once(self):
+        from django.contrib.gis.geos import Point
+
+        from django_osm_locations.models import Street
+
+        for merged in (False, True):
+            PlaceSubarea.objects.create(
+                name='Stare Miasto', slug='stare-miasto', border=square(0, 0, 10, 10),
+                center=Point(5, 5), area=100.0, is_merged=merged)
+        street = Street.objects.create(name='Szeroka', slug='szeroka', center=Point(5, 5),
+                                       placesubarea=[])
+        Denorm.update_denorm_fields_for_model_class(PlaceSubarea)
+        street.refresh_from_db()
+        assert street.placesubarea == [['Stare Miasto', 'stare-miasto']]

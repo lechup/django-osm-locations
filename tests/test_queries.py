@@ -102,9 +102,26 @@ class TestQuery:
         assert len(query['bool']['filter']) == 2
 
     def test_name_is_weighted_above_ancestry(self):
-        fields = build_query(q='x')['bool']['must'][0]['multi_match']['fields']
+        fields = build_query(q='x')['bool']['should'][0]['multi_match']['fields']
         assert fields[0].startswith('name.exact')
         assert 'ancestry_names' in fields
+
+    def test_every_word_has_to_be_found(self):
+        """
+        "krakow, kazimierz": the Kazimierz in Kraków has both words, one in its
+        name and one in its ancestry, and came 337th when either would do.
+        """
+        match = build_query(q='krakow, kazimierz')['bool']['must'][0]['multi_match']
+        assert match['type'] == 'cross_fields'
+        assert match['operator'] == 'and'
+        assert set(match['fields']) == {'name', 'ancestry_names', 'names_all'}
+
+    def test_relaxed_any_word_will_do_as_before(self):
+        query = build_query(q='krakow, kazimierz', strict=False)
+        assert 'should' not in query['bool']
+        match = query['bool']['must'][0]['multi_match']
+        assert match['type'] == 'best_fields'
+        assert 'operator' not in match
 
 
 class TestSort:

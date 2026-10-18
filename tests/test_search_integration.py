@@ -231,3 +231,34 @@ class TestCrossTypeRanking:
         """Only one index, so global statistics are unnecessary there."""
         body = client.get('/api/streets/', {'q': 'peel'}).json()
         assert body['total'] == 40
+
+
+class TestEveryWordCounts:
+    """
+    "krakow, kazimierz": the district has one word in its name and the other
+    in its ancestry, and lost to everything that had just one of them.
+    """
+
+    @pytest.fixture(autouse=True)
+    def indexed(self, prefix, opensearch, settings, db):
+        from django_osm_locations.models import CountrySubarea, PlaceSubarea
+
+        settings.LOCATIONS_OPENSEARCH_INDEX_PREFIX = prefix
+        settings.ROOT_URL = 'testserver'
+        CountrySubarea.objects.create(name='powiat krakowski', border=MultiPolygon(square(0, 6)),
+                                      area=36.0)
+        Place.objects.create(name='Kraków', border=MultiPolygon(square(1, 2)), area=4.0)
+        Place.objects.create(name='Kazimierz Dolny', border=MultiPolygon(square(7, 1)), area=1.0)
+        PlaceSubarea.objects.create(name='Kazimierz', border=MultiPolygon(square(1.5, 0.2)),
+                                    area=0.04, place=[['Kraków', 'krakow']])
+        for name in ('country-subareas', 'places', 'place-subareas'):
+            reindex(name, prefix, opensearch)
+
+    def test_the_district_with_both_words_comes_first(self, client):
+        results = client.get('/api/search/', {'q': 'Krakow, Kazimierz'}).json()['results']
+        assert [h['name'] for h in results] == ['Kazimierz']
+
+    def test_a_word_nothing_has_still_finds_the_rest(self, client):
+        """A typo must not empty the answer: it falls back to any word."""
+        results = client.get('/api/search/', {'q': 'Krakow Xqzw'}).json()['results']
+        assert 'Kraków' in [h['name'] for h in results]

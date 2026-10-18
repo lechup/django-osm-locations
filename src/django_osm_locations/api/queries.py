@@ -118,17 +118,37 @@ def parse_admin_level(value):
 
 
 def build_query(q=None, within=None, bbox=None, near=None, radius=None,
-                admin_level=None):
+                admin_level=None, strict=True):
     """
     Assemble the bool query.
 
     ``q`` scores; everything else filters, so filters stay out of the scoring
     path and get cached by OpenSearch.
+
+    ``strict``: every word of ``q`` has to be found, in the name or in the
+    ancestry. Matching any one of them was enough before, so "krakow,
+    kazimierz" was answered with powiat krakowski, the city of Kraków and every
+    Kazimierz in Poland -- and the Kazimierz in Kraków, the one that has both
+    words, came 337th, since an ancestor and a name in two different fields
+    earned no more than one of them. The view drops back to ``strict=False``
+    when nothing has every word, so a typo still finds something.
     """
-    must, filters = [], []
+    must, should, filters = [], [], []
+
+    if q and strict:
+        must.append({
+            'multi_match': {
+                'query': q,
+                # one analyzer across the three, so each word may be found in
+                # whichever of them holds it
+                'fields': ['name', 'ancestry_names', 'names_all'],
+                'type': 'cross_fields',
+                'operator': 'and',
+            }
+        })
 
     if q:
-        must.append({
+        (should if strict else must).append({
             'multi_match': {
                 'query': q,
                 # the name matters most, its unfolded form more than the
@@ -163,6 +183,8 @@ def build_query(q=None, within=None, bbox=None, near=None, radius=None,
     query = {'bool': {}}
     if must:
         query['bool']['must'] = must
+    if should:
+        query['bool']['should'] = should
     if filters:
         query['bool']['filter'] = filters
     return query
@@ -301,7 +323,7 @@ def build_sort(order, has_query, types=None):
     return list(SIZE_SORT)
 
 
-def build_body(params, types=None):
+def build_body(params, types=None, strict=True):
     """
     Turn a request's query parameters into a full search body.
 
@@ -320,6 +342,7 @@ def build_body(params, types=None):
         near=params.get('near'),
         radius=params.get('radius'),
         admin_level=params.get('admin_level'),
+        strict=strict,
     )
     if q:
         # only meaningful when something is being scored; without a query the

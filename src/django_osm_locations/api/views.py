@@ -114,6 +114,16 @@ class SearchView(APIView):
             ignore_unavailable=True,
             **search_kwargs
         )
+        if params.get('q') and not result.get('hits', {}).get('hits') and page == 1:
+            # nothing has every word: a typo, or a word the data does not
+            # know -- answer with what has any of them, as before
+            body, page, page_size = build_body(params, names, strict=False)
+            result = client.search(
+                index=','.join(aliases),
+                body=body,
+                ignore_unavailable=True,
+                **search_kwargs
+            )
         payload = format_response(result, page, page_size)
 
         language = (params.get('lang') or '').strip()

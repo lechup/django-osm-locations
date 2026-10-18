@@ -142,6 +142,35 @@ MULTILINE_PROPERTIES = {
 }
 
 
+def clean_ancestry(entries, own_level=None, own_slug=None):
+    """
+    An ancestry without repeats and without the location itself.
+
+    The recalculation used to list a district as its own ancestor, and every
+    merged duplicate of an ancestor as a second one: "Kraków > Stare Miasto >
+    Kazimierz > Stare Miasto > Kazimierz" for Kazimierz itself, and a fifth of
+    Poland's streets with a district twice. It no longer does; this keeps a
+    document right whatever the rows say, and is what repairs the packs built
+    before. Order is kept: the first of a level is the one a slug was built
+    from.
+    """
+    seen, kept = set(), []
+    for entry in entries:
+        key = (entry.get('level'), entry.get('slug'))
+        if key in seen or (own_slug and key == (own_level, own_slug)):
+            continue
+        seen.add(key)
+        kept.append(entry)
+    return kept
+
+
+def flatten_ancestry(entries):
+    """``(entries, slugs, names)``: the entries, and what is searched of them."""
+    slugs = [e['slug'] for e in entries if e.get('slug')]
+    names = [e['name'] for e in entries if e.get('name')]
+    return entries, slugs, names
+
+
 class LocationIndex:
     """
     One location type's index: its mapping, its alias, and how to build a
@@ -198,7 +227,7 @@ class LocationIndex:
         Denormalised ancestry as ``[[slug, name], ...]`` per level, flattened
         into something OpenSearch can filter and search.
         """
-        entries, slugs, names = [], [], []
+        entries = []
         for level in getattr(self.model, 'denorm_fields', ()):
             for pair in getattr(obj, level, None) or []:
                 if not pair:
@@ -206,11 +235,8 @@ class LocationIndex:
                 name = pair[0] if len(pair) > 0 else ''
                 slug = pair[1] if len(pair) > 1 else ''
                 entries.append({'level': level, 'slug': slug, 'name': name})
-                if slug:
-                    slugs.append(slug)
-                if name:
-                    names.append(name)
-        return entries, slugs, names
+        return flatten_ancestry(clean_ancestry(
+            entries, self.model.__name__.lower(), getattr(obj, 'slug', None)))
 
     def document(self, obj):
         """Build the OpenSearch document for one model instance."""
