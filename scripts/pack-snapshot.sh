@@ -20,7 +20,9 @@ fi
 
 # A published snapshot is named <country>-<date> and lives in a directory
 # named for that country; that is the convention the export command follows.
-SOURCE=${2:-local/snapshots/${SNAPSHOT%%-*}}
+# everything before the date: pl-2026-09-24 is in pl, a state's
+# us-ca-2026-10-18 in us-ca
+SOURCE=${2:-local/snapshots/${SNAPSHOT%-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]}}
 OUTPUT=${3:-dist/snapshots/$SNAPSHOT}
 
 # 1.9 GB, leaving room under GitHub's 2 GB limit for nothing in particular --
@@ -88,7 +90,7 @@ Download every part, check them, and restore:
     sha256sum -c SHA256SUMS
     mkdir -p local/snapshots
     cat $SNAPSHOT.tar.gz.part* | tar -xzf - -C local/snapshots
-    make load-snapshot SNAPSHOT=$SNAPSHOT
+    make load-snapshot $SNAPSHOT
 
 Countries merge: load another one afterwards and both are searched together.
 

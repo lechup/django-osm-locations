@@ -4,7 +4,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 from .. import Country
 from ...conf import get_data_dir
-from ...utils.extracts import cut_extract, is_stale, merge_extracts
+from ...utils.extracts import cut_extract, is_stale, merge_extracts, relations_extract
 from ...utils.query_log import stop_logging_queries
 from .importers import get_importer, known_countries
 
@@ -73,10 +73,13 @@ class Command(BaseCommand):
         return get_importer(country).geofabrik_name
 
     def _get_osm_file_path(self, country):
-        return os.path.join(
-            self.data_dir,
-            self._get_osm_file_name(self._extract_name(country))
-        )
+        # Outside Europe under the extract's own path: the state of Georgia
+        # and the country are both georgia-latest.osm.pbf.
+        path = get_importer(country).geofabrik_path
+        directory = self.data_dir if path == 'europe/' else os.path.join(
+            self.data_dir, path.strip('/'))
+        os.makedirs(directory, exist_ok=True)
+        return os.path.join(directory, self._get_osm_file_name(self._extract_name(country)))
 
     def _get_osm_url(self, country):
         return self.osm_repository_url % {
@@ -115,6 +118,9 @@ class Command(BaseCommand):
                 written = cut_extract(main, bbox, cut)
                 print("Cut: %d objects.\n" % written)
             return cut
+        importer = get_importer(country)
+        if importer.borders_from:
+            return self._with_borders(country, importer, main, update)
         extras = self._extra_extracts(country)
         if not extras:
             return main
@@ -126,6 +132,51 @@ class Command(BaseCommand):
         if is_stale(merged, sources):
             print("Merging %s into %s ..." % (', '.join(os.path.basename(p) for p in sources), merged))
             written = merge_extracts(sources, merged)
+            print("Merged: %d objects.\n" % written)
+        return merged
+
+    def _with_borders(self, country, importer, main, update=False):
+        """
+        The part's extract merged with the borders cut off it, taken from the
+        whole country's: downloaded once, read once for its borders, which are
+        then merged into every part.
+        """
+        path, _, name = importer.borders_from.rpartition('/')
+        directory = os.path.join(self.data_dir, path)
+        os.makedirs(directory, exist_ok=True)
+        whole = os.path.join(directory, self._get_osm_file_name(name))
+        borders = os.path.join(directory, '%s-borders-latest.osm.pbf' % name)
+        rebuild = not os.path.exists(borders) or update
+        fills = []
+        for fill in importer.borders_fill_from:
+            fill_path, _, fill_name = fill.rpartition('/')
+            local = os.path.join(self.data_dir, fill_path, self._get_osm_file_name(fill_name))
+            if not os.path.exists(local) or update:
+                os.makedirs(os.path.dirname(local), exist_ok=True)
+                self._download(self.osm_repository_url % {
+                    'country_path': fill_path + '/', 'file_name': self._get_osm_file_name(fill_name)},
+                    local)
+            fills.append(local)
+        # a neighbour added since the borders were read means reading them again
+        rebuild = rebuild or is_stale(borders, fills)
+        if rebuild:
+            if not os.path.exists(whole) or update:
+                self._download(self.osm_repository_url % {
+                    'country_path': path + '/', 'file_name': self._get_osm_file_name(name)}, whole)
+            print("Reading the borders out of %s ..." % os.path.basename(whole))
+            written, missing = relations_extract(whole, borders, importer.is_border_relation,
+                                                 fill_from=fills)
+            print("Borders: %d objects.\n" % written)
+            if missing:
+                # mostly the neighbours' districts reaching across the line;
+                # one of the part's own would leave its border open, which the
+                # import says when it assembles that border
+                print("%d member ways are in none of the extracts, the first %s.\n" % (
+                    len(missing), ', '.join(str(ref) for ref in missing[:5])))
+        merged = os.path.join(os.path.dirname(main), '%s-merged-latest.osm.pbf' % country)
+        if is_stale(merged, [main, borders]):
+            print("Merging %s with the borders ..." % os.path.basename(main))
+            written = merge_extracts([main, borders], merged)
             print("Merged: %d objects.\n" % written)
         return merged
 

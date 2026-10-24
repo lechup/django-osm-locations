@@ -208,8 +208,10 @@ skips every step of it.
 ```bash
 sha256sum -c SHA256SUMS                            # check what you downloaded
 cat pl-2026-09-24.tar.gz.part* | tar -xzf - -C local/snapshots
-make load-snapshot SNAPSHOT=pl-2026-09-24          # restore and alias in one go
-make snapshots ISO=pl                              # what that directory holds
+make load-snapshot pl-2026-09-24                   # restore and alias in one go
+make load-snapshot pl                              # or undated: the newest one unpacked
+make load-snapshot us                              # every part of a country packed in parts: us, us-ca, us-tx ...
+make snapshots pl                                  # what that directory holds
 ```
 
 The cluster has to be started with `path.repo` pointing at the directory the
@@ -242,7 +244,7 @@ To publish:
 
 ```bash
 make snapshot ISO=pl                  # package the live Polish indexes
-make pack SNAPSHOT=pl-2026-09-24      # tar, split, checksum, and print the notes
+make pack pl-2026-09-24               # tar, split, checksum, and print the notes
 ```
 
 `pack` splits at 1.9 GB because a GitHub release asset may not exceed 2 GB and

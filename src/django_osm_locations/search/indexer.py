@@ -44,7 +44,7 @@ class Reindexer:
     """
 
     def __init__(self, index, client=None, prefix=None, suffix=None, batch_size=500,
-                 show_progress=None, country=None):
+                 show_progress=None, country=None, token=None):
         self.index = index
         self.client = client or get_client()
         self.prefix = prefix or get_index_prefix()
@@ -54,6 +54,10 @@ class Reindexer:
         #: -- the part that matters most -- which other indexes the alias is
         #: taken away from.
         self.country = country
+        #: What names this rebuild's indexes and decides what it replaces, when
+        #: not the country's code: one state of the United States, ``us-ca``,
+        #: replaces that state and leaves the other 52 under the alias.
+        self.token = token
         self.batch_size = batch_size
         self.indexed = 0
         # None leaves it to terminal detection, matching the importer
@@ -71,7 +75,12 @@ class Reindexer:
 
     @property
     def country_token(self):
-        """The country's ISO 3166-1 alpha-2, lowercased, or None."""
+        """
+        The country's ISO 3166-1 alpha-2, lowercased, or None -- or the token
+        it was given, ``us-ca``, for a country built a part at a time.
+        """
+        if getattr(self, 'token', None):
+            return self.token
         return self.country.iso2.lower() if self.country else None
 
     def queryset(self):

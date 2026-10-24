@@ -218,3 +218,12 @@ class TestRollback:
         fake = self.fake()
         out = self.run(fake, '--rollback', '--country', 'se', '--apply')
         assert fake.client.indices.calls == [] and 'nothing to switch' in out
+
+
+
+def test_a_state_of_the_united_states_is_read_from_the_name():
+    from django_osm_locations.management.commands.locations_index_cleanup import TAIL
+
+    match = TAIL.match('us-ca-20261018064512')
+    assert match.group('country') == 'us-ca'
+    assert TAIL.match('pl-20261002020418').group('country') == 'pl'

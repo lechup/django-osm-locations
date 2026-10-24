@@ -49,3 +49,15 @@ def get_importer(name):
 
 def known_countries():
     return sorted(registry())
+
+
+def group_members(name):
+    """The importers a group name stands for, sorted: every state for ``united-states``."""
+    return sorted(key for key, importer in registry().items() if importer.group == name)
+
+
+def importer_or_group(name):
+    """Names to import for ``name``: itself, or every member when it is a group."""
+    if get_importer(name):
+        return [name]
+    return group_members(name)

@@ -89,7 +89,7 @@ class Command(BaseCommand):
 
         self.stdout.write(
             'written to {} on the cluster. That directory is the unit of '
-            'publication: `make pack SNAPSHOT={}` tars it, splits it under '
+            'publication: `make pack {}` tars it, splits it under '
             'the 2GB a release asset may be, and writes the checksums.'.format(
                 location, name)
         )

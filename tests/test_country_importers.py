@@ -316,7 +316,8 @@ class TestRegistry:
     def test_every_country_is_discovered(self):
         from django_osm_locations.management.commands.importers import known_countries
 
-        assert known_countries() == [
+        countries = [name for name in known_countries() if not name.startswith('us-')]
+        assert countries == [
             'albania', 'andorra', 'armenia', 'austria', 'azerbaijan', 'belarus',
             'belgium', 'bosnia-herzegovina', 'bulgaria', 'croatia', 'cyprus',
             'czech-republic', 'denmark', 'estonia', 'finland', 'france', 'georgia',
@@ -344,10 +345,25 @@ class TestRegistry:
     def test_identifiers_are_unique(self):
         from django_osm_locations.management.commands.importers import registry
 
-        importers = list(registry().values())
+        # a country imported a part at a time is one country: its states
+        # share it, and are counted once
+        importers, groups = [], set()
+        for importer in registry().values():
+            if importer.group:
+                if importer.group in groups:
+                    continue
+                groups.add(importer.group)
+            importers.append(importer)
         for attribute in ('country_slug', 'iso2', 'iso3', 'un'):
             values = [getattr(i, attribute) for i in importers]
             assert len(values) == len(set(values)), attribute
+
+    def test_every_index_token_is_unique(self):
+        """It names the indexes and the pack; two alike would replace each other."""
+        from django_osm_locations.management.commands.importers import registry
+
+        tokens = [i.index_token_for() for i in registry().values()]
+        assert len(tokens) == len(set(tokens))
 
     def test_the_download_url_comes_from_the_class(self):
         from django_osm_locations.management.commands.locations_import import Command
@@ -507,3 +523,67 @@ class TestUnitedKingdomAfterImport:
 
         other.refresh_from_db()
         assert other.is_merged is False
+
+
+
+class TestUnitedStates:
+    """53 parts imported apart, searched as one country."""
+
+    def test_every_part_is_in_the_group(self):
+        from django_osm_locations.management.commands.importers import group_members
+
+        members = group_members('united-states')
+        assert len(members) == 53
+        assert 'us-california' in members and 'us-puerto-rico' in members
+
+    def test_the_group_name_imports_every_state(self):
+        from django_osm_locations.management.commands.importers import importer_or_group
+
+        assert len(importer_or_group('united-states')) == 53
+        assert importer_or_group('poland') == ['poland']
+        assert importer_or_group('atlantis') == []
+
+    def test_a_state_has_its_own_token_and_shares_the_country(self):
+        from django_osm_locations.management.commands.importers import get_importer
+
+        california = get_importer('us-california')
+        texas = get_importer('us-texas')
+        assert california.index_token_for() == 'us-ca'
+        assert texas.index_token_for() == 'us-tx'
+        assert (california.country_slug, california.iso2) == (texas.country_slug, texas.iso2) \
+            == ('united-states', 'US')
+
+    def test_the_state_of_georgia_is_not_the_country(self, tmp_path, settings):
+        from django_osm_locations.management.commands.locations_import import Command
+
+        settings.LOCATIONS_DATA_DIR = str(tmp_path)
+        assert Command()._get_osm_url('us-georgia').endswith('north-america/us/georgia-latest.osm.pbf')
+        assert Command()._get_osm_url('georgia').endswith('europe/georgia-latest.osm.pbf')
+        assert Command()._get_osm_file_path('us-georgia') != Command()._get_osm_file_path('georgia')
+
+    def test_the_border_filter_is_the_state(self):
+        from django_osm_locations.management.commands.importers import get_importer
+
+        importer = get_importer('us-wyoming').__new__(get_importer('us-wyoming'))
+        assert importer._is_country_boundary({'admin_level': '4', 'ISO3166-2': 'US-WY'})
+        assert not importer._is_country_boundary({'admin_level': '4', 'ISO3166-2': 'US-CO'})
+        assert not importer._is_country_boundary({'admin_level': '2', 'ISO3166-1': 'US'})
+
+    def test_the_state_code_survives_the_parse(self):
+        from django_osm_locations.management.commands.importers import get_importer
+
+        assert 'ISO3166-2' in get_importer('us-wyoming').whitelist_tags
+
+    def test_a_census_designated_place_is_a_place(self):
+        from django_osm_locations.management.commands.importers import get_importer
+
+        importer = get_importer('us-virginia')
+        assert importer._is_relation_place(
+            1, {'boundary': 'census', 'name': 'Arlington', 'place': 'locality'}, [])
+        assert not importer._is_relation_place(
+            1, {'boundary': 'census', 'name': 'Jackson Hole Census County Division',
+                'place': 'locality', 'border_type': 'census_county_division'}, [])
+        assert 'border_type' in importer.whitelist_tags
+        assert importer._is_relation_place(1, admin('8'), [])
+        assert not importer._is_relation_place(1, admin('6'), [])
+        assert importer._is_relation_countrysubarea(1, admin('6'), [])

@@ -48,17 +48,34 @@ mkdir -p "$LOGS"
 psql() { docker exec -i "$CONTAINER" psql -v ON_ERROR_STOP=1 -U locations -d "${DB:-postgres}" -At "$@"; }
 step() { echo "=============== $* $(date '+%F %T') ==============="; }
 
+# A country imported a part at a time is named as a whole too:
+# `united-states` runs this once for each state, in turn, stopping at the
+# first that fails.
+MEMBERS=$("$PYTHON" -c "
+import django; django.setup()
+from django_osm_locations.management.commands.importers import get_importer, group_members
+print('' if get_importer('$COUNTRY') else ' '.join(group_members('$COUNTRY')))
+")
+if [ -n "$MEMBERS" ]; then
+    for member in $MEMBERS; do
+        "$0" "$member" $KEEP
+    done
+    exit 0
+fi
+
+# What tells this one's database, indexes and pack apart: the country's
+# code, pl, or a state's, us-ca.
 ISO=$("$PYTHON" -c "
 import django; django.setup()
 from django_osm_locations.management.commands.importers import get_importer
 importer = get_importer('$COUNTRY')
-print(importer.iso2.lower() if importer else '')
+print(importer.index_token_for() if importer else '')
 ")
 if [ -z "$ISO" ]; then
     echo "no importer called $COUNTRY" >&2
     exit 2
 fi
-DATABASE=locations_$ISO
+DATABASE=locations_${ISO//-/_}
 
 # --- the template ----------------------------------------------------------
 if [ -z "$(DB=postgres psql -c "SELECT 1 FROM pg_database WHERE datname = '$TEMPLATE'")" ]; then
@@ -133,8 +150,12 @@ step "pack $SNAPSHOT"
 ./scripts/pack-snapshot.sh "$SNAPSHOT" > "$LOGS/pack-$ISO.log"
 (cd "dist/snapshots/$SNAPSHOT" && sha256sum -c SHA256SUMS)
 
-# the pack is the product; the snapshot in the repository is a copy of it
-curl -s -XDELETE "$OPENSEARCH/_snapshot/locations-$ISO/$SNAPSHOT" >/dev/null
+# The pack is the product; the repository is a copy of it, and goes whole.
+# Deleting just the snapshot left an empty index-N beside it, and the cluster
+# remembering that generation: unpacking the pack here again restored the
+# files and still loaded nothing. Forgotten and removed, it unpacks clean.
+curl -s -XDELETE "$OPENSEARCH/_snapshot/locations-$ISO" >/dev/null
+rm -rf "local/snapshots/$ISO"
 
 # The pack is what is kept, here as for the database: the country's indexes
 # are a copy of it, and left in place they grew to 59GB over twelve countries.

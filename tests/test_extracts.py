@@ -128,3 +128,80 @@ class TestCut:
         out = str(tmp_path / 'cut.osm.pbf')
         assert cut_extract(italy, (50.0, 50.0, 51.0, 51.0), out) == 0
         assert contents(out) == []
+
+
+class TestBordersOnly:
+    """The state lines the state extracts cut off, read out of the country's."""
+
+    @pytest.fixture
+    def country(self, tmp_path):
+        return extract(tmp_path / 'us.osm.pbf', [
+            node(1, x=0.0), node(2, x=1.0), node(3, x=2.0), node(4, x=9.0),
+            Way(id=10, version=1, nodes=[1, 2]), Way(id=11, version=1, nodes=[2, 3]),
+            Way(id=12, version=1, nodes=[3, 4]),
+            Relation(id=100, version=1, members=[('w', 10, 'outer'), ('w', 11, 'outer')],
+                     tags={'admin_level': '4', 'ISO3166-2': 'US-WY'}),
+            Relation(id=101, version=1, members=[('w', 12, 'outer')],
+                     tags={'admin_level': '6', 'name': 'a county'}),
+        ])
+
+    def test_only_what_is_asked_for_with_everything_it_needs(self, tmp_path, country):
+        from django_osm_locations.utils.extracts import relations_extract
+
+        out = str(tmp_path / 'us-borders.osm.pbf')
+        relations_extract(country, out, lambda tags: tags.get('admin_level') == '4')
+        assert [(t, i) for t, i, _ in contents(out)] == [
+            ('n', 1), ('n', 2), ('n', 3), ('w', 10), ('w', 11), ('r', 100)]
+
+    def test_a_way_the_country_lacks_is_filled_in_from_a_neighbour(self, tmp_path):
+        """Alaska's ring stays open without the 150 m of it on the Yukon coast."""
+        from django_osm_locations.utils.extracts import relations_extract
+
+        country = extract(tmp_path / 'us.osm.pbf', [
+            node(1, x=0.0), node(2, x=1.0),
+            Way(id=10, version=1, nodes=[1, 2]),
+            Relation(id=100, version=1, members=[('w', 10, 'outer'), ('w', 11, 'outer')],
+                     tags={'admin_level': '4', 'ISO3166-2': 'US-AK'}),
+        ])
+        yukon = extract(tmp_path / 'yukon.osm.pbf', [
+            node(2, x=1.0), node(3, x=2.0), node(8, x=8.0),
+            Way(id=11, version=1, nodes=[2, 3]),
+            Way(id=12, version=1, nodes=[3, 8]),     # not a member: stays behind
+        ])
+        out = str(tmp_path / 'us-borders.osm.pbf')
+        written, missing = relations_extract(
+            country, out, lambda tags: tags.get('admin_level') == '4', fill_from=[yukon])
+        assert [(t, i) for t, i, _ in contents(out)] == [
+            ('n', 1), ('n', 2), ('n', 3), ('w', 10), ('w', 11), ('r', 100)]
+        assert written == 6
+        assert missing == []
+        assert sorted(p.name for p in tmp_path.iterdir()) == [
+            'us-borders.osm.pbf', 'us.osm.pbf', 'yukon.osm.pbf']
+
+    def test_a_way_in_no_extract_is_named(self, tmp_path, country):
+        from django_osm_locations.utils.extracts import relations_extract
+
+        broken = extract(tmp_path / 'broken.osm.pbf', [
+            node(1), node(2), Way(id=10, version=1, nodes=[1, 2]),
+            Relation(id=100, version=1, members=[('w', 10, 'outer'), ('w', 99, 'outer')],
+                     tags={'admin_level': '4'}),
+        ])
+        _, missing = relations_extract(broken, str(tmp_path / 'out.osm.pbf'),
+                                       lambda tags: tags.get('admin_level') == '4')
+        assert missing == [99]
+
+    def test_alaska_is_filled_in_from_yukon(self):
+        from django_osm_locations.management.commands.importers import get_importer
+
+        assert get_importer('us-alaska').borders_fill_from == ('north-america/canada/yukon',)
+
+    def test_a_state_reads_its_borders_from_the_country(self):
+        from django_osm_locations.management.commands.importers import get_importer
+
+        importer = get_importer('us-wyoming')
+        assert importer.borders_from == 'north-america/us'
+        assert importer.is_border_relation(
+            {'boundary': 'administrative', 'admin_level': '4', 'ISO3166-2': 'US-WY'})
+        assert importer.is_border_relation({'boundary': 'administrative', 'admin_level': '6'})
+        assert not importer.is_border_relation({'boundary': 'administrative', 'admin_level': '8'})
+        assert get_importer('poland').borders_from is None

@@ -93,11 +93,26 @@ class Command(BaseCommand):
         suffix = new_index_suffix()
         selected = options['types'] or None
         country = self._resolve_country(options.get('country'))
+        token = None
+        if options.get('country'):
+            from .importers import registry
+
+            importer = registry()[options['country']]
+            token = importer.index_token_for()
+            if importer.group and not selected:
+                # A part of a country leaves the country out: 53 packs each
+                # carrying "United States" with its own state's border would
+                # be 53 countries once loaded together. The group's country
+                # document is built once, from all of them.
+                from ...search.indexes import INDEXES
+
+                selected = [name for name in INDEXES if name != 'countries']
         try:
             targets = reindexers(
                 selected,
                 suffix=suffix,
                 country=country,
+                token=token,
                 batch_size=options['batch_size'],
                 show_progress=self._show_progress(options),
             )

@@ -38,6 +38,8 @@ class FakeSnapshot:
         self.created = []
         self.restored = []
         self.repositories = []
+        #: registrations and forgettings, in order
+        self.ops = []
         self.fail_register = False
         #: states returned by successive get() calls, as a real snapshot
         #: reports IN_PROGRESS before it reports SUCCESS
@@ -54,6 +56,15 @@ class FakeSnapshot:
         if self.fail_register:
             raise RuntimeError('access denied')
         self.repositories.append((repository, body))
+        self.ops.append(('register', repository))
+
+    def delete_repository(self, repository):
+        if not any(name == repository for name, _ in self.repositories):
+            error = RuntimeError('repository_missing_exception')
+            error.status_code = 404
+            raise error
+        self.repositories = [(n, b) for n, b in self.repositories if n != repository]
+        self.ops.append(('forget', repository))
 
     def get_repository(self):
         return {name: {'settings': body['settings']}
@@ -327,6 +338,54 @@ class TestTheLoadCommand:
             '/snapshots/poland-old')
 
 
+class TestAPackUnpackedAgain:
+    """
+    Every state packed here loaded as "nothing to load": deleting the snapshot
+    after packing left the cluster remembering an emptied repository, and the
+    pack unpacked into the same directory was read through that memory.
+    """
+
+    @staticmethod
+    def _patch(monkeypatch, client):
+        from django_osm_locations.management.commands import locations_import_snapshot as command
+
+        monkeypatch.setattr(command, 'get_client', lambda: client)
+        monkeypatch.setattr(command, 'get_index_prefix', lambda: 'locations')
+
+    def test_the_cluster_forgets_the_directory_before_reading_it(self, monkeypatch):
+        from django.core.management import call_command
+
+        client = FakeClient()
+        client.snapshot.create_repository('locations-pl', {'settings': {'location': '/snapshots/pl'}})
+        self._patch(monkeypatch, client)
+        call_command('locations_import_snapshot', 'pl-2026-09-24')
+        assert client.snapshot.ops[-2:] == [('forget', 'locations-pl'), ('register', 'locations-pl')]
+
+    def test_a_repository_never_registered_is_no_error(self, monkeypatch):
+        from django.core.management import call_command
+
+        client = FakeClient()
+        self._patch(monkeypatch, client)
+        call_command('locations_import_snapshot', 'pl-2026-09-24')
+        assert client.snapshot.restored[0][0] == 'pl-2026-09-24'
+
+    def test_a_directory_with_snapshot_files_and_none_listed_says_why(self, monkeypatch, tmp_path):
+        """A newer, emptied index-N left beside the pack's is read first."""
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        (tmp_path / 'be').mkdir()
+        (tmp_path / 'be' / 'snap-x.dat').write_bytes(b'')
+        client = FakeClient()
+        client.snapshot.get = lambda repository, snapshot: {'snapshots': []}
+        self._patch(monkeypatch, client)
+        out = StringIO()
+        call_command('locations_import_snapshot', 'be', '--host-root', str(tmp_path), stdout=out)
+        assert 'nothing to load' in out.getvalue()
+        assert 'unpack the pack again' in out.getvalue()
+
+
 class TestThePackageCommand:
     @staticmethod
     def _patch(monkeypatch, client):
@@ -411,3 +470,81 @@ class TestLoadingNeedsNoDatabase:
         assert client.snapshot.restored, 'nothing was restored'
         assert {a['add']['alias'] for a in client.indices.alias_actions} == {
             '{}-streets'.format(prefix), '{}-addresses'.format(prefix)}
+
+
+class TestADirectoryPerStateToo:
+    def test_the_directory_is_everything_before_the_date(self):
+        from django_osm_locations.management.commands.locations_import_snapshot import Command
+
+        assert Command.directory_for({'snapshot': 'us-ca-2026-10-18'}) == 'us-ca'
+        assert Command.directory_for({'snapshot': 'pl-2026-10-02'}) == 'pl'
+
+
+class AliasClient:
+    """Just enough of a cluster for aliases: which index is under which, and deletes."""
+
+    def __init__(self, aliases):
+        self.aliases = {a: set(i) for a, i in aliases.items()}
+        self.deleted = []
+        client = self
+
+        class Indices:
+            def exists_alias(self, name):
+                return name in client.aliases
+
+            def get_alias(self, name):
+                return {i: {} for i in client.aliases.get(name, ())}
+
+            def update_aliases(self, body):
+                for action in body['actions']:
+                    if 'remove' in action:
+                        client.aliases[action['remove']['alias']].discard(action['remove']['index'])
+
+            def delete(self, index):
+                client.deleted.append(index)
+
+        self.indices = Indices()
+
+
+class TestANewerVersionReplacesTheOlder:
+    """Two versions of one part under an alias would answer every search twice."""
+
+    def test_the_older_one_leaves_and_is_deleted(self):
+        from django_osm_locations.search.snapshots import retire_older
+
+        client = AliasClient({'locations-streets': {
+            'locations-streets-us-ca-20261001000000', 'locations-streets-us-ca-20261018000000'}})
+        retired = retire_older(['locations-streets-us-ca-20261018000000'], client=client,
+                               prefix='locations')
+        assert retired == ['locations-streets-us-ca-20261001000000']
+        assert client.aliases['locations-streets'] == {'locations-streets-us-ca-20261018000000'}
+
+    def test_another_state_and_a_country_are_left_alone(self):
+        from django_osm_locations.search.snapshots import retire_older
+
+        kept = {'locations-streets-us-tx-20261001000000', 'locations-streets-pl-20261001000000',
+                'locations-streets-us-20261001000000'}
+        client = AliasClient({'locations-streets': kept | {'locations-streets-us-ca-20261018000000'}})
+        assert retire_older(['locations-streets-us-ca-20261018000000'], client=client,
+                            prefix='locations') == []
+        assert client.deleted == []
+
+    def test_the_country_document_does_not_take_the_states(self):
+        """us is a token of its own: its newer version replaces only us."""
+        from django_osm_locations.search.snapshots import retire_older
+
+        client = AliasClient({'locations-countries': {
+            'locations-countries-us-20261001000000', 'locations-countries-us-ca-20261001000000'}})
+        retired = retire_older(['locations-countries-us-20261018000000'], client=client,
+                               prefix='locations')
+        assert retired == ['locations-countries-us-20261001000000']
+
+
+class TestWhatAnUndatedNameLoads:
+    def test_a_country_is_its_own_directory(self, tmp_path):
+        from django_osm_locations.management.commands.locations_import_snapshot import Command
+
+        for name in ('pl', 'us', 'us-ca', 'us-tx', 'usx'):
+            (tmp_path / name).mkdir()
+        assert Command.group_directories('pl', str(tmp_path)) == ['pl']
+        assert Command.group_directories('us', str(tmp_path)) == ['us', 'us-ca', 'us-tx']

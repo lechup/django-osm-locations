@@ -19,6 +19,8 @@ consumer with a working index they cannot see:
 * an index restored beside an existing one must not evict it, because several
   countries under one alias is the whole point
 """
+import re
+
 from .client import get_client, get_index_prefix
 from .indexes import INDEXES
 
@@ -70,6 +72,25 @@ def register_repository(client=None, name=DEFAULT_REPOSITORY,
             'needs path.repo set to that directory before it starts; see '
             'docker-compose.local.yml. Underlying error: {}'.format(location, error)
         )
+    return name
+
+
+def forget_repository(client=None, name=DEFAULT_REPOSITORY):
+    """
+    Have the cluster forget a repository, leaving its files alone.
+
+    A registered repository is remembered at the generation -- the index-N --
+    it last wrote or read. A pack unpacked into that directory since is
+    another repository on disk, and read through the old memory it lists
+    nothing: every state packed here once loaded as "nothing to load".
+    Forgotten, it is read afresh when it is registered again.
+    """
+    client = client or get_client()
+    try:
+        client.snapshot.delete_repository(repository=name)
+    except Exception as error:
+        if getattr(error, 'status_code', None) != 404:
+            raise
     return name
 
 
@@ -210,3 +231,37 @@ def _alias_for(index, prefix):
         if index.startswith('{}-{}-'.format(prefix, name)):
             return INDEXES[name].alias(prefix)
     return None
+
+
+STAMP = re.compile(r'^\d{14}$')
+
+
+def retire_older(indexes, client=None, prefix=None):
+    """
+    Take older versions of the given indexes out of their aliases and delete
+    them: the same part -- a country, or a state, us-ca -- loaded again from a
+    newer pack.
+
+    Matched on the whole token: replacing us-ca leaves us-tx alone, and a
+    country token never matches a state's.
+    """
+    client = client or get_client()
+    prefix = prefix or get_index_prefix()
+    new = set(indexes)
+    retired = []
+    for index in indexes:
+        alias = _alias_for(index, prefix)
+        if not alias or not client.indices.exists_alias(name=alias):
+            continue
+        stem = '{}-'.format(alias)
+        token = index[len(stem):].rsplit('-', 1)[0]
+        for other in client.indices.get_alias(name=alias):
+            if other in new or not other.startswith(stem + token + '-'):
+                continue
+            if not STAMP.match(other[len(stem + token + '-'):]):
+                continue
+            client.indices.update_aliases(body={'actions': [
+                {'remove': {'index': other, 'alias': alias}}]})
+            client.indices.delete(index=other)
+            retired.append(other)
+    return retired

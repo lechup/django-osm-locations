@@ -110,6 +110,93 @@ def cut_extract(path, bbox, out_path):
     return written
 
 
+def relations_extract(path, out_path, keep, fill_from=()):
+    """
+    The relations ``keep(tags)`` accepts, with their ways and nodes, written
+    to ``out_path``; and the member ways no extract had, by id.
+
+    What Geofabrik's state extracts lack: Wyoming's holds 230 of the 299 ways
+    of Wyoming's own border, the ones on the state line being cut away, and a
+    county on the line shares those ways. The whole country's extract has
+    them all, and is too big to import, but not to read three times for the
+    borders alone -- a few thousand ways, merged into each state before it is
+    imported.
+
+    Nearly all: Alaska's border leaves the country's extract for 150 m of the
+    Arctic coast at the Yukon line, one way, and without it the mainland's
+    ring never closes -- Alaska imported as a few Aleutian islands. A way the
+    country's extract lacks is looked for in ``fill_from``, the neighbours'
+    extracts, with its nodes.
+    """
+    import osmium
+
+    relations, ways = set(), set()
+    for relation in osmium.FileProcessor(path, osmium.osm.RELATION):
+        if keep({tag.k: tag.v for tag in relation.tags}):
+            relations.add(relation.id)
+            ways.update(m.ref for m in relation.members if m.type == 'w')
+
+    nodes, found = set(), set()
+    if ways:
+        for way in osmium.FileProcessor(path, osmium.osm.WAY).with_filter(
+                osmium.filter.IdFilter(ways)):
+            found.add(way.id)
+            nodes.update(node.ref for node in way.nodes)
+
+    missing = ways - found
+    fills = []
+    for number, extra in enumerate(fill_from):
+        if not missing:
+            break
+        fill = '{}.fill{}.osm.pbf'.format(out_path, number)
+        missing -= _ways_extract(extra, fill, missing)
+        fills.append(fill)
+
+    main = out_path + ('.main.osm.pbf' if fills else '.part')
+    if os.path.exists(main):
+        os.remove(main)
+    writer = osmium.SimpleWriter(osmium.io.File(main, 'pbf'))
+    written = 0
+    try:
+        for kind, ids in ((osmium.osm.NODE, nodes), (osmium.osm.WAY, found),
+                          (osmium.osm.RELATION, relations)):
+            if not ids:
+                continue
+            for obj in osmium.FileProcessor(path, kind).with_filter(osmium.filter.IdFilter(ids)):
+                writer.add(obj)
+                written += 1
+    finally:
+        writer.close()
+    if fills:
+        # a shared node -- where the filled way meets the rest -- is written once
+        written = merge_extracts([main] + fills, out_path)
+        for part in [main] + fills:
+            os.remove(part)
+    else:
+        os.replace(main, out_path)
+    return written, sorted(missing)
+
+
+def _ways_extract(path, out_path, ids):
+    """The ways of ``ids`` that ``path`` has, with their nodes, to ``out_path``; their ids."""
+    import osmium
+
+    found, nodes = set(), set()
+    for way in osmium.FileProcessor(path, osmium.osm.WAY).with_filter(osmium.filter.IdFilter(ids)):
+        found.add(way.id)
+        nodes.update(node.ref for node in way.nodes)
+    writer = osmium.SimpleWriter(osmium.io.File(out_path, 'pbf'))
+    try:
+        for kind, wanted in ((osmium.osm.NODE, nodes), (osmium.osm.WAY, found)):
+            if not wanted:
+                continue
+            for obj in osmium.FileProcessor(path, kind).with_filter(osmium.filter.IdFilter(wanted)):
+                writer.add(obj)
+    finally:
+        writer.close()
+    return found
+
+
 def is_stale(out_path, paths):
     """Whether ``out_path`` is missing or older than any of ``paths``."""
     if not os.path.exists(out_path):

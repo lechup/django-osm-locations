@@ -138,7 +138,7 @@ LIMITS=(-p MemorySwapMax=0)
 # someone is using, and it only has to finish, not to win. Weights only bite
 # under contention -- alone, it runs at full speed. CPU_WEIGHT=100 IO_WEIGHT=100
 # NICE=0 put it back level with everything else.
-LIMITS+=(-p CPUWeight="${CPU_WEIGHT:-20}" -p IOWeight="${IO_WEIGHT:-20}" --nice="${NICE:-10}")
+LIMITS+=(-p CPUWeight="${CPU_WEIGHT:-20}" -p IOWeight="${IO_WEIGHT:-20}" --nice="${NICE:-19}")
 
 SCOPE=()
 MODE=plain

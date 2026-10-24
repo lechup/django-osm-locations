@@ -40,7 +40,7 @@ if [ $# -gt 0 ]; then packs=("$@"); else
 fi
 
 for name in "${packs[@]}"; do
-    iso=${name%%-*}
+    iso=${name%-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]}   # pl, or a state's us-ca
     pack=dist/snapshots/$name
     repo=local/snapshots/$iso
     step "repair $name"

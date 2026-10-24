@@ -110,3 +110,53 @@ class TestWhichRowsAreIndexed:
     def test_the_count_follows_the_same_filter(self, poland):
         r = reindexer(poland, index='countries')
         assert r.database_count() == 1
+
+
+class TestAStateReplacesOnlyItself:
+    """One state's rebuild must leave the other 52 under the alias."""
+
+    def reindexer(self, token):
+        from django_osm_locations.search.indexer import Reindexer
+        from django_osm_locations.search.indexes import INDEXES
+
+        class US:
+            iso2 = 'US'
+
+        return Reindexer(INDEXES['streets'], client=object(), prefix='locations',
+                         suffix='20261018000000', country=US(), token=token)
+
+    def test_the_index_is_named_for_the_state(self):
+        assert self.reindexer('us-ca').index_name == 'locations-streets-us-ca-20261018000000'
+
+    def test_it_replaces_its_own_state(self):
+        assert self.reindexer('us-ca').replaces('locations-streets-us-ca-20261001000000')
+
+    def test_it_leaves_the_others(self):
+        r = self.reindexer('us-ca')
+        assert not r.replaces('locations-streets-us-tx-20261001000000')
+        assert not r.replaces('locations-streets-pl-20261001000000')
+
+
+class TestTheCountryOfItsParts:
+    """The United States' document, built from the states it is packed in."""
+
+    def parts(self):
+        def square(x0, y0, x1, y1):
+            return {'type': 'Polygon',
+                    'coordinates': [[[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]]}
+
+        return [{'name': 'Wyoming', 'geometry': square(0, 0, 2, 1), 'area': 2.0},
+                {'name': 'Colorado', 'geometry': square(2, 0, 4, 1), 'area': 2.0}]
+
+    def test_one_border_from_every_part(self):
+        from django_osm_locations.management.commands.importers import get_importer
+        from django_osm_locations.management.commands.locations_build_group_country import (
+            country_document,
+        )
+
+        doc = country_document(get_importer('us-wyoming'), self.parts())
+        assert (doc['name'], doc['slug'], doc['type']) == ('United States', 'united-states', 'countries')
+        assert doc['bbox'] == [0.0, 0.0, 4.0, 1.0]
+        assert doc['geometry']['type'] == 'Polygon', 'adjacent states are one shape'
+        assert doc['area'] == 4.0
+        assert doc['ancestry'] == []

@@ -36,7 +36,8 @@ from ...search.indexer import reindexers
 LIVE, PENDING, ROLLBACK, STALE, UNKNOWN = 'live', 'pending', 'rollback', 'stale', 'unknown'
 
 #: What follows ``<prefix>-<type>-``: an optional country token, then the stamp.
-TAIL = re.compile(r'^(?:(?P<country>[a-z]{2})-)?(?P<stamp>\d{14})$')
+# a country's code, or a state's: us-ca
+TAIL = re.compile(r'^(?:(?P<country>[a-z]{2}(?:-[a-z]{2})?)-)?(?P<stamp>\d{14})$')
 
 #: The group of indexes built for every country at once.
 ALL = 'all'

@@ -295,6 +295,25 @@ class BaseImporter(object):
     #: (min lon, min lat, max lon, max lat) to read of the extract, for such a
     #: country: the corner it sits in is cut out first, and only that is read.
     extract_bbox = None
+    #: The name that imports a whole set of these, when this is part of a
+    #: country imported a piece at a time: ``united-states`` for each state.
+    group = None
+    #: For such a part: the whole country's extract, path and name, that the
+    #: borders a part's own extract cuts off are taken from. Only the
+    #: relations ``is_border_relation`` accepts are read of it.
+    borders_from = None
+    #: Neighbours' extracts, path and name, a member way of those borders is
+    #: looked for in when the whole country's extract lacks it too.
+    borders_fill_from = ()
+
+    @classmethod
+    def index_token_for(cls):
+        """
+        What tells this one's indexes and pack apart from the rest: the
+        country's ISO code, or a state's ``us-ca`` when a country comes in
+        parts that each have to be replaced on their own.
+        """
+        return cls.iso2.lower()
     #: Further extracts holding parts of the country, as ``path/name`` --
     #: ``'africa/canary-islands'`` for Spain. They are merged with the main
     #: one into a single file before the import reads it.
@@ -719,8 +738,7 @@ class BaseImporter(object):
             print("No admin_level=2 relation for %s in this extract; "
                   "importing everything it contains.\n" % self.country)
             return
-        multiline = self._get_multiline_from_members(self.country_boundary_members)
-        border = self._get_multipolygon_from_multiline(multiline)
+        border = self._get_border_from_members(self.country_boundary_members)
         if border is None:
             print("Could not assemble a border for %s; "
                   "importing everything this extract contains.\n" % self.country)
@@ -728,6 +746,24 @@ class BaseImporter(object):
         self.country_border = border
         self.country_boundary = border.prepared
         print("Country boundary assembled for %s.\n" % self.country)
+        open_ends = self._open_ends(self.country_boundary_members)
+        if open_ends:
+            # Alaska's said "assembled" with its mainland's ring open for want
+            # of one way, and imported as a few Aleutian islands
+            print("WARNING: the border of %s does not close: %d open ends, the first at %s. "
+                  "What lies inside the open ring is left out; the extract lacks a way of it.\n"
+                  % (self.country, len(open_ends), open_ends[0]))
+
+    def _open_ends(self, members):
+        """Where a relation's outer ways stop without meeting another; none, for a closed border."""
+        from collections import Counter
+
+        ends = Counter()
+        for line in self._get_multiline_from_members(
+                [m for m in members if m[1] == 'w' and m[2] != 'inner']) or ():
+            ends[line.coords[0]] += 1
+            ends[line.coords[-1]] += 1
+        return sorted(point for point, count in ends.items() if count % 2)
 
     def _within_country(self, geometry):
         """
@@ -812,6 +848,41 @@ class BaseImporter(object):
             return multilinestring
         else:
             return None
+
+    def _get_border_from_members(self, members):
+        """
+        A relation's border, with its holes.
+
+        Every member way used to go into one polygonize, outer and inner
+        alike. A ring with a hole comes out of that as two faces -- the ring,
+        and the hole as a polygon of its own -- and the union of the two fills
+        the hole back in: Niederösterreich covered Vienna, Bezirk Graz-Umgebung
+        covered Graz, Minsk raion covered Minsk, and every street of Vienna
+        was in Lower Austria. At the top, Italy's border covered San Marino
+        and the Vatican, Switzerland's Büsingen and Campione.
+
+        So the roles are read: the outer ways make the border, the inner ones
+        what is cut out of it. A member with no role counts as outer, as OSM
+        reads it.
+        """
+        outer = [m for m in members if m[1] == 'w' and m[2] != 'inner']
+        inner = [m for m in members if m[1] == 'w' and m[2] == 'inner']
+        border = self._get_multipolygon_from_multiline(self._get_multiline_from_members(outer))
+        if border is None or not inner:
+            return border
+        holes = self._get_multipolygon_from_multiline(self._get_multiline_from_members(inner))
+        if holes is None:
+            return border
+        cut = border.difference(holes)
+        if cut.empty:
+            return border
+        if cut.geom_type == 'Polygon':
+            cut = MultiPolygon(cut)
+        elif cut.geom_type != 'MultiPolygon':
+            # a difference can come back as a collection; keep its polygons
+            polygons = [g for g in cut if g.geom_type == 'Polygon']
+            cut = MultiPolygon(polygons) if polygons else border
+        return cut
 
     def _get_multiline_from_members(self, members):
         lines = []
@@ -1254,8 +1325,7 @@ class BaseImporter(object):
 
     def _import_countrysubarea_from_relation(self, osm_id, tags, members):
         if self._is_relation_countrysubarea(osm_id, tags, members) and self._are_all_members_cached(members):
-            multiline = self._get_multiline_from_members(members)
-            border = self._get_multipolygon_from_multiline(multiline)
+            border = self._get_border_from_members(members)
             if border and not self._within_country(border):
                 return
             if border:
@@ -1278,7 +1348,7 @@ class BaseImporter(object):
                             countrysubarea_defaults['center'] = candidate
                 self._upsert(CountrySubarea, 'relation_osm_id', osm_id, countrysubarea_defaults)
             else:
-                if multiline:
+                if self._get_multiline_from_members(members):
                     tqdm.write(
                         "CountrySubarea not valid (doesn't have border but have multiline): "
                         "{} http://openstreetmap.org/relation/{}".format(tags.get('name'), osm_id)
@@ -1286,8 +1356,7 @@ class BaseImporter(object):
 
     def _import_place_from_relation(self, osm_id, tags, members):
         if self._is_relation_place(osm_id, tags, members) and self._are_all_members_cached(members):
-            multiline = self._get_multiline_from_members(members)
-            border = self._get_multipolygon_from_multiline(multiline)
+            border = self._get_border_from_members(members)
             if border and not self._within_country(border):
                 return
             if border:
@@ -1316,7 +1385,7 @@ class BaseImporter(object):
                     self.already_imported_places_node_ids.add(center_node_id)
                 self._upsert(Place, 'relation_osm_id', osm_id, place_defaults)
             else:
-                if multiline:
+                if self._get_multiline_from_members(members):
                     tqdm.write(
                         "Place not valid (doesn't have border but have multiline): "
                         "{} http://openstreetmap.org/relation/{}".format(tags.get('name'), osm_id)
@@ -1355,8 +1424,7 @@ class BaseImporter(object):
 
     def _import_placesubarea_from_relation(self, osm_id, tags, members):
         if self._is_relation_placesubarea(osm_id, tags, members) and self._are_all_members_cached(members):
-            multiline = self._get_multiline_from_members(members)
-            border = self._get_multipolygon_from_multiline(multiline)
+            border = self._get_border_from_members(members)
             if border and not self._within_country(border):
                 return
             if border:
@@ -1378,7 +1446,7 @@ class BaseImporter(object):
                             placesubarea_defaults['center'] = candidate
                 self._upsert(PlaceSubarea, 'relation_osm_id', osm_id, placesubarea_defaults)
             else:
-                if multiline:
+                if self._get_multiline_from_members(members):
                     tqdm.write(
                         "PlaceSubarea not valid (doesn't have border but have multiline): "
                         "{} http://openstreetmap.org/relation/{}".format(tags.get('name'), osm_id)
