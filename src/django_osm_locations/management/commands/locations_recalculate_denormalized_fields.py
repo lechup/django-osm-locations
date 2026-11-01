@@ -989,6 +989,228 @@ class Command(BaseCommand):
             )
             print("  {} linked".format(cursor.rowcount))
 
+    #: The pieces of one street: a name in a place more than once.
+    SQL_FOR_NAMESAKE_STREETS = """
+        CREATE TEMPORARY TABLE "namesake_streets" ON COMMIT DROP AS
+        SELECT min(id) AS keeper, array_agg(id) AS ids,
+               ST_Multi(ST_LineMerge(ST_Multi(ST_Union(lines)))) AS lines
+        FROM "locations_street" s
+        WHERE NOT is_merged AND lines IS NOT NULL
+          AND place[1][2] IS NOT NULL AND place[1][2] <> ''{scope}
+        GROUP BY name, place[1][2]
+        HAVING count(*) > 1
+    """
+
+    @classmethod
+    def get_sql_for_namesake_streets(cls):
+        """
+        One street of each name in each place, its pieces joined.
+
+        A gap in the line is still the same street. The import joined the
+        pieces only inside a place's border, as it read them, and a village
+        drawn as a point has none: 21,973 names stood as 64,647 streets in
+        Poland, and 177 of a sample of 200 were in places with no border. Run
+        once every street's place is final, and before the slugs, which then
+        see one street where there were several.
+
+        The pieces keep their rows, marked as merged, as the import's own
+        merge leaves them. The one that stays is measured again, as the area
+        and length pass would have: geodesic length, a point on the line, the
+        extent.
+        """
+        return [
+            cls.SQL_FOR_NAMESAKE_STREETS.format(scope=RecalcScope.sql('street', 's')),
+            """
+            UPDATE "locations_street" AS s SET
+                lines = g.lines,
+                length = ST_Length(g.lines::geography),
+                center = ST_PointOnSurface(g.lines),
+                bbox = ARRAY[ST_XMin(g.lines), ST_YMin(g.lines),
+                             ST_XMax(g.lines), ST_YMax(g.lines)]
+            FROM "namesake_streets" g
+            WHERE s.id = g.keeper
+            """,
+            """
+            UPDATE "locations_street" AS s SET is_merged = true
+            FROM "namesake_streets" g
+            WHERE s.id = ANY(g.ids) AND s.id <> g.keeper
+            """,
+        ]
+
+    @classmethod
+    @transaction.atomic
+    def merge_namesake_streets(cls):
+        print("Street - joining the pieces of each street...")
+        with connection.cursor() as cursor:
+            first, joined, merged = cls.get_sql_for_namesake_streets()
+            # dropped at commit, which a test's transaction never reaches
+            cursor.execute('DROP TABLE IF EXISTS "namesake_streets"')
+            cursor.execute(first)
+            cursor.execute(joined)
+            names = cursor.rowcount
+            cursor.execute(merged)
+            print("  {} streets from {} more pieces".format(names, cursor.rowcount))
+
+    #: An address with no street yet, in any of the shapes the array can take.
+    UNLINKED = """(a2.street IS NULL
+                   OR array_length(a2.street, 1) IS NULL
+                   OR a2.street = ARRAY[ARRAY['','']]::varchar[])"""
+
+    @classmethod
+    def get_sql_for_address_street_in_place(cls):
+        """
+        Point an address at the street it names in its own place, however far.
+
+        The first link looks no further than ADDRESS_MATCH_METRES, and in a
+        city a house can stand further than that from the line of its street:
+        a block set back across a courtyard, a building in an estate. 474,944
+        of Poland's addresses naming a street had none, and of a sample of
+        420 of them 371 had a street of exactly that name in their own place,
+        362 of those 100-500 m away. With the pieces of each street joined,
+        one name in one place is one street, so distance has nothing left to
+        decide.
+        """
+        return """
+            UPDATE "locations_address" AS a SET street = x.pair
+            FROM (
+                SELECT a2.id, ARRAY[ARRAY[s.name, s.slug]]::varchar[] AS pair
+                -- OFFSET 0 keeps the filter inside, as in the first link
+                FROM (
+                    SELECT * FROM "locations_address" a2
+                    WHERE a2.street_name <> '' AND a2.center IS NOT NULL
+                      AND a2.place[1][2] IS NOT NULL AND a2.place[1][2] <> ''
+                      AND {unlinked}{scope}
+                    OFFSET 0
+                ) a2
+                CROSS JOIN LATERAL (
+                    SELECT name, slug
+                    FROM "locations_street"
+                    WHERE NOT is_merged AND lines IS NOT NULL
+                      AND name = a2.street_name
+                      AND place[1][2] = a2.place[1][2]
+                    ORDER BY lines <-> a2.center
+                    LIMIT 1
+                ) s
+            ) AS x
+            WHERE a.id = x.id;
+        """.format(unlinked=cls.UNLINKED, scope=RecalcScope.sql('address', 'a2'))
+
+    #: For the lookup above: by name and place, where the name alone would
+    #: read every Polna in the country -- 7,964 of them in Poland.
+    SQL_FOR_STREET_NAME_PLACE_INDEX = (
+        'CREATE INDEX IF NOT EXISTS "locations_street_name_place_tmp" '
+        'ON "locations_street" (name, (place[1][2])) WHERE NOT is_merged')
+
+    @classmethod
+    @transaction.atomic
+    def link_addresses_to_streets_in_their_place(cls):
+        print("Address - linking the rest to the street they name in their place...")
+        with connection.cursor() as cursor:
+            cursor.execute(cls.SQL_FOR_STREET_NAME_PLACE_INDEX)
+            cursor.execute('ANALYZE "locations_street"')
+            cursor.execute(cls.get_sql_for_address_street_in_place())
+            linked = cursor.rowcount
+            cursor.execute('DROP INDEX "locations_street_name_place_tmp"')
+            print("  {} linked".format(linked))
+
+    #: What an address's slug will be, as get_sql_for_address_slugs makes it:
+    #: one number on one street, or in one place when there is no street.
+    ADDRESS_SLUG = """left(CASE
+        WHEN street[1][2] IS NOT NULL AND street[1][2] <> ''
+            THEN slugify(street[1][2] || '-' || house_number)
+        WHEN place[1][2] IS NOT NULL AND place[1][2] <> ''
+            THEN slugify(place[1][2] || '-' || house_number)
+        ELSE slugify(name)
+    END, 255)"""
+
+    @classmethod
+    def get_sql_for_repeated_houses(cls):
+        """
+        Every address whose number comes more than once on its street.
+
+        On its street by the slug it will have, and among the addresses with
+        no street yet by the street they name as well, since their slug is
+        their place's. Which of them are one house is distance, decided in
+        Python: see utils.duplicates.
+        """
+        return """
+            SELECT id, slug, named, ST_X(center), ST_Y(center), outline, postcode
+            FROM (
+                SELECT id, {slug} AS slug,
+                       CASE WHEN {unlinked} THEN street_name ELSE '' END AS named,
+                       center, way_osm_id IS NOT NULL AS outline, postcode,
+                       count(*) OVER (PARTITION BY {slug},
+                                      CASE WHEN {unlinked} THEN street_name ELSE '' END) AS n
+                FROM "locations_address" a2
+                WHERE NOT is_merged AND center IS NOT NULL AND house_number <> ''{scope}
+            ) t
+            WHERE n > 1
+            ORDER BY slug, named, id
+        """.format(slug=cls.ADDRESS_SLUG, unlinked=cls.UNLINKED,
+                   scope=RecalcScope.sql('address', 'a2'))
+
+    @classmethod
+    def resolve_repeated_houses(cls, rows):
+        """
+        ``rows`` as the query above returns them -> what to write.
+
+        ``(kept, merged)``: for each house that stays, ``(id, lon, lat,
+        postcode)``, and the ids of the rows it stands for.
+        """
+        from itertools import groupby
+
+        from ...utils.duplicates import clusters, keeper, merged_center, merged_postcode
+
+        kept, merged = [], []
+        for _, group in groupby(rows, key=lambda row: (row[1], row[2])):
+            group = list(group)
+            points = [(row[3], row[4]) for row in group]
+            for members in clusters(points):
+                if len(members) < 2:
+                    continue
+                rows_ = [group[i] for i in members]
+                outlines = [row[5] for row in rows_]
+                stays = rows_[keeper(outlines)]
+                lon, lat = merged_center([(row[3], row[4]) for row in rows_], outlines)
+                kept.append((stays[0], lon, lat, merged_postcode([row[6] for row in rows_])))
+                merged.extend(row[0] for row in rows_ if row is not stays)
+        return kept, merged
+
+    @classmethod
+    @transaction.atomic
+    def merge_repeated_houses(cls):
+        """
+        One address for each house, where the extract has several.
+
+        Mostly a shop or an office carrying the address of the building it is
+        in, several buildings under one number, or an address point and the
+        outline of its building: see utils.duplicates. The rest keep their
+        rows, marked as merged, and the index leaves them out.
+        """
+        from django.contrib.gis.geos import Point
+        from psycopg2.extras import execute_values
+
+        print("Address - one row for each house...")
+        with connection.cursor() as cursor:
+            cursor.execute(cls.get_sql_for_repeated_houses())
+            kept, merged = cls.resolve_repeated_houses(cursor.fetchall())
+            if kept:
+                # the box around the point, as the model's own hook makes it
+                rows = [(pk, lon, lat, postcode, Address(center=Point(lon, lat)).near_bbox())
+                        for pk, lon, lat, postcode in kept]
+                execute_values(cursor, """
+                    UPDATE "locations_address" AS a SET
+                        center = ST_SetSRID(ST_MakePoint(v.lon, v.lat), 4326),
+                        postcode = v.postcode,
+                        bbox = v.bbox::double precision[]
+                    FROM (VALUES %s) AS v(id, lon, lat, postcode, bbox)
+                    WHERE a.id = v.id
+                """, rows, page_size=1000)
+            for start in range(0, len(merged), 10000):
+                cursor.execute('UPDATE "locations_address" SET is_merged = true WHERE id = ANY(%s)',
+                               [merged[start:start + 10000]])
+            print("  {} houses from {} more rows".format(len(kept), len(merged)))
+
     @classmethod
     @transaction.atomic
     def update_street_place_field(cls):

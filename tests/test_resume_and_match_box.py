@@ -24,7 +24,9 @@ from django_osm_locations.management.commands.locations_recalculate_denormalized
 EFFECTFUL = (
     'clean_denorm_fields_before_update', 'update_street_place_field',
     'inherit_street_ancestry_from_place', 'inherit_address_ancestry_from_place',
+    'merge_namesake_streets',
     'update_address_street_field', 'place_addresses_outside_places',
+    'link_addresses_to_streets_in_their_place', 'merge_repeated_houses',
     'clean_denorm_fields_after_update',
     'update_address_slugs',
 )

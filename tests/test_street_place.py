@@ -112,6 +112,9 @@ class TestTheWalkRunsItInTimeToMatter:
                 mock.patch.object(Denorm, 'inherit_street_ancestry_from_place'), \
                 mock.patch.object(Denorm, 'update_address_street_field'), \
                 mock.patch.object(Denorm, 'place_addresses_outside_places'), \
+                mock.patch.object(Denorm, 'merge_namesake_streets'), \
+                mock.patch.object(Denorm, 'link_addresses_to_streets_in_their_place'), \
+                mock.patch.object(Denorm, 'merge_repeated_houses'), \
                 mock.patch.object(Denorm, 'update_address_slugs'), \
                 mock.patch.object(Denorm, 'clean_denorm_fields_after_update'), \
                 mock.patch.object(Denorm, 'update_street_place_field',

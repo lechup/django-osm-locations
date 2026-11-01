@@ -131,6 +131,11 @@ class Command(BaseCommand):
             reindexer.create()
             self.stdout.write('  building {}'.format(reindexer.index_name))
             reindexer.populate(total=expected)
+            if reindexer.without_geometry:
+                self.stdout.write('  {} indexed without the geometry OpenSearch refused:'.format(
+                    len(reindexer.without_geometry)))
+                for pk, label, reason in reindexer.without_geometry:
+                    self.stdout.write('    {} {}: {}'.format(pk, label, reason))
 
             actual = reindexer.indexed_count()
             self.stdout.write('  indexed {} of {}'.format(actual, expected))

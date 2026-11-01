@@ -87,6 +87,18 @@ SIMPLER_ENOUGH = 0.95
 #: anything further out is a geometry to reject rather than accept quietly.
 SAME_LAND_WITHIN = 0.001
 
+#: Below this share of a border left as land, the unit is the sea's, and has
+#: no border at all.
+#:
+#: Mecklenburg-Vorpommern's coastal waters are 7,773 km2 of sea with the
+#: islands cut out of it. Clipped, they came back as 9,651 crumbs along the
+#: coast, 3.9 km2 in all -- the slivers where the coastline and the
+#: municipalities' borders disagree -- claiming bits of beach, with an area
+#: that meant nothing, and one of them a triangle OpenSearch refused. Under
+#: 1% of land is no land: the row keeps its name, centre and bounding box,
+#: and claims nothing.
+NO_LAND_BELOW = 0.01
+
 
 def land_polygons_table():
     return getattr(settings, 'LOCATIONS_LAND_POLYGONS_TABLE', None)
@@ -263,6 +275,13 @@ class Command(BaseCommand):
         return cls.CHANGED_ENOUGH.format(
             shrunk=SHRUNK_ENOUGH, simpler=SIMPLER_ENOUGH, same_land=SAME_LAND_WITHIN)
 
+    #: A border the clip left with next to no land: see NO_LAND_BELOW.
+    NO_LAND = 'ST_Area(c.border::geography) < ST_Area(loc.border::geography) * {below}'
+
+    @classmethod
+    def no_land(cls):
+        return cls.NO_LAND.format(below=NO_LAND_BELOW)
+
     @classmethod
     def sql_for_apply(cls, model_name):
         """
@@ -273,28 +292,37 @@ class Command(BaseCommand):
         removed, and a centre outside its own border breaks the point-in-
         polygon pass that builds ancestry. ``bbox`` is maintained here too
         because the model's presave hooks do not run for a bulk UPDATE.
+
+        A border left with next to no land goes, and its area with it; the
+        centre and bounding box stay, saying where the unit is.
         """
         return """
             UPDATE "locations_{model_name}" AS loc SET
-                border = ST_RemoveRepeatedPoints(c.border, {merge}),
-                area   = ST_Area(c.border::geography) / 1000000,
-                bbox   = ARRAY[ST_XMin(c.border), ST_YMin(c.border),
-                               ST_XMax(c.border), ST_YMax(c.border)],
-                center = CASE WHEN ST_Intersects(c.border, loc.center) THEN loc.center
+                border = CASE WHEN {no_land} THEN NULL
+                              ELSE ST_RemoveRepeatedPoints(c.border, {merge}) END,
+                area   = CASE WHEN {no_land} THEN 0
+                              ELSE ST_Area(c.border::geography) / 1000000 END,
+                bbox   = CASE WHEN {no_land} THEN loc.bbox
+                              ELSE ARRAY[ST_XMin(c.border), ST_YMin(c.border),
+                                         ST_XMax(c.border), ST_YMax(c.border)] END,
+                center = CASE WHEN {no_land} THEN loc.center
+                              WHEN ST_Intersects(c.border, loc.center) THEN loc.center
                               ELSE ST_PointOnSurface(c.border) END
             FROM "{staging}" c
             WHERE loc.id = c.id AND {changed};
         """.format(model_name=model_name, staging=cls.staging_name(model_name),
-                   merge=MERGE_VERTICES_CLOSER_THAN, changed=cls.changed_enough())
+                   merge=MERGE_VERTICES_CLOSER_THAN, changed=cls.changed_enough(),
+                   no_land=cls.no_land())
 
     @classmethod
     def sql_for_count(cls, model_name):
+        """The borders the apply will write, and how many of them it empties."""
         return """
-            SELECT count(*) FROM "{staging}" c
+            SELECT count(*), count(*) FILTER (WHERE {no_land}) FROM "{staging}" c
             JOIN "locations_{model_name}" loc ON loc.id = c.id
             WHERE {changed};
         """.format(staging=cls.staging_name(model_name), model_name=model_name,
-                   changed=cls.changed_enough())
+                   changed=cls.changed_enough(), no_land=cls.no_land())
 
     @classmethod
     def subdivided_tolerance(cls, cursor, subdivided):
@@ -367,9 +395,11 @@ class Command(BaseCommand):
                 with connection.cursor() as cursor:
                     cursor.execute(self.sql_for_clip(model_name, table, country_id))
                     cursor.execute(self.sql_for_count(model_name))
-                    changed = cursor.fetchone()[0]
+                    changed, emptied = cursor.fetchone()
+                    of_them = ', {} of them to no border, under {:.0%} land'.format(
+                        emptied, NO_LAND_BELOW) if emptied else ''
                     if dry_run:
-                        self.stdout.write('  {} would be clipped'.format(changed))
+                        self.stdout.write('  {} would be clipped{}'.format(changed, of_them))
                         continue
                     cursor.execute(self.sql_for_apply(model_name))
-                    self.stdout.write('  {} clipped'.format(changed))
+                    self.stdout.write('  {} clipped{}'.format(changed, of_them))

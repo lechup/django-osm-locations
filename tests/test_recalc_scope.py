@@ -120,6 +120,9 @@ class TestEveryStepIsRestricted:
         'address map': Denorm.get_sql_for_address_place_map,
         'address slugs': Denorm.get_sql_for_address_slugs,
         'addresses outside places': Denorm.get_sql_for_address_outside_places,
+        'namesake streets': lambda: Denorm.get_sql_for_namesake_streets()[0],
+        'address link in its place': Denorm.get_sql_for_address_street_in_place,
+        'repeated houses': Denorm.get_sql_for_repeated_houses,
     }
 
     @pytest.mark.parametrize('name', sorted(BUILDERS))

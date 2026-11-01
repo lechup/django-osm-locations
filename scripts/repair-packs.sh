@@ -5,10 +5,11 @@
 #   scripts/repair-packs.sh                 # every pack in dist/snapshots
 #   scripts/repair-packs.sh pl-2026-10-02   # just these
 #
-# For each: restore it into an otherwise empty cluster, run
-# locations_repair_ancestry, snapshot it again under the same name -- the data
-# is as old as it was -- pack that, verify the checksums, and only then let the
-# old pack go. A failure stops the run with the old pack still in place, kept
+# For each: restore it into an otherwise empty cluster, run the repairs --
+# locations_repair_ancestry, locations_repair_search_fields and
+# locations_repair_addresses, each a no-op on a pack that has it already --
+# snapshot it again under the same name -- the data is as old as it was --
+# pack that, verify the checksums, and only then let the old pack go. A failure stops the run with the old pack still in place, kept
 # under dist/snapshots/.replaced/ until the new one has verified.
 #
 # Needs the local stack's OpenSearch; PostgreSQL is not used.
@@ -60,6 +61,9 @@ for name in "${packs[@]}"; do
     done
 
     django locations_repair_ancestry
+    # the mapping first, so what the address repair writes has the new fields
+    django locations_repair_search_fields
+    django locations_repair_addresses
 
     # the same name again: drop the restored snapshot, then take the new one
     os -XDELETE "$OPENSEARCH/_snapshot/locations-$iso/$name" >/dev/null

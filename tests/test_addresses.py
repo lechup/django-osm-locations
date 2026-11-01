@@ -298,18 +298,25 @@ class TestSlugsRunLast:
         ), mock.patch.object(Denorm, 'clean_denorm_fields_before_update'), \
                 mock.patch.object(Denorm, 'inherit_address_ancestry_from_place'), \
                 mock.patch.object(Denorm, 'inherit_street_ancestry_from_place'), \
+                mock.patch.object(Denorm, 'merge_namesake_streets',
+                                  side_effect=lambda: order.append('streets joined')), \
                 mock.patch.object(Denorm, 'update_street_place_field'), \
                 mock.patch.object(Denorm, 'update_address_street_field',
                                   side_effect=lambda: order.append('link')), \
                 mock.patch.object(Denorm, 'place_addresses_outside_places',
                                   side_effect=lambda: order.append('outside')), \
+                mock.patch.object(Denorm, 'link_addresses_to_streets_in_their_place',
+                                  side_effect=lambda: order.append('link in place')), \
+                mock.patch.object(Denorm, 'merge_repeated_houses',
+                                  side_effect=lambda: order.append('one per house')), \
                 mock.patch.object(Denorm, 'clean_denorm_fields_after_update',
                                   side_effect=lambda: order.append('clean')), \
                 mock.patch.object(Denorm, 'update_address_slugs',
                                   side_effect=lambda: order.append('slugs')):
             RecalculateAll().handle()
 
-        assert order == ['link', 'outside', 'slugs']
+        assert order == ['streets joined', 'link', 'outside', 'link in place', 'one per house',
+                         'slugs']
 
 
 class TestParameterisedSqlIsSafeToExecute:
@@ -328,7 +335,9 @@ class TestParameterisedSqlIsSafeToExecute:
         (Denorm.get_sql_for_address_street_link(), 1),
         (Denorm.get_sql_for_street_place_field(), 1),
         (Denorm.get_sql_for_address_slugs(), 0),
-    ])
+        (Denorm.get_sql_for_address_street_in_place(), 0),
+        (Denorm.get_sql_for_repeated_houses(), 0),
+    ] + [(sql, 0) for sql in Denorm.get_sql_for_namesake_streets()])
     def test_placeholder_count_matches_the_parameters_passed(self, sql, params):
         assert sql.count('%s') == params
 
@@ -337,7 +346,9 @@ class TestParameterisedSqlIsSafeToExecute:
         Denorm.get_sql_for_address_street_link(),
         Denorm.get_sql_for_street_place_field(),
         Denorm.get_sql_for_address_slugs(),
-    ])
+        Denorm.get_sql_for_address_street_in_place(),
+        Denorm.get_sql_for_repeated_houses(),
+    ] + Denorm.get_sql_for_namesake_streets())
     def test_no_stray_percent_character(self, sql):
         assert self.STRAY.search(sql) is None, self.STRAY.search(sql)
 

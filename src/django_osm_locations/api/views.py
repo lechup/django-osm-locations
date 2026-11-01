@@ -12,7 +12,7 @@ from rest_framework.views import APIView
 from ..search.client import get_client, get_index_prefix
 from ..search.indexes import INDEXES
 from .localize import ancestor_keys, apply_language, fetch_ancestor_names
-from .queries import QueryError, build_body, parse_types
+from .queries import QueryError, build_body, exclude_types, parse_types
 
 
 def add_path(hit):
@@ -70,7 +70,11 @@ class SearchView(APIView):
 
     * ``q`` -- free text, prefix matched against the name and ancestry
     * ``type`` -- comma separated: countries, country-subareas, places,
-      place-subareas, streets
+      place-subareas, streets, addresses
+    * ``exclude_type`` -- comma separated, the types to leave out:
+      ``exclude_type=addresses`` suggests streets and places while a name is
+      being typed, and a street's houses are then
+      ``/addresses/?within=<street slug>&q=<number>``
     * ``within`` -- comma separated ancestor slugs, e.g. ``within=douglas``
     * ``bbox`` -- ``minlon,minlat,maxlon,maxlat``
     * ``near`` + ``radius`` -- ``near=-4.48,54.15&radius=5km``
@@ -89,7 +93,8 @@ class SearchView(APIView):
     def get(self, request):
         params = request.query_params
         try:
-            names = self.location_types or parse_types(params.get('type'))
+            names = exclude_types(self.location_types or parse_types(params.get('type')),
+                                  params.get('exclude_type'))
             body, page, page_size = build_body(params, names)
         except QueryError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)

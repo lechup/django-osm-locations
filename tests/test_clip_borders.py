@@ -11,6 +11,7 @@ from django.core.management.base import CommandError
 
 from django_osm_locations.management.commands.locations_clip_borders_to_land import (
     MERGE_VERTICES_CLOSER_THAN,
+    NO_LAND_BELOW,
     SAME_LAND_WITHIN,
     SHRUNK_ENOUGH,
     SIMPLER_ENOUGH,
@@ -103,11 +104,11 @@ class TestApplySql:
 
     def test_area_is_recomputed_from_the_clipped_border(self):
         """No second column: area from a clipped border is the land area."""
-        assert 'area   = ST_Area(c.border::geography) / 1000000' in Clip.sql_for_apply('place')
+        assert 'ELSE ST_Area(c.border::geography) / 1000000' in Clip.sql_for_apply('place')
 
     def test_the_bbox_is_maintained(self):
         """Presave hooks do not run for a bulk UPDATE."""
-        assert 'bbox   = ARRAY[ST_XMin' in Clip.sql_for_apply('place')
+        assert 'ELSE ARRAY[ST_XMin' in Clip.sql_for_apply('place')
 
     def test_a_centre_left_in_the_water_is_moved(self):
         """
@@ -353,3 +354,71 @@ class TestClippingOneCountry:
         west.refresh_from_db()
         assert west.border.area == pytest.approx(whole, rel=1e-9)
         assert len(west.border) == 1
+
+
+@pytest.mark.django_db(transaction=True)
+class TestAUnitOfTheSeaHasNoBorder:
+    """
+    Mecklenburg-Vorpommern's coastal waters are 7,773 km2 of sea with the
+    islands cut out. Clipped, they were 9,651 crumbs along the coast, 3.9 km2
+    in all, claiming bits of beach -- and one of them a triangle OpenSearch
+    refused, which failed Germany's reindex.
+    """
+
+    LAND = 'test_clip_sea_land'
+
+    @pytest.fixture
+    def coast(self, settings):
+        from django.contrib.gis.geos import MultiPolygon, Polygon
+        from django.db import connection
+
+        def box(y0, y1, x0=19.0, x1=20.0):
+            return MultiPolygon(Polygon(((x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0))))
+
+        with connection.cursor() as cursor:
+            cursor.execute('DROP TABLE IF EXISTS "{0}"; DROP TABLE IF EXISTS "{0}_subdivided"'.format(self.LAND))
+            # land is everything south of 50.8; north of it is sea
+            cursor.execute(
+                'CREATE TABLE "{}" AS SELECT ST_GeomFromText('
+                "'POLYGON((18 49, 22 49, 22 50.8, 18 50.8, 18 49))', 4326) AS geom".format(self.LAND))
+        settings.LOCATIONS_LAND_POLYGONS_TABLE = self.LAND
+        # a sliver of beach, 0.5% of the border, and a town half on land
+        sea = Place.objects.create(name='Küstengewässer', border=box(50.795, 51.795))
+        town = Place.objects.create(name='Hafenstadt', border=box(50.4, 51.2))
+        yield sea, town
+        with connection.cursor() as cursor:
+            cursor.execute('DROP TABLE IF EXISTS "{0}"; DROP TABLE IF EXISTS "{0}_subdivided"'.format(self.LAND))
+
+    @staticmethod
+    def clip():
+        Clip().handle(types=['Place'], table=None, resubdivide=False, dry_run=False, country=None)
+
+    def test_the_border_goes(self, coast):
+        sea, _ = coast
+        self.clip()
+        sea.refresh_from_db()
+        assert sea.border is None
+        assert sea.area == 0
+
+    def test_where_it_is_stays(self, coast):
+        sea, _ = coast
+        center, bbox = sea.center, list(sea.bbox)
+        self.clip()
+        sea.refresh_from_db()
+        assert sea.center == center
+        assert list(sea.bbox) == bbox
+
+    def test_a_coastal_town_is_only_clipped(self, coast):
+        _, town = coast
+        self.clip()
+        town.refresh_from_db()
+        assert town.border.extent[3] == pytest.approx(50.8)
+        assert town.area > 0
+
+    def test_the_report_says_so(self, coast, capsys):
+        self.clip()
+        assert '2 clipped, 1 of them to no border, under 1% land' in capsys.readouterr().out
+
+    def test_the_threshold(self):
+        assert NO_LAND_BELOW == 0.01
+        assert 'THEN NULL' in Clip.sql_for_apply('place')

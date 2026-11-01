@@ -198,6 +198,12 @@ class Command(BaseCommand):
                 with self.timed('streets inherit from their place') as run:
                     if run:
                         RecalculateDenormalizedFields.inherit_street_ancestry_from_place()
+                # Once every street's place is final, and before the place
+                # subareas are pushed onto streets by their centre, which the
+                # joined street has anew.
+                with self.timed('streets of one name in one place') as run:
+                    if run:
+                        RecalculateDenormalizedFields.merge_namesake_streets()
             with self.timed('slugs: {}'.format(descendant)) as run:
                 if run:
                     call_command('locations_recalculate_slugs', descendant)
@@ -218,6 +224,15 @@ class Command(BaseCommand):
         with self.timed('addresses outside every place') as run:
             if run:
                 RecalculateDenormalizedFields.place_addresses_outside_places()
+        # Once every address has its place: the street it names there, however
+        # far from the line it stands.
+        with self.timed('addresses to the street in their place') as run:
+            if run:
+                RecalculateDenormalizedFields.link_addresses_to_streets_in_their_place()
+        # Once the streets are linked, since a house is one by its street.
+        with self.timed('one address for each house') as run:
+            if run:
+                RecalculateDenormalizedFields.merge_repeated_houses()
         # Last, because an address's slug reads its parent -- its street, or
         # failing that its place -- from element [1] of those arrays, and both
         # are only final once the steps above have run. There used to be a

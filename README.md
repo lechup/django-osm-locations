@@ -127,6 +127,7 @@ Types are `countries`, `country-subareas`, `places`, `place-subareas`,
 |---|---|---|
 | `q` | `?q=krak` | prefix search on name and ancestry |
 | `type` | `?type=places,streets` | restrict to types (search endpoint) |
+| `exclude_type` | `?exclude_type=addresses` | leave these types out |
 | `within` | `?within=douglas` | only inside that ancestor slug |
 | `bbox` | `?bbox=-5,54,-4,55` | `minlon,minlat,maxlon,maxlat` |
 | `near` + `radius` | `?near=-4.4,54.1&radius=5km` | within a distance of a point |
@@ -198,6 +199,13 @@ Krakuszowice. Two multiplicative factors fix that:
 Both apply only when there is a `q`; without one, results are sorted by size
 anyway.
 
+Names match as prefixes, so `krak` finds Kraków, and a word typed whole counts
+for more than the same letters starting a longer word: `Lublin` is Lublin
+before Lubliniec, and `Świdnicka Wrocław` is in Wrocław before Kąty
+Wrocławskie. A translation typed whole — `Warsaw` — counts as the native name
+typed whole. Among addresses the number typed comes first: `14`, then `14a`,
+then `142`.
+
 ## Published indexes
 
 Building a country from scratch costs about thirteen hours: downloading the
@@ -252,6 +260,12 @@ a country is larger than that — three countries came to 4.3 GB. It refuses a
 directory holding more than one snapshot rather than quietly publishing both,
 and prints the release notes, including the commands above and the attribution
 the license asks for.
+
+A pack built before a fix to the recalculation or the mapping can be repaired
+without the database it came from: `scripts/repair-packs.sh` restores each
+pack into an empty cluster, runs the `locations_repair_*` commands on its live
+indexes, and packs it again under the same name. Each repair finds nothing to
+do in a pack that has it already.
 
 Published indexes are derived from OpenStreetMap and carry ODbL's attribution
 and share-alike obligations — see [License](#license). That is separate from
@@ -491,6 +505,28 @@ Finnish stairwells like `B 20` — and those sort last.
 They rank below streets in search, so looking for a street name does not bury
 it under every house on it.
 
+An address is on the street it names: the nearest of that name within 100 m,
+or failing that the one of that name in its own place, however far — a block
+set back across a courtyard is still on its street. One name in one place is
+one street, its pieces joined, so there is only ever one to choose. And a
+house is one address however many times the extract has it — a building, the
+shops in it, an address point beside it: one number on one street within
+100 m. It stands where its building outlines are, or its points where it has
+none.
+
+Suggestions the way a map offers them — a street first, then its number —
+are two requests:
+
+```
+GET /api/search/?q=florianska kr&exclude_type=addresses    # streets and places
+GET /api/addresses/?within=florianska-krakow&q=14          # that street's 14, 14a, 140
+```
+
+What is typed around an address and is no word of a name is read for what it
+is: `ul.` is dropped, `al.`, `os.` and `pl.` are not required, a postcode
+(`31-019`) ranks the addresses that have it first, and a flat (`14/3`, `14 m. 3`)
+finds house 14 — or a house numbered `14/3`, ahead of it, where there is one.
+
 Addresses are read in a pass of their own rather than cached with everything
 else: 62.6% of them are building outlines, whose node references come to 43.9
 million for Poland, and holding those is enough to get a desktop session
@@ -693,6 +729,9 @@ everything in the file is imported, which is the behaviour this replaced.
 | `locations_clip_borders_to_land` | Trim borders back to that coastline |
 | `locations_export_snapshot` | Package a country's live indexes for publication |
 | `locations_import_snapshot` | Restore a published snapshot and alias it |
+| `locations_repair_ancestry` | Repair the ancestry of indexes built before it was fixed |
+| `locations_repair_search_fields` | Add the whole-word and whole-translation fields to older indexes |
+| `locations_repair_addresses` | Join street pieces, link addresses, one address per house, in older indexes |
 
 Nothing here removes rows from the database. Earlier versions shipped
 `locations_clear_merged`, `locations_clear_not_in_country` and

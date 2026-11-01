@@ -51,6 +51,14 @@ SETTINGS = {
     'analysis': ANALYSIS,
 }
 
+# Whole words beside the prefixes. Prefixes are what let "krak" find Kraków,
+# and also what let "Kraków" find powiat krakowski, "Lublin" Lubliniec and
+# "Berlin" Berliner Straße: the city typed in full was a prefix of an
+# adjective in the wrong place's ancestry or name, and that place came first --
+# "Świdnicka Wrocław" in Kąty Wrocławskie, "Jesionowa Szczecin" in Szczecinek.
+# A word found whole here outscores one found only as the start of another.
+WORDS = {'type': 'text', 'analyzer': 'location_prefix_search'}
+
 # Fields every location has.
 BASE_PROPERTIES = {
     'id': {'type': 'long'},
@@ -62,6 +70,7 @@ BASE_PROPERTIES = {
         'fields': {
             'exact': {'type': 'text', 'analyzer': 'location_exact'},
             'keyword': {'type': 'keyword'},
+            'words': dict(WORDS),
         },
     },
     'slug': {'type': 'keyword'},
@@ -72,11 +81,19 @@ BASE_PROPERTIES = {
     # their keep when nothing queries them by language.
     'names': {'type': 'object', 'enabled': False},
     # Every translation as one searchable field, so "niemcy" finds
-    # Deutschland without a per-language mapping.
+    # Deutschland without a per-language mapping. One value per translation:
+    # joined into one string, "Warsaw" was a word of Warszawa's 200 names and
+    # of powiat warszawski zachodni's few, and the shorter field won. ``exact``
+    # is a whole translation, and without norms, so the number of them a place
+    # has does not count against it.
     'names_all': {
         'type': 'text',
         'analyzer': 'location_prefix',
         'search_analyzer': 'location_prefix_search',
+        'fields': {
+            'exact': {'type': 'text', 'analyzer': 'location_exact', 'norms': False},
+            'words': dict(WORDS, norms=False),
+        },
     },
     'bbox': {'type': 'double'},
     'osm': {
@@ -109,6 +126,7 @@ BASE_PROPERTIES = {
         'type': 'text',
         'analyzer': 'location_prefix',
         'search_analyzer': 'location_prefix_search',
+        'fields': {'words': dict(WORDS)},
     },
 }
 
@@ -162,6 +180,11 @@ def clean_ancestry(entries, own_level=None, own_slug=None):
         seen.add(key)
         kept.append(entry)
     return kept
+
+
+def names_all(names):
+    """Every translation once, in a stable order, or None when there is none."""
+    return sorted(set(value for value in (names or {}).values() if value)) or None
 
 
 def flatten_ancestry(entries):
@@ -246,7 +269,7 @@ class LocationIndex:
             'type': self.name,
             'name': obj.name,
             'names': obj.names or None,
-            'names_all': ' '.join(sorted(set((obj.names or {}).values()))) or None,
+            'names_all': names_all(obj.names),
             'slug': obj.slug,
             'center': (
                 {'lon': obj.center[0], 'lat': obj.center[1]} if obj.center else None

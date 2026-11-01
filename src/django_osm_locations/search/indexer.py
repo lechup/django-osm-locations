@@ -28,6 +28,19 @@ def _load_bulk():
     return bulk
 
 
+def _bulk_item(error):
+    """A bulk error's item: ``{'index': {...}}`` unwrapped."""
+    return next(iter(error.values()))
+
+
+def _geometry_refused(error):
+    """Whether a bulk error is OpenSearch refusing the document's geometry."""
+    item = _bulk_item(error)
+    detail = item.get('error') or {}
+    return (isinstance(detail, dict) and detail.get('type') == 'mapper_parsing_exception'
+            and '[geometry]' in detail.get('reason', ''))
+
+
 def new_index_suffix():
     return datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')
 
@@ -60,6 +73,9 @@ class Reindexer:
         self.token = token
         self.batch_size = batch_size
         self.indexed = 0
+        #: ``(id, name, reason)`` of the documents indexed without the
+        #: geometry OpenSearch refused.
+        self.without_geometry = []
         # None leaves it to terminal detection, matching the importer
         if show_progress is None:
             show_progress = getattr(settings, 'LOCATIONS_SHOW_PROGRESS', None)
@@ -167,6 +183,15 @@ class Reindexer:
         Germany's streets came out of all 11 million at 25 a second, where
         the country index and a sort fetch them all in minutes. Every row is
         read, so the cursor is planned for all of them.
+
+        A geometry OpenSearch refuses costs that document its geometry, not
+        the run. Mecklenburg-Vorpommern's coastal waters, clipped to land,
+        were 9,651 crumbs along the coast, one of them a triangle too thin for
+        OpenSearch to tell which way round it goes: "Cannot determine
+        orientation". It failed the bulk request it was in, and with it
+        Germany's reindex, three days into the country's build. Such a
+        document goes in again without its geometry and is listed in
+        ``without_geometry``; any other refusal still fails the run.
         """
         bulk = _load_bulk()
         with transaction.atomic():
@@ -177,11 +202,37 @@ class Reindexer:
                 self.client,
                 self._actions(total=total),
                 chunk_size=self.batch_size,
-                raise_on_error=True,
+                raise_on_error=False,
             )
+        refused = [error for error in errors if _geometry_refused(error)]
+        others = [error for error in errors if not _geometry_refused(error)]
+        if others:
+            from opensearchpy.helpers import BulkIndexError
+
+            raise BulkIndexError(
+                '{} document(s) failed to index.'.format(len(others)), others)
+        success += self._index_without_geometry(refused)
         self.indexed = success
         self.client.indices.refresh(index=self.index_name)
         return success, errors
+
+    def _index_without_geometry(self, refused):
+        """Index again, with no geometry, the documents whose geometry was refused."""
+        if not refused:
+            return 0
+        reasons = {}
+        for error in refused:
+            item = _bulk_item(error)
+            cause = item['error'].get('caused_by') or item['error']
+            reasons[int(item['_id'])] = cause.get('reason', '')
+        indexed = []
+        for obj in self.queryset().filter(pk__in=list(reasons)):
+            document = self.index.document(obj)
+            document['geometry'] = None
+            self.client.index(index=self.index_name, id=obj.id, body=document)
+            indexed.append((obj.id, obj.name, reasons[obj.id]))
+        self.without_geometry.extend(sorted(indexed))
+        return len(indexed)
 
     def replaces(self, index_name):
         """

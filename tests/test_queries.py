@@ -11,10 +11,12 @@ from django_osm_locations.api.queries import (
     build_body,
     build_query,
     build_sort,
+    exclude_types,
     parse_bbox,
     parse_near,
     parse_page,
     parse_types,
+    read_query,
 )
 
 
@@ -32,6 +34,110 @@ class TestTypes:
         with pytest.raises(QueryError) as exc:
             parse_types('places,villages')
         assert 'villages' in str(exc.value)
+
+
+class TestExcludedTypes:
+    def test_everything_but_addresses(self):
+        assert exclude_types(parse_types(None), 'addresses') == [
+            name for name in parse_types(None) if name != 'addresses']
+
+    def test_several(self):
+        assert exclude_types(parse_types(None), 'addresses, streets') == [
+            name for name in parse_types(None) if name not in ('addresses', 'streets')]
+
+    def test_from_the_types_asked_for(self):
+        assert exclude_types(parse_types('streets,addresses'), 'addresses') == ['streets']
+
+    def test_a_type_not_searched_changes_nothing(self):
+        """/api/streets/?exclude_type=addresses is still the streets."""
+        assert exclude_types(['streets'], 'addresses') == ['streets']
+
+    @pytest.mark.parametrize('value', [None, ''])
+    def test_absent_changes_nothing(self, value):
+        assert exclude_types(['streets', 'addresses'], value) == ['streets', 'addresses']
+
+    def test_rejects_unknown_types(self):
+        with pytest.raises(QueryError) as exc:
+            exclude_types(parse_types(None), 'villages')
+        assert 'villages' in str(exc.value)
+
+    def test_rejects_leaving_nothing(self):
+        with pytest.raises(QueryError):
+            exclude_types(['streets'], 'streets')
+
+
+class TestWhatIsTyped:
+    """What people in Poland type around an address, and no name carries."""
+
+    @pytest.mark.parametrize('q,required', [
+        ('ul. Floriańska 14, Kraków', 'Floriańska 14, Kraków'),
+        ('ul.Floriańska 14', 'Floriańska 14'),
+        ('UL. Floriańska 14', 'Floriańska 14'),
+        ('ul Floriańska 14', 'Floriańska 14'),
+        ('ulica Floriańska', 'Floriańska'),
+        ('Kraków, ul. Floriańska 14', 'Kraków, Floriańska 14'),
+    ])
+    def test_ul_is_dropped(self, q, required):
+        assert read_query(q).required == required
+
+    @pytest.mark.parametrize('q', ['Ulmowa 3', 'Ułańska 2', 'Pulawska 1', 'Kraków, Ulanów'])
+    def test_only_as_a_word_of_its_own(self, q):
+        assert read_query(q).required == q
+
+    @pytest.mark.parametrize('q,required,scored', [
+        ('al. 3 Maja 5', '3 Maja 5', 'aleja 3 Maja 5'),
+        ('Al. Jerozolimskie 65', 'Jerozolimskie 65', 'aleja Jerozolimskie 65'),
+        ('os. Tysiąclecia 12', 'Tysiąclecia 12', 'osiedle Tysiąclecia 12'),
+        ('pl. Defilad 1', 'Defilad 1', 'plac Defilad 1'),
+    ])
+    def test_al_os_pl_are_not_required_but_score(self, q, required, scored):
+        reading = read_query(q)
+        assert (reading.required, reading.scored) == (required, scored)
+
+    def test_a_postcode_is_not_a_word(self):
+        reading = read_query('Floriańska 14, 31-019 Kraków')
+        assert reading.postcodes == ['31-019']
+        assert reading.required == 'Floriańska 14, Kraków'
+        assert reading.numbers == ['14']
+
+    @pytest.mark.parametrize('q', ['Marszałkowska 29-30', 'Wiejska 4/6/8', '00700 Roma'])
+    def test_nor_is_anything_else_a_postcode(self, q):
+        assert read_query(q).postcodes == []
+
+    @pytest.mark.parametrize('q', ['Floriańska 14 m. 3', 'Floriańska 14 m 3', 'Floriańska 14 M.3',
+                                   'Floriańska 14 lok. 3', 'Floriańska 14 lokal 3'])
+    def test_a_flat_after_the_house_is_dropped(self, q):
+        reading = read_query(q)
+        assert (reading.required, reading.scored, reading.numbers) == (
+            'Floriańska 14', 'Floriańska 14', ['14'])
+
+    @pytest.mark.parametrize('q', ['Aleja 3 Maja 5', 'Osiedle 1 Maja 2', 'Lipowa 3 Mielec'])
+    def test_a_word_after_a_number_is_no_flat(self, q):
+        assert read_query(q).required == q
+
+    @pytest.mark.parametrize('q,required', [
+        ('Floriańska 14/3, Kraków', 'Floriańska 14, Kraków'),
+        ('Floriańska 12a/3', 'Floriańska 12a'),
+        ('Aleja 1 Maja 31/33', 'Aleja 1 Maja 31'),
+        ('3/5 Maja', '3 Maja'),
+    ])
+    def test_after_a_slash_it_scores_and_is_not_required(self, q, required):
+        """14/3 is as often house 14, flat 3, as a house numbered 14/3."""
+        reading = read_query(q)
+        assert reading.required == required
+        assert reading.scored == q
+
+    def test_the_number_is_kept_whole(self):
+        assert read_query('Floriańska 14/3').numbers == ['14/3']
+
+    @pytest.mark.parametrize('q', ['ul.', '31-019', 'ul. 31-019'])
+    def test_nothing_left_is_the_query_as_typed(self, q):
+        assert read_query(q).required == q
+
+    def test_everything_at_once(self):
+        reading = read_query('ul. Floriańska 14/3 m. 2, 31-019 Kraków')
+        assert reading.required == 'Floriańska 14, Kraków'
+        assert reading.postcodes == ['31-019']
 
 
 class TestBbox:
@@ -122,6 +228,33 @@ class TestQuery:
         match = query['bool']['must'][0]['multi_match']
         assert match['type'] == 'best_fields'
         assert 'operator' not in match
+
+    def test_a_word_found_whole_scores_above_a_prefix(self):
+        """"Lublin" found whole, not only as the start of Lubliniec."""
+        words = build_query(q='Elizy Orzeszkowej 1, Lublin')['bool']['should'][1]['multi_match']
+        assert set(words['fields']) == {'name.words^2', 'ancestry_names.words',
+                                        'names_all.words^0.5'}
+        assert words['type'] == 'cross_fields'
+        assert 'operator' not in words
+
+    def test_and_a_whole_translation_as_a_whole_name(self):
+        fields = build_query(q='Warsaw')['bool']['should'][0]['multi_match']['fields']
+        assert fields.index('names_all.exact^3') == 1
+
+    def test_relaxed_has_no_whole_words_to_add(self):
+        """Anything with any word scores already; whole ones are for telling apart."""
+        query = build_query(q='Elizy Orzeszkowej 1, Lublin', strict=False)
+        assert len(query['bool']['must']) == 1 and 'should' not in query['bool']
+
+    def test_what_is_required_and_what_scores(self):
+        query = build_query(q='ul. al. Daszyńskiego 14/3, Kraków')['bool']
+        assert query['must'][0]['multi_match']['query'] == 'Daszyńskiego 14, Kraków'
+        assert query['should'][0]['multi_match']['query'] == 'aleja Daszyńskiego 14/3, Kraków'
+
+    def test_relaxed_any_word_of_what_is_required(self):
+        """A flat number would find every house 3 in the country."""
+        query = build_query(q='Floriańska 14 m. 3', strict=False)
+        assert query['bool']['must'][0]['multi_match']['query'] == 'Floriańska 14'
 
 
 class TestSort:

@@ -19,7 +19,7 @@ from django_osm_locations.management.commands.importers.base import (
     BaseImporter,
     language_names,
 )
-from django_osm_locations.search.indexes import BASE_PROPERTIES
+from django_osm_locations.search.indexes import BASE_PROPERTIES, names_all
 
 
 class TestGrammarIsNotALanguage:
@@ -88,6 +88,29 @@ class TestIndexShape:
     def test_one_searchable_field_holds_every_language(self):
         assert BASE_PROPERTIES['names_all']['type'] == 'text'
         assert BASE_PROPERTIES['names_all']['analyzer'] == 'location_prefix'
+
+    def test_one_value_per_translation(self):
+        """Joined into one string, "Warsaw" was one word of Warszawa's 200 names."""
+        names = {'en': 'Warsaw', 'de': 'Warschau', 'nl': 'Warschau', 'fr': 'Varsovie', 'sv': ''}
+        assert names_all(names) == ['Varsovie', 'Warsaw', 'Warschau']
+
+    @pytest.mark.parametrize('names', [None, {}, {'en': ''}])
+    def test_none_without_translations(self, names):
+        assert names_all(names) is None
+
+    def test_a_whole_translation_and_each_word_of_one_without_norms(self):
+        """How many translations a place has must not count against it."""
+        fields = BASE_PROPERTIES['names_all']['fields']
+        assert fields['exact'] == {'type': 'text', 'analyzer': 'location_exact', 'norms': False}
+        assert fields['words'] == {'type': 'text', 'analyzer': 'location_prefix_search',
+                                   'norms': False}
+
+    @pytest.mark.parametrize('field', ['name', 'ancestry_names'])
+    def test_whole_words_beside_the_prefixes(self, field):
+        """"Lublin" whole is not the start of Lubliniec."""
+        assert BASE_PROPERTIES[field]['analyzer'] == 'location_prefix'
+        assert BASE_PROPERTIES[field]['fields']['words'] == {
+            'type': 'text', 'analyzer': 'location_prefix_search'}
 
 
 class TestDisplay:
