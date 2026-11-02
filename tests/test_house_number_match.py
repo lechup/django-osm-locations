@@ -273,6 +273,12 @@ class TestAFlatOrAPostcode:
         assert multiplier('Floriańska 14/3', '14/3') == multiplier('Floriańska 14', '14')
         assert multiplier('Aleja 1 Maja 31/33', '31/33', street_name='Aleja 1 Maja') > 1.0
 
+    def test_15_a_is_that_house_and_not_house_15(self):
+        q = 'Via Girolamo Cocconi 15/a, Roma'
+        assert typed(q) == ['15/A', '15/a']
+        assert multiplier(q, '15/a', street_name='Via Girolamo Cocconi') > multiplier(
+            q, '15', street_name='Via Girolamo Cocconi')
+
     def test_14a_still_comes_after_14(self):
         assert multiplier('Floriańska 14/3', '14') > multiplier('Floriańska 14/3', '14a')
 

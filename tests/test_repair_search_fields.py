@@ -33,6 +33,7 @@ def as_the_packs_were(properties):
     properties['name']['fields'].pop('words')
     properties['names_all'].pop('fields')
     properties['ancestry_names'].pop('fields')
+    properties.pop('place_names')
     return properties
 
 
@@ -55,6 +56,11 @@ def places(settings):
     client.index(index=index, id='2', refresh=True, body={
         'name': 'powiat warszawski zachodni', 'type': 'places', 'slug': 'powiat-warszawski-zachodni',
         'names': None, 'names_all': None, 'ancestry_names': ['Polska']})
+    client.index(index=index, id='3', refresh=True, body={
+        'name': 'Mokotów', 'type': 'places', 'slug': 'mokotow', 'names': None,
+        'ancestry': [{'level': 'country', 'slug': 'polska', 'name': 'Polska'},
+                     {'level': 'place', 'slug': 'warszawa', 'name': 'Warszawa'}],
+        'ancestry_names': ['Polska', 'Warszawa']})
     settings.LOCATIONS_OPENSEARCH_INDEX_PREFIX = prefix
     yield client, index
     client.indices.delete(index='{}-*'.format(prefix), ignore_unavailable=True)
@@ -96,6 +102,23 @@ class TestTheRepair:
         assert ids(client, index, {'match': {'name.words': 'warszawa'}}) == ['1']
         assert ids(client, index, {'match': {'name.words': 'warszawski'}}) == ['2']
         assert ids(client, index, {'match': {'ancestry_names.words': 'mazowieckie'}}) == ['1']
+
+    def test_the_places_among_the_ancestors(self, places):
+        client, index = places
+        call_command('locations_repair_search_fields')
+        assert client.get(index=index, id='3')['_source']['place_names'] == ['Warszawa']
+        assert client.get(index=index, id='1')['_source']['place_names'] is None
+        assert ids(client, index, {'match': {'place_names': 'warszawa'}}) == ['3']
+
+    def test_an_index_repaired_before_place_names_gets_them_alone(self, places, capsys):
+        client, index = places
+        call_command('locations_repair_search_fields')
+        client.update(index=index, id='3', refresh=True, body={
+            'script': {'source': "ctx._source.remove('place_names')"}})
+        capsys.readouterr()
+        call_command('locations_repair_search_fields')
+        assert 'places: 1 of 1 written again' in capsys.readouterr().out
+        assert client.get(index=index, id='3')['_source']['place_names'] == ['Warszawa']
 
     def test_twice_writes_nothing_more(self, places, capsys):
         call_command('locations_repair_search_fields')

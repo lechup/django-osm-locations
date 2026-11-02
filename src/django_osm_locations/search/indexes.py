@@ -133,6 +133,12 @@ BASE_PROPERTIES = {
         'search_analyzer': 'location_prefix_search',
         'fields': {'words': dict(WORDS)},
     },
+    # The places among the ancestors, in whole words. A city is often called
+    # what the region round it is -- Comunidad de Madrid, the province of
+    # Palermo -- so in ancestry_names a suburb's house had the city's name as
+    # much as the city's did, and its shorter ancestry won: "Calle de Granada
+    # 28, Madrid" was the one in Leganés. Here only the city's houses have it.
+    'place_names': dict(WORDS),
 }
 
 BORDER_PROPERTIES = {
@@ -194,6 +200,11 @@ MERGED_OSM_IDS = ('merged_node_ids', 'merged_way_ids', 'merged_relation_ids')
 def names_all(names):
     """Every translation once, in a stable order, or None when there is none."""
     return sorted(set(value for value in (names or {}).values() if value)) or None
+
+
+def place_names(entries):
+    """The names of the places in an ancestry, or None when it has none."""
+    return [e['name'] for e in entries if e.get('level') == 'place' and e.get('name')] or None
 
 
 def flatten_ancestry(entries):
@@ -315,6 +326,7 @@ class LocationIndex:
             'ancestry': entries,
             'ancestry_slugs': slugs,
             'ancestry_names': names,
+            'place_names': place_names(entries),
             # An address has no geometry field: its position is `center`, and
             # that is all there is of it.
             'geometry': self._geojson(

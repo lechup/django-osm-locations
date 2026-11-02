@@ -168,8 +168,9 @@ POSTCODE = re.compile(r'(?<!\w)\d{2}-\d{3}(?!\w)')
 FLAT = re.compile(r'(?<!\w)(\d[\w/-]*)\s+(?:m|lok|lokal|mieszk)\.?\s*\d[\w/-]*(?!\w)', re.IGNORECASE)
 # "14/3" is house 14, flat 3, as often as it is a house numbered 14/3 -- or
 # 31/33, a corner of two -- so the house alone is required and the whole
-# number scores.
-HOUSE_PART = re.compile(r'(?<!\w)(\d+[^\W\d_]?)/[\w/-]+')
+# number scores. Only digits after the slash: in Italy "15/a" is the house,
+# and taking it for house 15 put 15 before it.
+HOUSE_PART = re.compile(r'(?<!\w)(\d+[^\W\d_]?)/\d[\w/-]*')
 
 #: ``q`` read for what each part of the query should do with it.
 #:
@@ -202,6 +203,9 @@ def read_query(q):
 
 # What a word found whole adds, against the same word found as a prefix.
 WHOLE_WORD_BOOST = 1.0
+# A word found whole in the name of the place a location is in, against the
+# same word in the rest of its ancestry.
+PLACE_NAME_BOOST = 2
 
 
 def build_query(q=None, within=None, bbox=None, near=None, radius=None,
@@ -261,8 +265,11 @@ def build_query(q=None, within=None, bbox=None, near=None, radius=None,
             'multi_match': {
                 'query': reading.required,
                 # each word typed that is found whole, in whichever field;
-                # see WORDS in the index definitions
-                'fields': ['name.words^2', 'ancestry_names.words', 'names_all.words^0.5'],
+                # see WORDS in the index definitions. A place's name above
+                # the rest of the ancestry, which also has the regions named
+                # after their cities: see place_names.
+                'fields': ['name.words^2', 'place_names^{}'.format(PLACE_NAME_BOOST),
+                           'ancestry_names.words', 'names_all.words^0.5'],
                 'type': 'cross_fields',
                 'boost': WHOLE_WORD_BOOST,
             }

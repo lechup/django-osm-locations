@@ -19,7 +19,7 @@ from django_osm_locations.management.commands.importers.base import (
     BaseImporter,
     language_names,
 )
-from django_osm_locations.search.indexes import BASE_PROPERTIES, names_all
+from django_osm_locations.search.indexes import BASE_PROPERTIES, names_all, place_names
 
 
 class TestGrammarIsNotALanguage:
@@ -111,6 +111,16 @@ class TestIndexShape:
         assert BASE_PROPERTIES[field]['analyzer'] == 'location_prefix'
         assert BASE_PROPERTIES[field]['fields']['words'] == {
             'type': 'text', 'analyzer': 'location_prefix_search'}
+
+    def test_the_places_among_the_ancestors_in_whole_words(self):
+        """Madrid the city, apart from Comunidad de Madrid round it."""
+        assert BASE_PROPERTIES['place_names'] == {'type': 'text', 'analyzer': 'location_prefix_search'}
+        entries = [{'level': 'country', 'name': 'España'},
+                   {'level': 'countrysubarea', 'name': 'Comunidad de Madrid'},
+                   {'level': 'place', 'name': 'Madrid'},
+                   {'level': 'placesubarea', 'name': 'Centro'}]
+        assert place_names(entries) == ['Madrid']
+        assert place_names(entries[:2]) is None
 
 
 class TestDisplay:

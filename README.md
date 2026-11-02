@@ -203,8 +203,10 @@ Names match as prefixes, so `krak` finds Kraków, and a word typed whole counts
 for more than the same letters starting a longer word: `Lublin` is Lublin
 before Lubliniec, and `Świdnicka Wrocław` is in Wrocław before Kąty
 Wrocławskie. A translation typed whole — `Warsaw` — counts as the native name
-typed whole. Among addresses the number typed comes first: `14`, then `14a`,
-then `142`.
+typed whole. And the name of the place something is in counts above the rest
+of its ancestry, since a city is often called what its region is: `Calle de
+Granada 28, Madrid` is in Madrid, not in Leganés in the Comunidad de Madrid.
+Among addresses the number typed comes first: `14`, then `14a`, then `142`.
 
 ## Published indexes
 
@@ -525,7 +527,8 @@ GET /api/addresses/?within=florianska-krakow&q=14          # that street's 14, 1
 What is typed around an address and is no word of a name is read for what it
 is: `ul.` is dropped, `al.`, `os.` and `pl.` are not required, a postcode
 (`31-019`) ranks the addresses that have it first, and a flat (`14/3`, `14 m. 3`)
-finds house 14 — or a house numbered `14/3`, ahead of it, where there is one.
+finds house 14 — or a house numbered `14/3`, ahead of it, where there is one. A
+letter after the slash is no flat: `15/a` is the house of that number.
 
 Addresses are read in a pass of their own rather than cached with everything
 else: 62.6% of them are building outlines, whose node references come to 43.9

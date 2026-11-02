@@ -127,6 +127,12 @@ class TestWhatIsTyped:
         assert reading.required == required
         assert reading.scored == q
 
+    @pytest.mark.parametrize('q', ['Via Girolamo Cocconi 15/a, Roma', 'Sobolowa 2/LU4, Łódź',
+                                   'Via Roma 15/A'])
+    def test_a_letter_after_the_slash_is_the_house_not_a_flat(self, q):
+        """In Italy 15/a is a house of its own, beside 15."""
+        assert read_query(q).required == q
+
     def test_the_number_is_kept_whole(self):
         assert read_query('Floriańska 14/3').numbers == ['14/3']
 
@@ -232,7 +238,7 @@ class TestQuery:
     def test_a_word_found_whole_scores_above_a_prefix(self):
         """"Lublin" found whole, not only as the start of Lubliniec."""
         words = build_query(q='Elizy Orzeszkowej 1, Lublin')['bool']['should'][1]['multi_match']
-        assert set(words['fields']) == {'name.words^2', 'ancestry_names.words',
+        assert set(words['fields']) == {'name.words^2', 'place_names^2', 'ancestry_names.words',
                                         'names_all.words^0.5'}
         assert words['type'] == 'cross_fields'
         assert 'operator' not in words
