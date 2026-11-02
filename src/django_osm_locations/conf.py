@@ -40,6 +40,25 @@ def get_cache_dir():
     return str(getattr(settings, 'LOCATIONS_CACHE_DIR', None) or _project_dir())
 
 
+#: Where OldSlugRedirectMiddleware is to be found in ``MIDDLEWARE``.
+OLD_SLUG_MIDDLEWARE = 'django_osm_locations.middleware.OldSlugRedirectMiddleware'
+
+
+def old_slug_redirects():
+    """Whether old slugs are redirected: OldSlugRedirectMiddleware is installed."""
+    return OLD_SLUG_MIDDLEWARE in (getattr(settings, 'MIDDLEWARE', None) or ())
+
+
+def get_old_slug_cache_timeout():
+    """
+    How long, in seconds, an old slug's answer is kept, found or not.
+
+    Set ``LOCATIONS_OLD_SLUG_CACHE_TIMEOUT``. A day by default: crawlers ask
+    the same old links again and again, and the data changes with a release.
+    """
+    return int(getattr(settings, 'LOCATIONS_OLD_SLUG_CACHE_TIMEOUT', 24 * 3600))
+
+
 def get_reserved_subdomains():
     """
     Subdomains that are never treated as a place slug.

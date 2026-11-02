@@ -12,14 +12,15 @@ this, and snapshotting it again.
 A street that stays keeps the shortest slug of its pieces, which is the one
 without an OSM id; an address that gains a street, or whose street was a
 piece, gains a slug from it, as the recalculation derives one. The rest are
-deleted from the index.
+deleted from the index, their OSM ids kept on the one that stays, as the
+indexer writes those merged into a row.
 """
 from collections import defaultdict
 
 from django.core.management.base import BaseCommand
 
 from ...search.client import get_client, get_index_prefix
-from ...search.indexes import flatten_ancestry, names_all
+from ...search.indexes import INDEXES, MERGED_OSM_IDS, flatten_ancestry, names_all
 from ...utils.duplicates import clusters, keeper, merged_center, merged_postcode
 from ...utils.slugify import slugify
 
@@ -53,6 +54,26 @@ def with_street(source, street):
             'slug': address_slug(street[1], source.get('house_number') or '')}
 
 
+def merged_osm(stays, gone):
+    """
+    The ``osm`` of the document that stays, with the OSM ids of those that go.
+
+    As the indexer writes them from merged_into: an old slug ending in a
+    piece's id is the street that stays.
+    """
+    osm = dict(stays.get('osm') or {})
+    for key, own in zip(MERGED_OSM_IDS, ('node_id', 'way_id', 'relation_id')):
+        ids = set(osm.get(key) or [])
+        for source in gone:
+            theirs = source.get('osm') or {}
+            ids.update(theirs.get(key) or [])
+            if theirs.get(own) is not None:
+                ids.add(theirs[own])
+        if ids:
+            osm[key] = sorted(ids)
+    return osm
+
+
 def joined_street(pieces):
     """
     The fields of the street that stays, and which piece it is.
@@ -77,6 +98,7 @@ def joined_street(pieces):
         names.update(piece.get('names') or {})
     point = merged.representative_point()
     return stays, {
+        'osm': merged_osm(pieces[stays], [p for i, p in enumerate(pieces) if i != stays]),
         'geometry': mapping(merged),
         'length': sum(p.get('length') or 0 for p in pieces) * merged.length / planar,
         'center': {'lon': point.x, 'lat': point.y},
@@ -104,6 +126,11 @@ class Command(BaseCommand):
                 and self.client.indices.exists(index=self.addresses)):
             self.stdout.write('no streets or no addresses here: nothing to repair')
             return
+        if not self.dry_run:
+            # the fields for what goes, mapped as the index definitions map them
+            for name, index in (('streets', self.streets), ('addresses', self.addresses)):
+                self.client.indices.put_mapping(index=index, body={
+                    'properties': {'osm': INDEXES[name].properties['osm']}})
         by_name = self.join_streets()
         self.link_addresses(by_name)
         self.one_address_for_each_house()
@@ -216,8 +243,10 @@ class Command(BaseCommand):
                     outlines = [bool((h['_source'].get('osm') or {}).get('way_id')) for h in chosen]
                     stays = chosen[keeper(outlines)]
                     lon, lat = merged_center([points[i] for i in members], outlines)
+                    gone = [h['_source'] for h in chosen if h is not stays]
                     actions.append({'_op_type': 'update', '_index': stays['_index'], '_id': stays['_id'],
                                     'doc': {'center': {'lon': lon, 'lat': lat},
+                                            'osm': merged_osm(stays['_source'], gone),
                                             'bbox': [lon - NEAR, lat - NEAR, lon + NEAR, lat + NEAR],
                                             # as the indexer writes none: None
                                             'postcode': merged_postcode(

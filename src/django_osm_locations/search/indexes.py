@@ -101,6 +101,11 @@ BASE_PROPERTIES = {
             'node_id': {'type': 'long'},
             'way_id': {'type': 'long'},
             'relation_id': {'type': 'long'},
+            # those of the rows merged into this one, which the index leaves
+            # out: an old slug ending in one of them is this location's
+            'merged_node_ids': {'type': 'long'},
+            'merged_way_ids': {'type': 'long'},
+            'merged_relation_ids': {'type': 'long'},
         }
     },
     # Which OSM admin_level this came from. Without it a constituent country, a
@@ -182,6 +187,10 @@ def clean_ancestry(entries, own_level=None, own_slug=None):
     return kept
 
 
+#: The ``osm`` keys for what was merged into a location, as node, way, relation.
+MERGED_OSM_IDS = ('merged_node_ids', 'merged_way_ids', 'merged_relation_ids')
+
+
 def names_all(names):
     """Every translation once, in a stable order, or None when there is none."""
     return sorted(set(value for value in (names or {}).values() if value)) or None
@@ -261,8 +270,30 @@ class LocationIndex:
         return flatten_ancestry(clean_ancestry(
             entries, self.model.__name__.lower(), getattr(obj, 'slug', None)))
 
-    def document(self, obj):
-        """Build the OpenSearch document for one model instance."""
+    def merged_osm_ids(self, ids):
+        """
+        ``{id: {'merged_node_ids': [...], ...}}`` for the rows among ``ids``
+        that others were merged into: one query for a batch of documents.
+        """
+        if not hasattr(self.model, 'merged_into'):
+            return {}
+        found = {}
+        rows = self.model.objects.filter(is_merged=True, merged_into__in=ids).values_list(
+            'merged_into', 'node_osm_id', 'way_osm_id', 'relation_osm_id')
+        for into, node, way, relation in rows:
+            ids_ = found.setdefault(into, {key: [] for key in MERGED_OSM_IDS})
+            for key, value in zip(MERGED_OSM_IDS, (node, way, relation)):
+                if value is not None:
+                    ids_[key].append(value)
+        return {into: {key: sorted(set(values)) for key, values in ids_.items()}
+                for into, ids_ in found.items()}
+
+    def document(self, obj, merged=None):
+        """
+        Build the OpenSearch document for one model instance.
+
+        ``merged``: what ``merged_osm_ids`` found for it.
+        """
         entries, slugs, names = self._ancestry(obj)
         doc = {
             'id': obj.id,
@@ -275,11 +306,11 @@ class LocationIndex:
                 {'lon': obj.center[0], 'lat': obj.center[1]} if obj.center else None
             ),
             'bbox': list(obj.bbox or []),
-            'osm': {
+            'osm': dict({
                 'node_id': getattr(obj, 'node_osm_id', None),
                 'way_id': getattr(obj, 'way_osm_id', None),
                 'relation_id': getattr(obj, 'relation_osm_id', None),
-            },
+            }, **(merged or {})),
             'admin_level': getattr(obj, 'admin_level', None),
             'ancestry': entries,
             'ancestry_slugs': slugs,

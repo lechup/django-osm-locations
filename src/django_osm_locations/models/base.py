@@ -311,15 +311,28 @@ class LocationMergableBase(gis_models.Model):
         default=False,
         help_text='Is given location merged with other one?',
     )
+    #: The row this one was merged into, so the one that stays can carry its
+    #: OSM id. Slugs of duplicates used to end in the OSM id, and a link to
+    #: one -- ``polna-123456`` -- is followed to where the row went.
+    #: No constraint: rows are written in bulk, and a dangling id is harmless.
+    merged_into = models.ForeignKey(
+        'self', null=True, blank=True, default=None, on_delete=models.DO_NOTHING,
+        db_constraint=False, related_name='+',
+        help_text='The location this one was merged into.',
+    )
 
     objects = MergableManager()
 
     class Meta:
         abstract = True
 
-    def mark_as_merged(self):
+    def mark_as_merged(self, into=None):
         self.is_merged = True
-        self.save(update_fields=['is_merged'])
+        self.merged_into = into
+        self.save(update_fields=['is_merged', 'merged_into'])
+        if into is not None:
+            # what was merged into this goes on to where this went
+            type(self).objects.filter(merged_into=self).update(merged_into=into)
 
     def mark_as_not_merged(self):
         self.is_merged = False

@@ -6,6 +6,7 @@ database, and it never deletes the index that is currently serving traffic. A
 rebuild writes a brand new index, compares its document count against the
 database, and only then moves the alias across.
 """
+import itertools
 from datetime import datetime, timezone
 
 from django.conf import settings
@@ -154,19 +155,23 @@ class Reindexer:
         Indexing a country is hundreds of thousands of documents and several
         minutes; the bar goes to stderr so piping stdout still works.
         """
-        rows = progress(
+        rows = iter(progress(
             self.queryset().iterator(chunk_size=self.batch_size),
             total=total,
             desc=self.index.name,
             unit='doc',
             show=self.show_progress,
-        )
-        for obj in rows:
-            yield {
-                '_index': self.index_name,
-                '_id': obj.id,
-                '_source': self.index.document(obj),
-            }
+        ))
+        # a batch at a time, so the OSM ids of what was merged into each row
+        # are one query per batch rather than one per row
+        for batch in iter(lambda: list(itertools.islice(rows, self.batch_size)), []):
+            merged = self.index.merged_osm_ids([obj.id for obj in batch])
+            for obj in batch:
+                yield {
+                    '_index': self.index_name,
+                    '_id': obj.id,
+                    '_source': self.index.document(obj, merged.get(obj.id)),
+                }
 
     def populate(self, total=None):
         """
@@ -226,8 +231,9 @@ class Reindexer:
             cause = item['error'].get('caused_by') or item['error']
             reasons[int(item['_id'])] = cause.get('reason', '')
         indexed = []
+        merged = self.index.merged_osm_ids(list(reasons))
         for obj in self.queryset().filter(pk__in=list(reasons)):
-            document = self.index.document(obj)
+            document = self.index.document(obj, merged.get(obj.id))
             document['geometry'] = None
             self.client.index(index=self.index_name, id=obj.id, body=document)
             indexed.append((obj.id, obj.name, reasons[obj.id]))

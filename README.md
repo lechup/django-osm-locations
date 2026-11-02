@@ -591,6 +591,46 @@ For local development point `ROOT_URL` at the dev host — `ROOT_URL =
 Reserved subdomains default to `www`, `api`, `admin`, `static`, `media`,
 `mail`; override with `LOCATIONS_RESERVED_SUBDOMAINS`.
 
+### Old slugs
+
+Slugs used to tell duplicates apart by their OSM id — `station-road-25986049`,
+`wieliczka-1234567` — and links to those are in search engines. Optional, and
+placed before the subdomain middleware so the 404 it raises reaches it:
+
+```python
+MIDDLEWARE = [
+    "django_osm_locations.middleware.OldSlugRedirectMiddleware",
+    "django_osm_locations.middleware.PlaceSubdomainMiddleware",
+    ...
+]
+```
+
+On a 404 it looks at every segment of the path shaped like `<slug>-<number>`
+that is no slug of today's, whatever the project's URLs are, and answers 301
+with the slugs the locations have now. The number is still on the location, or
+on the one it was merged into, and the name in front of it says which object
+of that number it is. When the object is gone from OSM, the name alone is
+looked for under the place of the subdomain, and followed when one location
+fits. An old place slug as a subdomain is resolved the same way, before the
+subdomain middleware falls back to cutting the number off.
+
+```python
+from django_osm_locations.search.old_slugs import resolve_old_slug
+
+resolve_old_slug("station-road-25986049")       # "station-road-ramsey"
+resolve_old_slug("aleja-3-maja")                # None: a slug of today's
+```
+
+It reads the indexes, so it works with nothing but published packs, and keeps
+each answer — found or not — for `LOCATIONS_OLD_SLUG_CACHE_TIMEOUT` seconds,
+a day by default.
+
+A merged row is not in the index; the one it went into carries its OSM id in
+`osm.merged_node_ids`, `merged_way_ids` and `merged_relation_ids`. Indexes
+built before that have none, and `locations_repair_merged_ids <country>
+<extract.osm.pbf>` reads them back from the extract: what the importer takes
+that the pack has no location for, matched by name to where it went.
+
 ## Importing OSM data
 
 The importer needs the `importers` extra:
@@ -732,6 +772,7 @@ everything in the file is imported, which is the behaviour this replaced.
 | `locations_repair_ancestry` | Repair the ancestry of indexes built before it was fixed |
 | `locations_repair_search_fields` | Add the whole-word and whole-translation fields to older indexes |
 | `locations_repair_addresses` | Join street pieces, link addresses, one address per house, in older indexes |
+| `locations_repair_merged_ids <country> <extract>` | Give older indexes the OSM ids of their merged rows, from the extract |
 
 Nothing here removes rows from the database. Earlier versions shipped
 `locations_clear_merged`, `locations_clear_not_in_country` and

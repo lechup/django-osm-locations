@@ -1,8 +1,9 @@
 from django.conf import settings
 from django.http import Http404, HttpResponsePermanentRedirect
 from django.shortcuts import get_object_or_404
+from django.utils.encoding import iri_to_uri
 
-from .conf import get_reserved_subdomains
+from .conf import get_reserved_subdomains, old_slug_redirects
 from .models import Place
 
 
@@ -60,6 +61,16 @@ class PlaceSubdomainMiddleware:
         try:
             request.place = get_object_or_404(Place.objects.all(), slug=request.subdomain)
         except Http404:
+            if old_slug_redirects():
+                # a place's old slug, wieliczka-<OSM id>, is that place first:
+                # cutting the id off finds whichever Wieliczka has the bare slug
+                from .search.old_slugs import resolve_old_slug
+
+                new = resolve_old_slug(request.subdomain, types=['places'])
+                if new:
+                    return HttpResponsePermanentRedirect('{}://{}.{}{}'.format(
+                        self.get_protocol(request), new, settings.ROOT_URL,
+                        request.get_full_path()))
             parts = request.subdomain.split('-')
             if len(parts) == 2 and parts[0]:
                 place = Place.objects.filter(slug=parts[0]).first()
@@ -105,3 +116,44 @@ class PlaceSubdomainMiddleware:
     @classmethod
     def get_protocol(cls, request):
         return 'https' if request.is_secure() else 'http'
+
+
+class OldSlugRedirectMiddleware:
+    """
+    301 from an old slug to the one the location has now.
+
+    Before slugs were qualified by place, a duplicate's slug ended in its OSM
+    id -- ``station-road-25986049`` -- and those links are in search engines'
+    indexes. Optional: add it to ``MIDDLEWARE`` before PlaceSubdomainMiddleware,
+    so the 404 a place subdomain raises reaches it, and that middleware then
+    also asks it about an old place slug before cutting the id off.
+
+    Only a 404 is looked at, so a request that finds its page costs nothing.
+    Every segment of the path shaped like ``<slug>-<number>`` that is no
+    slug of today's is resolved -- whatever the project's URLs are -- under
+    the place of the subdomain, if there is one; the request is redirected
+    when any of them resolved. See search.old_slugs.resolve_old_slug.
+    """
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        response = self.get_response(request)
+        if response.status_code != 404:
+            return response
+        from .search.old_slugs import OLD_SLUG, resolve_old_slug
+
+        within = getattr(request, 'subdomain', None) or None
+        segments = request.path.split('/')
+        changed = False
+        for i, segment in enumerate(segments):
+            if OLD_SLUG.match(segment):
+                new = resolve_old_slug(segment, within=within)
+                if new:
+                    segments[i], changed = new, True
+        if not changed:
+            return response
+        url = iri_to_uri('/'.join(segments))
+        query = request.META.get('QUERY_STRING')
+        return HttpResponsePermanentRedirect(url + ('?' + query if query else ''))

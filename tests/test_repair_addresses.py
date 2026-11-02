@@ -24,7 +24,7 @@ from django_osm_locations.management.commands.locations_recalculate_denormalized
 )
 from django_osm_locations.models import Address, Street
 from django_osm_locations.search.indexer import Reindexer
-from django_osm_locations.search.indexes import INDEXES
+from django_osm_locations.search.indexes import INDEXES, MERGED_OSM_IDS
 
 pytestmark = [pytest.mark.search, pytest.mark.django_db]
 
@@ -53,7 +53,7 @@ def opensearch():
 def street(name, slug, x, y, metres=100):
     return Street.objects.create(
         name=name, slug=slug, lines=MultiLineString(LineString((x, y), (x + metres * EAST, y))),
-        length=metres, country=[POLSKA], place=[WOLA])
+        length=metres, country=[POLSKA], place=[WOLA], way_osm_id=next(OSM_IDS))
 
 
 def address(number, x, y, street_name='Polna', place=WOLA, way=False, postcode=''):
@@ -92,12 +92,16 @@ def contents(opensearch, prefix):
         return opensearch.search(index='{}-{}'.format(prefix, name), body={
             'size': 100, 'query': {'match_all': {}}})['hits']['hits']
 
+    def merged(source):
+        osm = source.get('osm') or {}
+        return tuple(tuple(osm.get(key) or ()) for key in MERGED_OSM_IDS)
+
     streets = sorted((h['_source']['slug'], round(h['_source']['length']),
-                      tuple(round(c, 6) for c in h['_source']['bbox']))
+                      tuple(round(c, 6) for c in h['_source']['bbox']), merged(h['_source']))
                      for h in hits('streets'))
     addresses = sorted((h['_source']['slug'], tuple(h['_source']['ancestry_slugs']),
                         round(h['_source']['center']['lon'], 7), round(h['_source']['center']['lat'], 7),
-                        h['_source']['postcode'])
+                        h['_source']['postcode'], merged(h['_source']))
                        for h in hits('addresses'))
     return streets, addresses
 
@@ -135,7 +139,7 @@ class TestTheRepair:
 
     def test_one_polna(self, both):
         (streets, _), _ = both
-        assert [slug for slug, _, _ in streets] == ['lesna-wola', 'polna-wola']
+        assert [s[0] for s in streets] == ['lesna-wola', 'polna-wola']
 
     def test_the_houses_on_the_piece_that_went_are_on_the_street_that_stays(self, both):
         (_, addresses), _ = both
@@ -159,6 +163,19 @@ class TestTheRepair:
     def test_village_houses_with_no_street(self, both):
         (_, addresses), _ = both
         assert [a[0] for a in addresses].count('kowale-2') == 1
+
+    def test_the_piece_that_went_leaves_its_way_id_on_the_street(self, both):
+        """Its old slug, polna-<way id>, is followed to the street that stays."""
+        (streets, _), _ = both
+        piece = Street.objects.get(slug='polna-wola-123')
+        (polna,) = [s for s in streets if s[0] == 'polna-wola']
+        assert polna[3] == ((), (piece.way_osm_id,), ())
+
+    def test_the_shop_leaves_its_node_id_on_the_house(self, both):
+        (_, addresses), _ = both
+        shop = Address.objects.get(house_number='7', way_osm_id=None)
+        (seven,) = [a for a in addresses if a[0] == 'polna-wola-7']
+        assert seven[5] == ((shop.node_osm_id,), (), ())
 
     def test_twice_changes_nothing_more(self, both, opensearch, settings):
         call_command('locations_repair_addresses')

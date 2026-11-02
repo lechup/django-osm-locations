@@ -1021,6 +1021,12 @@ class Command(BaseCommand):
         return [
             cls.SQL_FOR_NAMESAKE_STREETS.format(scope=RecalcScope.sql('street', 's')),
             """
+            CREATE TEMPORARY TABLE "namesake_pieces" ON COMMIT DROP AS
+            SELECT piece AS id, keeper
+            FROM "namesake_streets", unnest(ids) AS piece
+            WHERE piece <> keeper
+            """,
+            """
             UPDATE "locations_street" AS s SET
                 lines = g.lines,
                 length = ST_Length(g.lines::geography),
@@ -1030,10 +1036,16 @@ class Command(BaseCommand):
             FROM "namesake_streets" g
             WHERE s.id = g.keeper
             """,
+            # what the import had merged into a piece goes on with it
             """
-            UPDATE "locations_street" AS s SET is_merged = true
-            FROM "namesake_streets" g
-            WHERE s.id = ANY(g.ids) AND s.id <> g.keeper
+            UPDATE "locations_street" AS s SET merged_into_id = p.keeper
+            FROM "namesake_pieces" p
+            WHERE s.merged_into_id = p.id
+            """,
+            """
+            UPDATE "locations_street" AS s SET is_merged = true, merged_into_id = p.keeper
+            FROM "namesake_pieces" p
+            WHERE s.id = p.id
             """,
         ]
 
@@ -1042,12 +1054,15 @@ class Command(BaseCommand):
     def merge_namesake_streets(cls):
         print("Street - joining the pieces of each street...")
         with connection.cursor() as cursor:
-            first, joined, merged = cls.get_sql_for_namesake_streets()
+            groups, pieces, joined, onwards, merged = cls.get_sql_for_namesake_streets()
             # dropped at commit, which a test's transaction never reaches
             cursor.execute('DROP TABLE IF EXISTS "namesake_streets"')
-            cursor.execute(first)
+            cursor.execute('DROP TABLE IF EXISTS "namesake_pieces"')
+            cursor.execute(groups)
+            cursor.execute(pieces)
             cursor.execute(joined)
             names = cursor.rowcount
+            cursor.execute(onwards)
             cursor.execute(merged)
             print("  {} streets from {} more pieces".format(names, cursor.rowcount))
 
@@ -1155,7 +1170,7 @@ class Command(BaseCommand):
         ``rows`` as the query above returns them -> what to write.
 
         ``(kept, merged)``: for each house that stays, ``(id, lon, lat,
-        postcode)``, and the ids of the rows it stands for.
+        postcode)``, and ``(id, kept id)`` for each row it stands for.
         """
         from itertools import groupby
 
@@ -1173,7 +1188,7 @@ class Command(BaseCommand):
                 stays = rows_[keeper(outlines)]
                 lon, lat = merged_center([(row[3], row[4]) for row in rows_], outlines)
                 kept.append((stays[0], lon, lat, merged_postcode([row[6] for row in rows_])))
-                merged.extend(row[0] for row in rows_ if row is not stays)
+                merged.extend((row[0], stays[0]) for row in rows_ if row is not stays)
         return kept, merged
 
     @classmethod
@@ -1206,9 +1221,18 @@ class Command(BaseCommand):
                     FROM (VALUES %s) AS v(id, lon, lat, postcode, bbox)
                     WHERE a.id = v.id
                 """, rows, page_size=1000)
-            for start in range(0, len(merged), 10000):
-                cursor.execute('UPDATE "locations_address" SET is_merged = true WHERE id = ANY(%s)',
-                               [merged[start:start + 10000]])
+            if merged:
+                # what was merged into a row goes on with it, then the row
+                execute_values(cursor, """
+                    UPDATE "locations_address" AS a SET merged_into_id = v.keeper
+                    FROM (VALUES %s) AS v(id, keeper)
+                    WHERE a.merged_into_id = v.id
+                """, merged, page_size=1000)
+                execute_values(cursor, """
+                    UPDATE "locations_address" AS a SET is_merged = true, merged_into_id = v.keeper
+                    FROM (VALUES %s) AS v(id, keeper)
+                    WHERE a.id = v.id
+                """, merged, page_size=1000)
             print("  {} houses from {} more rows".format(len(kept), len(merged)))
 
     @classmethod

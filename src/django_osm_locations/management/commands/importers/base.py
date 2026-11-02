@@ -1227,7 +1227,7 @@ class BaseImporter(object):
                     continue
                 for duplicated_subarea in duplicated_subareas:
                     merge_base.border += duplicated_subarea.border
-                    duplicated_subarea.mark_as_merged()
+                    duplicated_subarea.mark_as_merged(into=merge_base)
                 merge_base.border = cls._merge_multipolygon(merge_base.border)
                 merge_base.save()
 
@@ -1261,7 +1261,7 @@ class BaseImporter(object):
             ids_array.remove(id_min)
             with transaction.atomic():
                 # mark as merged
-                Street.objects.filter(id__in=ids_array).mark_as_merged()
+                Street.objects.filter(id__in=ids_array).mark_as_merged(into=id_min)
                 # save one item with lines merged
                 street = Street.objects.get(id=id_min)
                 street.lines = merged_lines
@@ -1311,7 +1311,7 @@ class BaseImporter(object):
                                     place.save(update_fields=['center'])
 
                                 for duplicated_place in duplicated_places:
-                                    duplicated_place.mark_as_merged()
+                                    duplicated_place.mark_as_merged(into=place)
                         else:
                             duplicated_places = Place.objects.filter(
                                 id__in=all_but_place_ids,
@@ -1321,7 +1321,7 @@ class BaseImporter(object):
                                 is_merged=False
                             )
                             for duplicated_place in duplicated_places:
-                                duplicated_place.mark_as_merged()
+                                duplicated_place.mark_as_merged(into=place)
 
     def _import_countrysubarea_from_relation(self, osm_id, tags, members):
         if self._is_relation_countrysubarea(osm_id, tags, members) and self._are_all_members_cached(members):
