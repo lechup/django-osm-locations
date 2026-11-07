@@ -19,6 +19,7 @@ consumer with a working index they cannot see:
 * an index restored beside an existing one must not evict it, because several
   countries under one alias is the whole point
 """
+import contextlib
 import re
 
 from .client import get_client, get_index_prefix
@@ -32,6 +33,11 @@ DEFAULT_REPOSITORY_PATH = '/snapshots'
 #: Base name of the repositories registered for this package's snapshots.
 #: The country is appended, because each country is published on its own.
 DEFAULT_REPOSITORY = 'locations'
+
+#: Seconds the restore request may take to be accepted. Not waiting for the
+#: restore itself, only for the cluster to take it on -- which, on a disk still
+#: writing out the pack just unpacked, took France longer than the client's 30.
+RESTORE_REQUEST_TIMEOUT = 600
 
 
 def repository_for(country_token, root=DEFAULT_REPOSITORY_PATH,
@@ -191,10 +197,29 @@ def restore(name, client=None, repository=DEFAULT_REPOSITORY, rename_to=None):
         body.update(rename_to)
     # Held open, a restore of this size outlives the client timeout in the
     # same way a snapshot does; the recovery API is how you watch it instead.
-    client.snapshot.restore(
-        repository=repository, snapshot=name, body=body,
-        params={'wait_for_completion': 'false'},
-    )
+    with _asked_once(client):
+        client.snapshot.restore(
+            repository=repository, snapshot=name, body=body,
+            params={'wait_for_completion': 'false',
+                    'request_timeout': RESTORE_REQUEST_TIMEOUT},
+        )
+
+
+@contextlib.contextmanager
+def _asked_once(client):
+    """
+    The client's retry after a timeout switched off for one request.
+
+    A restore that timed out has usually begun: the retry is then refused
+    because the indexes it would create already exist, and the run stops on
+    what reads as a clash with something loaded before.
+    """
+    transport = client.transport
+    retry, transport.retry_on_timeout = transport.retry_on_timeout, False
+    try:
+        yield
+    finally:
+        transport.retry_on_timeout = retry
 
 
 def point_aliases(indexes, client=None, prefix=None):

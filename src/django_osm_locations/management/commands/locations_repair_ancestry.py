@@ -84,9 +84,12 @@ class Command(BaseCommand):
         for name in ('streets', 'addresses'):
             self.dedupe(name, dry_run)
         if not dry_run:
+            # the United States' own pack is the country alone, its states
+            # the rest
             for name in list(SAME_LEVEL) + ['streets', 'addresses']:
-                self.client.indices.forcemerge(
-                    index=self.alias(name), only_expunge_deletes=True)
+                if self.client.indices.exists(index=self.alias(name)):
+                    self.client.indices.forcemerge(
+                        index=self.alias(name), only_expunge_deletes=True)
             self.stdout.write('deleted documents expunged')
 
     def alias(self, name):

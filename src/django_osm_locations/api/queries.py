@@ -360,10 +360,14 @@ HOUSE_NUMBER_SORT_MAX = 2 ** 31 - 1
 #
 # A number typed twice is the exception, and the third weight is for it:
 # "3 Maja 3" can only be house 3, and the street 3 Maja has every word of it.
+#
+# The fourth is for 14/3 typed and a house numbered 14/3 there, over house 14.
+# Times the first two it is still below 2.0.
 HOUSE_NUMBER_WEIGHTS = {
     'house_number': 1.25,
     'house_number_sort': 1.2,
     'typed_twice': 2.0,
+    'whole_number': 1.3,
 }
 
 
@@ -400,6 +404,10 @@ def house_number_functions(q):
 
     "14/3" is matched whole and as house 14, the flat it more often means; a
     postcode or "m. 3" is not a house number at all (see ``read_query``).
+    Where a house is numbered 14/3 it comes before house 14: in Estonia,
+    Hungary and Moldova that is how houses are numbered, and in the repaired
+    packs "Väike-Paala 4/2" in Tallinn found house 4 first. In Poland there is
+    rarely a 14/3 to find, and house 14 is found as before.
     """
     found = read_query(q).numbers if q else []
     if not found:
@@ -424,6 +432,12 @@ def house_number_functions(q):
             'filter': unless_the_streets(digits[number], {'terms': {'house_number': forms}}),
             'weight': HOUSE_NUMBER_WEIGHTS['house_number'],
         })
+        if house != number:
+            whole = sorted({number, number.lower(), number.upper()})
+            functions.append({
+                'filter': unless_the_streets(digits[number], {'terms': {'house_number': whole}}),
+                'weight': HOUSE_NUMBER_WEIGHTS['whole_number'],
+            })
         if digits[number] in typed_twice:
             functions.append({
                 'filter': {'terms': {'house_number': forms}},

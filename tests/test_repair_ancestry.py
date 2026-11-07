@@ -4,6 +4,9 @@ Repairing the ancestry of packs built before the recalculation was fixed.
 The cases are the ones found in Poland's pack: Kazimierz listed under itself
 and under Stare Miasto twice, powiat krakowski under gmina Zabierzów.
 """
+from django.core.management import call_command
+
+from django_osm_locations.management.commands import locations_repair_ancestry
 from django_osm_locations.management.commands.locations_repair_ancestry import repaired
 from django_osm_locations.search.indexes import clean_ancestry
 
@@ -52,3 +55,43 @@ class TestRepaired:
     def test_nothing_to_change_writes_nothing(self):
         source = {'slug': 'kazimierz', 'area': 1.0, 'ancestry': KRAKOW}
         assert repaired(source, 'placesubarea', {}) is None
+
+
+class FakeIndices:
+    def __init__(self, present):
+        self.present, self.merged = present, []
+
+    def exists(self, index):
+        return index in self.present
+
+    def forcemerge(self, index, only_expunge_deletes):
+        assert index in self.present, 'no such index [{}]'.format(index)
+        self.merged.append(index)
+
+
+class FakeClient:
+    def __init__(self, present):
+        self.indices = FakeIndices(present)
+
+    def search(self, index, **kwargs):
+        return {'hits': {'hits': []}, '_scroll_id': 'scroll'}
+
+    def clear_scroll(self, scroll_id):
+        pass
+
+
+class TestAPackWithoutEveryIndex:
+    """The United States' own pack is the country alone; the run stopped on it."""
+
+    def run(self, monkeypatch, present):
+        client = FakeClient(present)
+        monkeypatch.setattr(locations_repair_ancestry, 'get_client', lambda **kwargs: client)
+        monkeypatch.setattr(locations_repair_ancestry, 'get_index_prefix', lambda: 'locations')
+        call_command('locations_repair_ancestry')
+        return client.indices.merged
+
+    def test_the_country_alone(self, monkeypatch):
+        assert self.run(monkeypatch, {'locations-countries'}) == []
+
+    def test_what_is_there_is_still_merged(self, monkeypatch):
+        assert self.run(monkeypatch, {'locations-countries', 'locations-places'}) == ['locations-places']

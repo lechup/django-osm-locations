@@ -269,9 +269,24 @@ class TestAFlatOrAPostcode:
         assert typed('Floriańska 14/3') == ['14', '14/3']
         assert multiplier('Floriańska 14/3', '14') == multiplier('Floriańska 14', '14')
 
-    def test_and_so_is_a_house_numbered_so(self):
-        assert multiplier('Floriańska 14/3', '14/3') == multiplier('Floriańska 14', '14')
+    def test_and_a_house_numbered_so_comes_before_it(self):
+        """
+        In the repaired Estonia pack "Väike-Paala 4/2" found house 4 first;
+        4/2 is a house there.
+        """
+        q = 'Väike-Paala 4/2, Lasnamäe linnaosa'
+        assert multiplier(q, '4/2', street_name='Väike-Paala') > multiplier(
+            q, '4', street_name='Väike-Paala') > 1.0
         assert multiplier('Aleja 1 Maja 31/33', '31/33', street_name='Aleja 1 Maja') > 1.0
+
+    def test_typed_without_the_slash_it_is_a_neighbour(self):
+        assert multiplier('Floriańska 14', '14/3') == multiplier('Floriańska 14', '14a')
+
+    def test_nor_does_the_house_numbered_so_rise_over_a_street(self):
+        whole = (HOUSE_NUMBER_WEIGHTS['house_number'] * HOUSE_NUMBER_WEIGHTS['house_number_sort']
+                 * HOUSE_NUMBER_WEIGHTS['whole_number'])
+        assert multiplier('Floriańska 14/3', '14/3') == pytest.approx(whole)
+        assert whole < DEFAULT_TYPE_BOOSTS['streets'] / DEFAULT_TYPE_BOOSTS['addresses']
 
     def test_15_a_is_that_house_and_not_house_15(self):
         q = 'Via Girolamo Cocconi 15/a, Roma'

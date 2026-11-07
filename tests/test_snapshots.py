@@ -75,12 +75,19 @@ class FakeSnapshot:
 
     def restore(self, repository, snapshot, body, params):
         self.restored.append((snapshot, body, params))
+        self.retried_on_timeout = self.transport.retry_on_timeout
+
+
+class FakeTransport:
+    retry_on_timeout = True
 
 
 class FakeClient:
     def __init__(self, aliases=None, existing=()):
         self.indices = FakeIndices(aliases, existing)
+        self.transport = FakeTransport()
         self.snapshot = FakeSnapshot()
+        self.snapshot.transport = self.transport
 
 
 ALIASES = {
@@ -196,6 +203,41 @@ class TestRestoring:
         snapshots.restore('x', client=client)
         _, _, params = client.snapshot.restored[0]
         assert params['wait_for_completion'] == 'false'
+
+    def test_a_busy_cluster_is_given_time_to_take_it_on(self):
+        """France's restore took longer than 30 s to be accepted, behind a disk writing out the pack."""
+        client = FakeClient()
+        snapshots.restore('x', client=client)
+        _, _, params = client.snapshot.restored[0]
+        assert params['request_timeout'] == snapshots.RESTORE_REQUEST_TIMEOUT >= 300
+
+    def test_it_is_asked_once(self):
+        client = FakeClient()
+        snapshots.restore('x', client=client)
+        assert client.snapshot.retried_on_timeout is False
+        assert client.transport.retry_on_timeout is True
+
+    def test_a_timeout_is_not_followed_by_a_refused_retry(self):
+        """
+        The retry of a restore already begun is refused as a clash -- "an open
+        index with same name already exists" -- and that is what stopped FR.
+        """
+        opensearchpy = pytest.importorskip('opensearchpy')
+        calls = []
+
+        class TimingOut(opensearchpy.Urllib3HttpConnection):
+            def perform_request(self, method, url, *args, **kwargs):
+                calls.append((method, url, kwargs.get('timeout')))
+                raise opensearchpy.ConnectionTimeout('TIMEOUT', 'timed out', None)
+
+        client = opensearchpy.OpenSearch(
+            hosts=['localhost:1'], connection_class=TimingOut,
+            retry_on_timeout=True, max_retries=3)
+        with pytest.raises(opensearchpy.ConnectionTimeout):
+            snapshots.restore('fr-2026-10-31', client=client, repository='locations-fr')
+        assert calls == [('POST', '/_snapshot/locations-fr/fr-2026-10-31/_restore',
+                          snapshots.RESTORE_REQUEST_TIMEOUT)]
+        assert client.transport.retry_on_timeout is True
 
 
 class TestPointingTheAliases:
