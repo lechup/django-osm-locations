@@ -797,6 +797,99 @@ class Command(BaseCommand):
             cursor.execute(cls.get_sql_for_address_slugs())
             print("  {} derived".format(cursor.rowcount))
 
+    #: The country an address's slug is unique in, as the slugs are scoped.
+    ADDRESS_SCOPE = "coalesce(nullif({a}.country[1][2], ''), {a}.country[2][2])"
+
+    @classmethod
+    def get_sql_for_shared_address_slugs(cls):
+        """
+        Every live address whose slug another in its country has, with what
+        may tell it apart (see utils.shared_slugs): by slug, and by id within
+        one, as the repair takes them.
+        """
+        return """
+            SELECT {scope_a}, a.slug, a.id, NOT {unlinked} AS linked,
+                   a.street_name, a.settlement_name,
+                   a.placesubarea[array_length(a.placesubarea, 1)][1],
+                   a.place[array_length(a.place, 1)][2],
+                   coalesce(a.way_osm_id, a.node_osm_id, a.relation_osm_id, a.id),
+                   ST_X(a.center), ST_Y(a.center)
+            FROM "locations_address" a
+            JOIN (
+                SELECT {scope_a2} AS scope, a2.slug
+                FROM "locations_address" a2
+                WHERE NOT a2.is_merged{restrict}
+                GROUP BY {scope_a2}, a2.slug
+                HAVING count(*) > 1
+            ) shared ON shared.slug = a.slug AND shared.scope IS NOT DISTINCT FROM {scope_a}
+            WHERE NOT a.is_merged
+            ORDER BY 1, a.slug, a.id
+        """.format(scope_a=cls.ADDRESS_SCOPE.format(a='a'),
+                   scope_a2=cls.ADDRESS_SCOPE.format(a='a2'),
+                   unlinked=cls.UNLINKED.replace('a2.', 'a.'),
+                   restrict=RecalcScope.sql('address', 'a2'))
+
+    #: The nearest place within a house's own, as utils.shared_slugs names it.
+    SQL_FOR_NEAREST_PLACE_WITHIN = """
+        SELECT p.name FROM "locations_place" p
+        WHERE NOT p.is_merged AND p.center IS NOT NULL
+          AND p.place[array_length(p.place, 1)][2] = %s
+          AND ST_DWithin(p.center::geography,
+                         ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s)
+        ORDER BY p.center <-> ST_SetSRID(ST_MakePoint(%s, %s), 4326)
+        LIMIT 1
+    """
+
+    @classmethod
+    @transaction.atomic
+    def qualify_shared_address_slugs(cls):
+        """
+        Give each house that shares its slug with another one of its own.
+
+        The slug they shared stays theirs as the index's shared_slug, the
+        difference between the slug and the one derived (Address.slugify).
+        """
+        from itertools import groupby
+
+        from psycopg2.extras import execute_values
+
+        from ...utils.shared_slugs import NEAREST_PLACE_METRES, qualifiers, qualify
+
+        print("Address - telling apart the houses that share a slug...")
+        written, shared = [], 0
+        with connection.cursor() as cursor:
+            cursor.execute(cls.get_sql_for_shared_address_slugs())
+            rows = cursor.fetchall()
+            for (scope, base), group in groupby(rows, key=lambda row: (row[0], row[1])):
+                group = list(group)
+                shared += 1
+                houses = [{'linked': row[3], 'street_name': row[4], 'settlement': row[5],
+                           'district': row[6], 'osm_id': row[8]} for row in group]
+                told = [tuple(list(qualifiers(house))[:-1]) for house in houses]
+                if len(set(told)) < len(told):
+                    for house, row in zip(houses, group):
+                        lon, lat = row[9], row[10]
+                        if lon is None or not row[7]:
+                            continue
+                        cursor.execute(cls.SQL_FOR_NEAREST_PLACE_WITHIN,
+                                       [row[7], lon, lat, NEAREST_PLACE_METRES, lon, lat])
+                        found = cursor.fetchone()
+                        house['nearest'] = found and found[0]
+                cursor.execute(
+                    'SELECT slug FROM "locations_address" a WHERE a.slug LIKE %s '
+                    'AND NOT a.id = ANY(%s) AND {} IS NOT DISTINCT FROM %s'.format(
+                        cls.ADDRESS_SCOPE.format(a='a')),
+                    [base + '-%', [row[2] for row in group], scope])
+                taken = {found[0] for found in cursor.fetchall()}
+                written.extend((row[2], slug) for row, slug in zip(group, qualify(base, houses, taken)))
+            for start in range(0, len(written), 1000):
+                execute_values(cursor, """
+                    UPDATE "locations_address" AS a SET slug = v.slug
+                    FROM (VALUES %s) AS v (id, slug)
+                    WHERE a.id = v.id
+                """, written[start:start + 1000])
+        print("  {} slugs shared by {} houses".format(shared, len(written)))
+
     #: What an address inherits from the place that contains it rather than
     #: working out for itself. Its place subarea is not here: those borders are
     #: small and there is nothing above them to inherit.
@@ -1050,6 +1143,36 @@ class Command(BaseCommand):
         ]
 
     @classmethod
+    def split_namesakes_by_settlement(cls, cursor):
+        """
+        One street of each name in each place -- and in each settlement of it.
+
+        Where the place is a municipality of villages, each has its own
+        Østergade, and their houses say which: see utils.settlements. A group
+        of pieces whose houses name more than one settlement is joined as the
+        streets it is, and a street of one piece is left as it is.
+        """
+        from ...utils.settlements import streets_of
+
+        cursor.execute('SELECT keeper, ids FROM "namesake_streets" ORDER BY keeper')
+        split = 0
+        for keeper, ids in cursor.fetchall():
+            groups = streets_of(ids, cls.ADDRESS_MATCH_METRES, cls.MATCH_BOX_DEGREES)
+            if len(groups) < 2:
+                continue
+            split += 1
+            cursor.execute('DELETE FROM "namesake_streets" WHERE keeper = %s', [keeper])
+            for group in groups:
+                if len(group) > 1:
+                    cursor.execute("""
+                        INSERT INTO "namesake_streets" (keeper, ids, lines)
+                        SELECT min(id), array_agg(id ORDER BY id),
+                               ST_Multi(ST_LineMerge(ST_Multi(ST_Union(lines))))
+                        FROM "locations_street" WHERE id = ANY(%s)
+                    """, [group])
+        return split
+
+    @classmethod
     @transaction.atomic
     def merge_namesake_streets(cls):
         print("Street - joining the pieces of each street...")
@@ -1059,6 +1182,9 @@ class Command(BaseCommand):
             cursor.execute('DROP TABLE IF EXISTS "namesake_streets"')
             cursor.execute('DROP TABLE IF EXISTS "namesake_pieces"')
             cursor.execute(groups)
+            split = cls.split_namesakes_by_settlement(cursor)
+            if split:
+                print("  {} names in more than one settlement of their place".format(split))
             cursor.execute(pieces)
             cursor.execute(joined)
             names = cursor.rowcount

@@ -9,6 +9,7 @@ from collections import Counter, namedtuple
 from django.conf import settings
 
 from ..search.indexes import INDEXES
+from ..utils.twins import TWIN_OF
 
 MAX_PAGE_SIZE = 200
 DEFAULT_PAGE_SIZE = 20
@@ -128,6 +129,41 @@ def parse_page(page, page_size):
     return page, min(page_size, MAX_PAGE_SIZE)
 
 
+#: A type, as the API names it, and the level it has in an ancestry.
+ANCESTRY_LEVELS = {
+    'countries': 'country',
+    'country-subareas': 'countrysubarea',
+    'places': 'place',
+    'place-subareas': 'placesubarea',
+    'streets': 'street',
+}
+
+
+def parse_within(value):
+    """
+    ``?within=douglas,places:antwerpen`` -> one filter for each ancestor.
+
+    A slug is unique per type, not across types: Antwerpen is a city and the
+    province around it, both antwerpen, so ``within=antwerpen`` is the whole
+    province. In 7 of Belgium's 10 largest cities a province or an
+    arrondissement has the city's slug. ``places:antwerpen`` is the city.
+    """
+    clauses = []
+    for part in [part.strip() for part in (value or '').split(',') if part.strip()]:
+        kind, typed, slug = part.partition(':')
+        if not typed:
+            clauses.append({'term': {'ancestry_slugs': part}})
+            continue
+        if kind not in ANCESTRY_LEVELS:
+            raise QueryError('within: {} is not a type an ancestor can be. Those are: {}'.format(
+                kind, ', '.join(ANCESTRY_LEVELS)))
+        clauses.append({'nested': {'path': 'ancestry', 'query': {'bool': {'filter': [
+            {'term': {'ancestry.level': ANCESTRY_LEVELS[kind]}},
+            {'term': {'ancestry.slug': slug}},
+        ]}}}})
+    return clauses
+
+
 def parse_admin_level(value):
     """``?admin_level=4`` or ``?admin_level=4,6`` -> a terms filter."""
     if not value:
@@ -206,6 +242,25 @@ WHOLE_WORD_BOOST = 1.0
 # A word found whole in the name of the place a location is in, against the
 # same word in the rest of its ancestry.
 PLACE_NAME_BOOST = 2
+# The longest run of words tried as a whole name: see exact_name_functions.
+EXACT_RUN_WORDS = 6
+
+
+def whole_run(q):
+    """All the words of ``q`` as one run, as word_runs writes runs."""
+    return ' '.join(word for word in re.split(r'[\s,]+', read_query(q).scored) if word)
+
+
+def word_runs(text, longest=EXACT_RUN_WORDS):
+    """Every run of up to ``longest`` words of ``text``, commas aside, but a number alone."""
+    words = [word for word in re.split(r'[\s,]+', text or '') if word]
+    runs = []
+    for start in range(len(words)):
+        for end in range(start + 1, min(len(words), start + longest) + 1):
+            run = ' '.join(words[start:end])
+            if run not in runs and not HOUSE_NUMBER.fullmatch(run):
+                runs.append(run)
+    return runs
 
 
 def build_query(q=None, within=None, bbox=None, near=None, radius=None,
@@ -275,9 +330,7 @@ def build_query(q=None, within=None, bbox=None, near=None, radius=None,
             }
         })
 
-    if within:
-        for slug in [part.strip() for part in within.split(',') if part.strip()]:
-            filters.append({'term': {'ancestry_slugs': slug}})
+    filters.extend(parse_within(within))
 
     bbox_clause = parse_bbox(bbox)
     if bbox_clause:
@@ -371,6 +424,15 @@ HOUSE_NUMBER_WEIGHTS = {
 }
 
 
+# What a location is worth when its whole name is some of the words typed,
+# one after another. Multiplied in, as the type weights are, which an amount
+# added to the text score could not outweigh: at any amount "Skopje, Butel"
+# kept Opština Butel, a country subarea, before the district Butel. Measured
+# on nine packs at 1, 2 and 3, the district check went 89.4, 90.6, 91.6% and
+# districts found first 87.7, 90.1, 93.0%; streets and addresses held.
+EXACT_NAME_WEIGHT = 3.0
+
+
 # What an address is worth when it has the postcode typed. A help and not a
 # requirement: 9.8% of Poland's addresses carry none, and one typed wrong
 # should not lose the house. With the house number it
@@ -453,6 +515,30 @@ def house_number_functions(q):
     return functions
 
 
+def exact_name_functions(q):
+    """
+    A scoring function for the locations whose whole name was typed, among other words.
+
+    name.exact is matched against the whole query, and the city is in the
+    query: "Berlin, Friedrichshain" found Friedrichshain-Kreuzberg first and
+    Friedrichshain second, as a quarter of the districts the API check missed
+    were found -- Krzyki-Partynice before Krzyki, Sendling-Westpark before
+    Sendling. Each run of words typed is tried as a whole name -- but the
+    whole query, which name.exact weighs already: typed whole, "Vila" is as
+    likely the start of Vila Nova de Gaia as the village called Vila.
+    """
+    runs = word_runs(read_query(q).scored) if q else []
+    runs = [run for run in runs if run != whole_run(q)]
+    if not runs:
+        return []
+    return [{
+        'filter': {'bool': {'should': [
+            {'match': {field: run}} for run in runs for field in ('name.exact', 'names_all.exact')
+        ]}},
+        'weight': EXACT_NAME_WEIGHT,
+    }]
+
+
 def apply_scoring(query, q=None):
     """
     Scale each hit's score by what kind of location it is, and by its size.
@@ -504,6 +590,7 @@ def apply_scoring(query, q=None):
             'missing': 0,
         }
     })
+    functions.extend(exact_name_functions(q))
     functions.extend(house_number_functions(q))
     postcodes = read_query(q).postcodes if q else []
     if postcodes:
@@ -573,6 +660,10 @@ def build_body(params, types=None, strict=True):
         admin_level=params.get('admin_level'),
         strict=strict,
     )
+    if q and (types is None or 'place-subareas' in types):
+        # a place drawn as a point inside the district of its name is that
+        # district, which answers for both: see utils.twins
+        query['bool'].setdefault('must_not', []).append({'exists': {'field': TWIN_OF}})
     if q:
         # only meaningful when something is being scored; without a query the
         # results are sorted by size anyway

@@ -123,6 +123,7 @@ class TestEveryStepIsRestricted:
         'namesake streets': lambda: Denorm.get_sql_for_namesake_streets()[0],
         'address link in its place': Denorm.get_sql_for_address_street_in_place,
         'repeated houses': Denorm.get_sql_for_repeated_houses,
+        'shared address slugs': Denorm.get_sql_for_shared_address_slugs,
     }
 
     @pytest.mark.parametrize('name', sorted(BUILDERS))

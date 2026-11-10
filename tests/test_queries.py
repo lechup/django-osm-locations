@@ -16,7 +16,9 @@ from django_osm_locations.api.queries import (
     parse_near,
     parse_page,
     parse_types,
+    parse_within,
     read_query,
+    word_runs,
 )
 
 
@@ -208,6 +210,23 @@ class TestQuery:
         assert {'term': {'ancestry_slugs': 'douglas'}} in filters
         assert {'term': {'ancestry_slugs': 'braddan'}} in filters
 
+    def test_within_an_ancestor_of_one_type(self):
+        """Antwerpen is a city and the province around it, both antwerpen."""
+        assert parse_within('places:antwerpen') == [{'nested': {'path': 'ancestry', 'query': {
+            'bool': {'filter': [{'term': {'ancestry.level': 'place'}},
+                                {'term': {'ancestry.slug': 'antwerpen'}}]}}}}]
+
+    def test_within_of_both_kinds(self):
+        filters = build_query(within='belgie, place-subareas:deurne')['bool']['filter']
+        assert filters[0] == {'term': {'ancestry_slugs': 'belgie'}}
+        assert filters[1]['nested']['query']['bool']['filter'][0] == {
+            'term': {'ancestry.level': 'placesubarea'}}
+
+    @pytest.mark.parametrize('value', ['addresses:lakowa-5', 'cities:antwerpen', ':antwerpen'])
+    def test_within_a_type_no_ancestor_has(self, value):
+        with pytest.raises(QueryError):
+            parse_within(value)
+
     def test_text_and_filters_combine(self):
         query = build_query(q='abbey', within='douglas', bbox='-5,54,-4,55')
         assert len(query['bool']['must']) == 1
@@ -247,6 +266,17 @@ class TestQuery:
         fields = build_query(q='Warsaw')['bool']['should'][0]['multi_match']['fields']
         assert fields.index('names_all.exact^3') == 1
 
+    def test_runs_of_words(self):
+        assert word_runs('Berlin, Friedrichshain') == [
+            'Berlin', 'Berlin Friedrichshain', 'Friedrichshain']
+
+    def test_a_number_alone_is_no_name(self):
+        assert word_runs('Floriańska 14/3') == ['Floriańska', 'Floriańska 14/3']
+
+    def test_runs_are_not_longer_than_that(self):
+        runs = word_runs('a b c d e f g h')
+        assert 'a b c d e f' in runs and 'a b c d e f g' not in runs
+
     def test_relaxed_has_no_whole_words_to_add(self):
         """Anything with any word scores already; whole ones are for telling apart."""
         query = build_query(q='Elizy Orzeszkowej 1, Lublin', strict=False)
@@ -261,6 +291,23 @@ class TestQuery:
         """A flat number would find every house 3 in the country."""
         query = build_query(q='Floriańska 14 m. 3', strict=False)
         assert query['bool']['must'][0]['multi_match']['query'] == 'Floriańska 14'
+
+
+class TestTwins:
+    """Deurne, a point, and Deurne, the district of Antwerpen around it."""
+
+    def test_search_leaves_the_point_out(self):
+        body, _, _ = build_body({'q': 'Antwerpen, Deurne'})
+        must_not = body['query']['function_score']['query']['bool']['must_not']
+        assert {'exists': {'field': 'twin_of'}} in must_not
+
+    def test_unless_the_districts_are_not_searched(self):
+        body, _, _ = build_body({'q': 'Deurne'}, types=['places'])
+        assert 'must_not' not in body['query']['function_score']['query']['bool']
+
+    def test_a_listing_has_both(self):
+        body, _, _ = build_body({'within': 'antwerpen'})
+        assert 'must_not' not in body['query']['bool']
 
 
 class TestSort:

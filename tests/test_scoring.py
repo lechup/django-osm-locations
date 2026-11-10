@@ -9,8 +9,10 @@ import pytest
 
 from django_osm_locations.api.queries import (
     DEFAULT_TYPE_BOOSTS,
+    EXACT_NAME_WEIGHT,
     apply_scoring,
     build_body,
+    exact_name_functions,
     type_boosts,
 )
 
@@ -90,6 +92,38 @@ class TestScoringShape:
         for f in scored['functions']:
             if 'field_value_factor' in f:
                 assert f['field_value_factor']['modifier'] == 'log2p'
+
+
+class TestAWholeNameAmongTheWordsTyped:
+    def test_each_run_of_words_is_tried_whole(self):
+        """Friedrichshain, before Friedrichshain-Kreuzberg, for "Berlin, Friedrichshain"."""
+        (function,) = exact_name_functions('Berlin, Friedrichshain')
+        matches = function['filter']['bool']['should']
+        assert {'match': {'name.exact': 'Friedrichshain'}} in matches
+        assert {'match': {'names_all.exact': 'Friedrichshain'}} in matches
+        assert {'match': {'name.exact': 'Berlin'}} in matches
+
+    def test_it_multiplies_as_the_type_does(self):
+        """Added to the text score, no amount put the district Butel before Opština Butel."""
+        functions = apply_scoring({'match_all': {}}, 'Skopje, Butel')['function_score']['functions']
+        weights = [f['weight'] for f in functions if 'match' in str(f.get('filter'))]
+        assert weights == [EXACT_NAME_WEIGHT]
+        assert EXACT_NAME_WEIGHT > 1
+
+    def test_nothing_without_a_query(self):
+        assert exact_name_functions(None) == []
+
+    def test_nor_for_the_whole_query(self):
+        """Typed whole, "Vila" is as likely the start of Vila Nova de Gaia; name.exact weighs it."""
+        assert exact_name_functions('Vila') == []
+        (function,) = exact_name_functions('Berlin, Friedrichshain')
+        runs = {m['match'].get('name.exact') for m in function['filter']['bool']['should']}
+        assert 'Berlin Friedrichshain' not in runs
+
+    def test_a_number_alone_is_not_tried(self):
+        (function,) = exact_name_functions('Floriańska 14, Kraków')
+        runs = {m['match'].get('name.exact') for m in function['filter']['bool']['should']}
+        assert '14' not in runs and 'Floriańska 14' in runs
 
 
 class TestWhenScoringApplies:

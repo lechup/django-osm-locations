@@ -180,3 +180,79 @@ class TestTheRepair:
     def test_twice_changes_nothing_more(self, both, opensearch, settings):
         call_command('locations_repair_addresses')
         assert contents(opensearch, settings.LOCATIONS_OPENSEARCH_INDEX_PREFIX) == both[0]
+
+
+DANMARK = ['Danmark', 'danmark']
+LANGELAND = ['Langeland', 'langeland']
+# a metre east, near 55 degrees north
+EAST_55 = 1 / (111320 * 0.5736)
+
+
+@pytest.fixture
+def langeland(opensearch, settings):
+    """
+    Østergade as the import left it: one street of Langeland, its pieces in
+    Rudkøbing and in Bagenkop, 45 km apart, and Østergade 12 in each.
+    """
+    from django_osm_locations.models import Place
+
+    for name, x in (('Rudkøbing', 0), ('Bagenkop', 45000)):
+        Place.objects.create(name=name, slug=name.lower().replace('ø', 'o'), country=[DANMARK],
+                             place=[LANGELAND], center=Point(10 + x * EAST_55, 55.0))
+    lines = MultiLineString(
+        LineString((10.0, 55.0), (10 + 500 * EAST_55, 55.0)),
+        LineString((10 + 45000 * EAST_55, 55.0), (10 + 45300 * EAST_55, 55.0)))
+    Street.objects.create(name='Østergade', slug='ostergade', lines=lines, length=800,
+                          country=[DANMARK], place=[LANGELAND], way_osm_id=next(OSM_IDS))
+    for x, settlement in ((100, 'Rudkøbing'), (45100, 'Bagenkop'), (400, 'Rudkøbing')):
+        Address.objects.create(
+            name='Østergade 12', house_number='12', street_name='Østergade',
+            settlement_name=settlement, center=Point(10 + x * EAST_55, 55.0), country=[DANMARK],
+            place=[LANGELAND], street=[['Østergade', 'ostergade']], slug='ostergade-12',
+            node_osm_id=next(OSM_IDS))
+    prefix = 'test-repair-dk-{}'.format(uuid.uuid4().hex[:8])
+    for name in ('places', 'streets', 'addresses'):
+        reindexer = Reindexer(INDEXES[name], client=opensearch, prefix=prefix)
+        reindexer.create()
+        reindexer.populate()
+        reindexer.promote()
+    settings.LOCATIONS_OPENSEARCH_INDEX_PREFIX = prefix
+    call_command('locations_repair_addresses')
+    yield prefix
+    opensearch.indices.delete(index='{}-*'.format(prefix), ignore_unavailable=True)
+
+
+def documents(opensearch, prefix, name):
+    return {h['_source']['slug']: h['_source'] for h in opensearch.search(
+        index='{}-{}'.format(prefix, name), body={'size': 100})['hits']['hits']}
+
+
+class TestAStreetInEachVillage:
+    def test_two_streets(self, opensearch, langeland):
+        assert sorted(documents(opensearch, langeland, 'streets')) == [
+            'ostergade', 'ostergade-bagenkop']
+
+    def test_the_longer_keeps_the_slug(self, opensearch, langeland):
+        streets = documents(opensearch, langeland, 'streets')
+        assert streets['ostergade']['length'] == pytest.approx(500, rel=0.05)
+
+    def test_the_new_one_is_in_its_village(self, opensearch, langeland):
+        bagenkop = documents(opensearch, langeland, 'streets')['ostergade-bagenkop']
+        assert [e['slug'] for e in bagenkop['ancestry'] if e['level'] == 'place'] == ['bagenkop']
+
+    def test_each_house_is_on_the_street_of_its_village(self, opensearch, langeland):
+        houses = sorted(
+            (h['settlement_name'], [e['slug'] for e in h['ancestry'] if e['level'] == 'street'][0])
+            for h in documents(opensearch, langeland, 'addresses').values()
+            if h['settlement_name'] == 'Bagenkop')
+        assert houses == [('Bagenkop', 'ostergade-bagenkop')]
+
+    def test_and_its_slug_with_it(self, opensearch, langeland):
+        slugs = sorted(h['_source']['slug'] for h in opensearch.search(
+            index='{}-addresses'.format(langeland), body={'size': 100})['hits']['hits'])
+        assert slugs == ['ostergade-12', 'ostergade-12', 'ostergade-bagenkop-12']
+
+    def test_twice_changes_nothing_more(self, opensearch, langeland):
+        before = documents(opensearch, langeland, 'streets')
+        call_command('locations_repair_addresses')
+        assert documents(opensearch, langeland, 'streets') == before

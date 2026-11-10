@@ -116,6 +116,7 @@ class TestTheWalkRunsItInTimeToMatter:
                 mock.patch.object(Denorm, 'link_addresses_to_streets_in_their_place'), \
                 mock.patch.object(Denorm, 'merge_repeated_houses'), \
                 mock.patch.object(Denorm, 'update_address_slugs'), \
+                mock.patch.object(Denorm, 'qualify_shared_address_slugs'), \
                 mock.patch.object(Denorm, 'clean_denorm_fields_after_update'), \
                 mock.patch.object(Denorm, 'update_street_place_field',
                                   side_effect=lambda: order.append('attach')):

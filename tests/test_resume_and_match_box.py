@@ -28,7 +28,7 @@ EFFECTFUL = (
     'update_address_street_field', 'place_addresses_outside_places',
     'link_addresses_to_streets_in_their_place', 'merge_repeated_houses',
     'clean_denorm_fields_after_update',
-    'update_address_slugs',
+    'update_address_slugs', 'qualify_shared_address_slugs',
 )
 
 

@@ -6,8 +6,9 @@
 #   scripts/repair-packs.sh pl-2026-10-02   # just these
 #
 # For each: restore it into an otherwise empty cluster, run the repairs --
-# locations_repair_ancestry, locations_repair_search_fields and
-# locations_repair_addresses, each a no-op on a pack that has it already --
+# locations_repair_ancestry, locations_repair_search_fields,
+# locations_repair_addresses, locations_repair_slugs and
+# locations_repair_twins, each a no-op on a pack that has it already --
 # snapshot it again under the same name -- the data is as old as it was --
 # pack that, verify the checksums, and only then let the old pack go. A failure stops the run with the old pack still in place, kept
 # under dist/snapshots/.replaced/ until the new one has verified.
@@ -64,6 +65,9 @@ for name in "${packs[@]}"; do
     # the mapping first, so what the address repair writes has the new fields
     django locations_repair_search_fields
     django locations_repair_addresses
+    # after the streets, which move houses and give them their street's slug
+    django locations_repair_slugs
+    django locations_repair_twins
 
     # the same name again: drop the restored snapshot, then take the new one
     os -XDELETE "$OPENSEARCH/_snapshot/locations-$iso/$name" >/dev/null

@@ -18,6 +18,7 @@ from .. import Address, Country, CountrySubarea, Place, PlaceSubarea, Street, \
     MergeMultiline, array_agg_ordered
 from ....conf import get_cache_dir
 from ....utils.progress import progress, show_progress_default  # noqa: F401
+from ....utils.settlements import streets_of
 
 
 # pyosmium and shapely are only needed to parse a .pbf extract. Import them
@@ -1252,20 +1253,33 @@ class BaseImporter(object):
 
     @classmethod
     def _merge_place_streets(cls, place):
+        """
+        One street of each name inside ``place``'s border -- and in each
+        settlement of it, where the place is a municipality of villages each
+        with its own: see utils.settlements.
+        """
+        from ..locations_recalculate_denormalized_fields import Command as Denorm
+
         streets_to_merge = progress(
             list(cls._get_duplicated_street_tuples(place)),
             desc='Doing merge of Streets for {}...'.format(place),
             leave=False
         )
         for name, id_min, ids_array, merged_lines in streets_to_merge:
-            ids_array.remove(id_min)
-            with transaction.atomic():
-                # mark as merged
-                Street.objects.filter(id__in=ids_array).mark_as_merged(into=id_min)
-                # save one item with lines merged
-                street = Street.objects.get(id=id_min)
-                street.lines = merged_lines
-                street.save()
+            groups = streets_of(ids_array, Denorm.ADDRESS_MATCH_METRES, Denorm.MATCH_BOX_DEGREES)
+            for group in groups:
+                if len(group) < 2:
+                    continue
+                keeper = min(group)
+                with transaction.atomic():
+                    # mark as merged
+                    Street.objects.filter(id__in=[i for i in group if i != keeper]).mark_as_merged(
+                        into=keeper)
+                    # save one item with lines merged
+                    street = Street.objects.get(id=keeper)
+                    street.lines = merged_lines if len(groups) == 1 else Street.objects.filter(
+                        id__in=group).aggregate(lines=MergeMultiline('lines'))['lines']
+                    street.save()
 
     @classmethod
     def _get_duplicated_place_tuples(cls):

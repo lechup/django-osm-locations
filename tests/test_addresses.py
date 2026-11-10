@@ -312,11 +312,13 @@ class TestSlugsRunLast:
                 mock.patch.object(Denorm, 'clean_denorm_fields_after_update',
                                   side_effect=lambda: order.append('clean')), \
                 mock.patch.object(Denorm, 'update_address_slugs',
-                                  side_effect=lambda: order.append('slugs')):
+                                  side_effect=lambda: order.append('slugs')), \
+                mock.patch.object(Denorm, 'qualify_shared_address_slugs',
+                                  side_effect=lambda: order.append('shared slugs')):
             RecalculateAll().handle()
 
         assert order == ['streets joined', 'link', 'outside', 'link in place', 'one per house',
-                         'slugs']
+                         'slugs', 'shared slugs']
 
 
 class TestParameterisedSqlIsSafeToExecute:

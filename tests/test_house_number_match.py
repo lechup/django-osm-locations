@@ -18,6 +18,7 @@ from django_osm_locations.api.queries import (
     POSTCODE_WEIGHT,
     apply_scoring,
     build_body,
+    exact_name_functions,
     house_number_functions,
 )
 from django_osm_locations.search.indexes import INDEXES
@@ -339,7 +340,8 @@ class TestWhereTheyApply:
 
     def test_a_query_without_one_does_not(self):
         functions = self.functions({'q': 'Floriańska, Kraków'})
-        assert functions == apply_scoring({'match_all': {}})['function_score']['functions']
+        assert functions == (apply_scoring({'match_all': {}})['function_score']['functions']
+                             + exact_name_functions('Floriańska, Kraków'))
 
     def test_nor_does_scoring_without_a_query(self):
         """What test_scoring counts: one weight per type, and the two sizes."""

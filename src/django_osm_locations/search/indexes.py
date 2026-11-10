@@ -9,6 +9,8 @@ import json
 from django.contrib.gis.geos import GEOSGeometry
 
 from ..models import Address, Country, CountrySubarea, Place, PlaceSubarea, Street
+from ..utils.shared_slugs import SHARED_SLUG
+from ..utils.twins import TWIN_OF, twins_of
 
 # Prefix matching without a wildcard query: index the name as edge n-grams at
 # write time so "krak" hits "krakow" through an ordinary term lookup. This is
@@ -163,7 +165,15 @@ ADDRESS_PROPERTIES = {
     'street_name': {'type': 'keyword'},
     'settlement_name': {'type': 'keyword'},
     'postcode': {'type': 'keyword'},
+    # The slug the house shared with others, where it did: see
+    # utils.shared_slugs. The detail endpoint names them all when asked for it.
+    SHARED_SLUG: {'type': 'keyword'},
 }
+
+PLACE_PROPERTIES = dict(BORDER_PROPERTIES, **{
+    # The district a place drawn as a point is the twin of: see utils.twins.
+    TWIN_OF: {'type': 'keyword'},
+})
 
 MULTILINE_PROPERTIES = {
     'length': {'type': 'double'},
@@ -299,11 +309,19 @@ class LocationIndex:
         return {into: {key: sorted(set(values)) for key, values in ids_.items()}
                 for into, ids_ in found.items()}
 
-    def document(self, obj, merged=None):
+    def twin_fields(self, ids):
+        """
+        ``{id: fields}`` for the rows among ``ids`` that are, or have, a
+        district's twin: one query for a batch of documents.
+        """
+        return twins_of(self.model.__name__.lower(), ids)
+
+    def document(self, obj, merged=None, twin=None):
         """
         Build the OpenSearch document for one model instance.
 
-        ``merged``: what ``merged_osm_ids`` found for it.
+        ``merged``: what ``merged_osm_ids`` found for it; ``twin``: what
+        ``twin_fields`` did.
         """
         entries, slugs, names = self._ancestry(obj)
         doc = {
@@ -340,6 +358,12 @@ class LocationIndex:
                 {'lon': obj.seat[0], 'lat': obj.seat[1]} if obj.seat else None
             )
             doc['seat_name'] = obj.seat_name or None
+            twin = twin or {}
+            if TWIN_OF in self.properties:
+                doc[TWIN_OF] = twin.get(TWIN_OF)
+            if twin.get('population') and not obj.population:
+                # the district answers for its twin, and ranks by its people
+                doc['population'] = twin['population']
         if 'length' in self.properties:
             doc['length'] = obj.length
         if 'house_number' in self.properties:
@@ -348,6 +372,9 @@ class LocationIndex:
             doc['street_name'] = obj.street_name or None
             doc['settlement_name'] = obj.settlement_name or None
             doc['postcode'] = obj.postcode or None
+            # told apart from others that had it: see utils.shared_slugs
+            derived = obj.slugify[:255]
+            doc[SHARED_SLUG] = derived if obj.slug != derived else None
         return doc
 
 
@@ -356,7 +383,7 @@ INDEXES = {
     for index in [
         LocationIndex('countries', Country, 'border', BORDER_PROPERTIES),
         LocationIndex('country-subareas', CountrySubarea, 'border', BORDER_PROPERTIES),
-        LocationIndex('places', Place, 'border', BORDER_PROPERTIES),
+        LocationIndex('places', Place, 'border', PLACE_PROPERTIES),
         LocationIndex('place-subareas', PlaceSubarea, 'border', BORDER_PROPERTIES),
         LocationIndex('streets', Street, 'lines', MULTILINE_PROPERTIES),
         # No geometry field: `center` is on every document already, and an

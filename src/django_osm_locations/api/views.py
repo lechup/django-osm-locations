@@ -11,8 +11,9 @@ from rest_framework.views import APIView
 
 from ..search.client import get_client, get_index_prefix
 from ..search.indexes import INDEXES
+from ..utils.shared_slugs import SHARED_SLUG
 from .localize import ancestor_keys, apply_language, fetch_ancestor_names
-from .queries import QueryError, build_body, exclude_types, parse_types
+from .queries import QueryError, build_body, exclude_types, parse_types, parse_within
 
 
 def add_path(hit):
@@ -75,7 +76,9 @@ class SearchView(APIView):
       ``exclude_type=addresses`` suggests streets and places while a name is
       being typed, and a street's houses are then
       ``/addresses/?within=<street slug>&q=<number>``
-    * ``within`` -- comma separated ancestor slugs, e.g. ``within=douglas``
+    * ``within`` -- comma separated ancestor slugs, e.g. ``within=douglas``;
+      ``places:antwerpen`` for the city alone, where the province around it
+      has the same slug
     * ``bbox`` -- ``minlon,minlat,maxlon,maxlat``
     * ``near`` + ``radius`` -- ``near=-4.48,54.15&radius=5km``
     * ``order`` -- ``relevance`` (default with ``q``), ``name``, ``size``, or
@@ -170,7 +173,8 @@ class DetailView(APIView):
     Parameters:
 
     * ``within`` -- an ancestor slug, e.g. ``within=polska``, to choose
-      between countries when a slug is ambiguous
+      between countries when a slug is ambiguous; ``places:antwerpen`` for
+      the city when the province has its slug too
     * ``lang`` -- return names in this language where OSM has one
     """
 
@@ -186,11 +190,12 @@ class DetailView(APIView):
             )
 
         alias = INDEXES[location_type].alias(get_index_prefix())
-        within = (request.query_params.get('within') or '').strip()
+        try:
+            within = parse_within(request.query_params.get('within'))
+        except QueryError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-        must = [{'term': {'slug': slug}}]
-        if within:
-            must.append({'term': {'ancestry_slugs': within}})
+        must = [{'term': {'slug': slug}}] + within
 
         client = get_client()
         result = client.search(
@@ -201,6 +206,15 @@ class DetailView(APIView):
             ignore_unavailable=True,
         )
         hits = result.get('hits', {}).get('hits', [])
+        if not hits and location_type == 'addresses':
+            # houses that shared this slug and have one each now: named, as
+            # they were when they shared it -- see utils.shared_slugs
+            hits = client.search(
+                index=alias,
+                body={'query': {'bool': {'filter': [{'term': {SHARED_SLUG: slug}}] + within}},
+                      'size': self.AMBIGUITY_LIMIT},
+                ignore_unavailable=True,
+            ).get('hits', {}).get('hits', [])
         if not hits:
             return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
         if len(hits) > 1:
@@ -233,14 +247,12 @@ class DetailView(APIView):
                 'name': source.get('name'),
                 'ancestry_slugs': source.get('ancestry_slugs') or [],
             })
-        return Response(
-            {
-                'detail': (
-                    '{} locations share the slug {!r}. A slug is unique within '
-                    'a country, not across them; add ?within=<ancestor slug> '
-                    'to choose.'.format(len(hits), slug)
-                ),
-                'candidates': candidates,
-            },
-            status=status.HTTP_409_CONFLICT,
-        )
+        if all(candidate['slug'] != slug for candidate in candidates):
+            detail = ('{} houses shared the slug {!r}, and each has one of its own now: '
+                      'see the candidates.'.format(len(hits), slug))
+        else:
+            detail = ('{} locations share the slug {!r}. A slug is unique within '
+                      'a country, not across them; add ?within=<ancestor slug> '
+                      'to choose.'.format(len(hits), slug))
+        return Response({'detail': detail, 'candidates': candidates},
+                        status=status.HTTP_409_CONFLICT)

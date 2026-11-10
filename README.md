@@ -128,7 +128,7 @@ Types are `countries`, `country-subareas`, `places`, `place-subareas`,
 | `q` | `?q=krak` | prefix search on name and ancestry |
 | `type` | `?type=places,streets` | restrict to types (search endpoint) |
 | `exclude_type` | `?exclude_type=addresses` | leave these types out |
-| `within` | `?within=douglas` | only inside that ancestor slug |
+| `within` | `?within=douglas` | only inside that ancestor slug; `places:antwerpen` for an ancestor of that type alone |
 | `bbox` | `?bbox=-5,54,-4,55` | `minlon,minlat,maxlon,maxlat` |
 | `near` + `radius` | `?near=-4.4,54.1&radius=5km` | within a distance of a point |
 | `admin_level` | `?admin_level=4,6` | only these OSM admin levels |
@@ -483,6 +483,18 @@ GET /api/streets/dale/?within=polska
 ```
 
 With one country loaded this cannot happen at all.
+
+Houses that shared a slug — the same number twice on a street that runs
+through two villages, or in a village numbered without streets — each have
+one of their own, the slug they shared and something that tells them apart:
+`ostergade-12-rudkobing`, `ostergade-12-bagenkop`. Asked for the slug they
+shared, the detail endpoint answers 409 with them as candidates, as it did.
+
+Within a country a slug is unique per type, not across types: the city of
+Antwerpen and the province around it are both `antwerpen`, so
+`?within=antwerpen` is the province. `?within=places:antwerpen` is the city
+alone; the type is one of `countries`, `country-subareas`, `places`,
+`place-subareas`, `streets`.
 
 ## Addresses
 

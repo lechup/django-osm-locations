@@ -241,6 +241,10 @@ class Command(BaseCommand):
         with self.timed('address slugs') as run:
             if run:
                 RecalculateDenormalizedFields.update_address_slugs()
+        # Once they are derived: the houses that came out with another's.
+        with self.timed('addresses sharing a slug') as run:
+            if run:
+                RecalculateDenormalizedFields.qualify_shared_address_slugs()
 
         # The tsvector columns are not rebuilt here. Search moved to
         # OpenSearch, where an edge n-gram analyser does the prefix matching

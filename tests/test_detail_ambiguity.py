@@ -115,6 +115,66 @@ class TestNarrowingByAncestor:
         response, _ = view([hit('dale', 'Dale', ['polska'])], query='?within=polska')
         assert response.status_code == 200
 
+    def test_an_ancestor_of_one_type(self, view):
+        """The city of Antwerpen, not the province that has its slug too."""
+        _, client = view([hit('dale', 'Dale', ['antwerpen'])], query='?within=places:antwerpen')
+        filters = client.bodies[0]['query']['bool']['filter']
+        assert filters[1]['nested']['query']['bool']['filter'] == [
+            {'term': {'ancestry.level': 'place'}}, {'term': {'ancestry.slug': 'antwerpen'}}]
+
+    def test_a_type_no_ancestor_has_is_a_400(self, view):
+        response, client = view([], query='?within=addresses:dale-1')
+        assert response.status_code == 400
+        assert 'places' in response.data['detail']
+        assert not client.bodies
+
+
+class SharedClient(FakeClient):
+    """Nothing has the slug any more; ``shared`` had it."""
+
+    def __init__(self, shared):
+        super().__init__([])
+        self.shared = shared
+
+    def search(self, index, body, **kwargs):
+        self.bodies.append(body)
+        filters = body['query']['bool']['filter']
+        return {'hits': {'hits': self.shared if {'term': {'shared_slug': 'ostergade-12'}} in filters
+                         else []}}
+
+
+class TestHousesThatSharedTheSlug:
+    @pytest.fixture
+    def asked(self, monkeypatch):
+        def run(shared, location_type='addresses'):
+            client = SharedClient(shared)
+            monkeypatch.setattr('django_osm_locations.api.views.get_client', lambda: client)
+            request = APIRequestFactory().get('/api/{}/ostergade-12/'.format(location_type))
+            return DetailView().get(
+                DetailView().initialize_request(request), location_type, 'ostergade-12'), client
+        return run
+
+    def test_they_are_named(self, asked):
+        response, _ = asked([hit('ostergade-12-rudkobing', 'Østergade 12', []),
+                             hit('ostergade-12-bagenkop', 'Østergade 12', [])])
+        assert response.status_code == 409
+        assert [c['slug'] for c in response.data['candidates']] == [
+            'ostergade-12-rudkobing', 'ostergade-12-bagenkop']
+        assert 'one of its own' in response.data['detail']
+
+    def test_one_left_is_that_one(self, asked):
+        response, _ = asked([hit('ostergade-12-rudkobing', 'Østergade 12', [])])
+        assert response.status_code == 200
+
+    def test_none_is_a_404(self, asked):
+        response, _ = asked([])
+        assert response.status_code == 404
+
+    def test_only_houses_shared_one(self, asked):
+        response, client = asked([hit('x', 'X', [])], location_type='streets')
+        assert response.status_code == 404
+        assert len(client.bodies) == 1
+
 
 class TestUnknownType:
     def test_it_is_a_404_naming_the_known_types(self, monkeypatch):
