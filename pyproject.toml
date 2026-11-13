@@ -74,8 +74,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://bitbucket.org/iRynek/locations"
-Source = "https://bitbucket.org/iRynek/locations"
+Homepage = "https://github.com/lechup/django-osm-locations"
+Source = "https://github.com/lechup/django-osm-locations"
 
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "tests.settings"
