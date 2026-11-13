@@ -24,6 +24,12 @@ from .locations_repair_addresses import address_slug, first, last, update
 #: Base slugs looked at in one go.
 BATCH = 1000
 
+#: Houses whose nearest place is asked for in one request. OpenSearch 2.18
+#: answers a multi-search with a TASK_RESOURCE_USAGE header for about one
+#: search in ten, and Python's http.client refuses a response with more than
+#: 100 headers: one request for the 1,941 houses of boras-kommun-1 failed.
+NEAREST_BATCH = 200
+
 FIELDS = ['id', 'slug', SHARED_SLUG, 'name', 'house_number', 'street_name', 'settlement_name',
           'ancestry', 'center', 'osm']
 
@@ -159,20 +165,21 @@ class Command(BaseCommand):
 
     def nearest_places(self, hits):
         """The name of the place nearest each house within its own, or None."""
-        body = []
-        for hit in hits:
-            center = hit['_source'].get('center') or {'lon': 0, 'lat': 0}
-            place = last(hit['_source'].get('ancestry'), 'place')
-            body.append({'index': self.places})
-            body.append({'size': 1, '_source': ['name'], 'query': {'bool': {'filter': [
-                {'nested': {'path': 'ancestry', 'query': {'bool': {'filter': [
-                    {'term': {'ancestry.level': 'place'}},
-                    {'term': {'ancestry.slug': place['slug'] if place else ''}}]}}}},
-                {'geo_distance': {'distance': '{}m'.format(NEAREST_PLACE_METRES),
-                                  'center': center}},
-            ]}}, 'sort': [{'_geo_distance': {'center': center, 'order': 'asc'}}]})
         found = []
-        for response in self.client.msearch(body=body)['responses']:
-            hits_ = response.get('hits', {}).get('hits', [])
-            found.append(hits_[0]['_source']['name'] if hits_ else None)
+        for start in range(0, len(hits), NEAREST_BATCH):
+            body = []
+            for hit in hits[start:start + NEAREST_BATCH]:
+                center = hit['_source'].get('center') or {'lon': 0, 'lat': 0}
+                place = last(hit['_source'].get('ancestry'), 'place')
+                body.append({'index': self.places})
+                body.append({'size': 1, '_source': ['name'], 'query': {'bool': {'filter': [
+                    {'nested': {'path': 'ancestry', 'query': {'bool': {'filter': [
+                        {'term': {'ancestry.level': 'place'}},
+                        {'term': {'ancestry.slug': place['slug'] if place else ''}}]}}}},
+                    {'geo_distance': {'distance': '{}m'.format(NEAREST_PLACE_METRES),
+                                      'center': center}},
+                ]}}, 'sort': [{'_geo_distance': {'center': center, 'order': 'asc'}}]})
+            for response in self.client.msearch(body=body)['responses']:
+                hits_ = response.get('hits', {}).get('hits', [])
+                found.append(hits_[0]['_source']['name'] if hits_ else None)
         return found

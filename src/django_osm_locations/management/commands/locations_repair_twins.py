@@ -17,8 +17,10 @@ from ...search.client import get_client, get_index_prefix
 from ...search.indexes import INDEXES
 from ...utils.twins import TWIN_OF, innermost_place, name_key
 
-#: Points tested against their districts' borders in one request.
-BATCH = 500
+#: Points tested against their districts' borders in one request: few enough
+#: that OpenSearch's TASK_RESOURCE_USAGE headers, about one per ten searches,
+#: stay under the 100 Python's http.client accepts (see locations_repair_slugs).
+BATCH = 200
 
 
 class Command(BaseCommand):
