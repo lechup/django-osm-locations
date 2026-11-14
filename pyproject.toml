@@ -79,6 +79,8 @@ Source = "https://github.com/lechup/django-osm-locations"
 
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "tests.settings"
+# the repository root, where tests.settings is: plain `pytest` does not add it
+pythonpath = ["."]
 testpaths = ["tests"]
 filterwarnings = ["error::SyntaxWarning"]
 # The .pbf integration test parses a real extract and takes ~20s, needs a
