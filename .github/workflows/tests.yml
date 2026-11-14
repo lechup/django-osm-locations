@@ -1,0 +1,55 @@
+# The unit tests and the search tests, against the services
+# docker-compose.test.yml starts locally, on the same ports.
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    services:
+      postgis:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_DB: locations_test
+          POSTGRES_USER: locations
+          POSTGRES_PASSWORD: locations
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U locations -d locations_test"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+      opensearch:
+        image: opensearchproject/opensearch:2.18.0
+        env:
+          discovery.type: single-node
+          DISABLE_SECURITY_PLUGIN: "true"
+          DISABLE_INSTALL_DEMO_CONFIG: "true"
+          OPENSEARCH_JAVA_OPTS: -Xms512m -Xmx512m
+          bootstrap.memory_lock: "false"
+        ports:
+          - 59200:9200
+        options: >-
+          --ulimit nofile=65536:65536
+          --health-cmd "curl -fsS http://localhost:9200/_cluster/health || exit 1"
+          --health-interval 5s --health-timeout 5s --health-retries 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e '.[dev]'
+      # GeoDjango finds GDAL and GEOS in the wheels pyogrio and Shapely bring,
+      # as the local stack does, so nothing is apt-installed
+      - name: GDAL and GEOS from the wheels
+        run: |
+          W=$(python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
+          echo "GDAL_LIBRARY_PATH=$(ls "$W"/pyogrio.libs/libgdal*.so* | head -1)" >> "$GITHUB_ENV"
+          echo "GEOS_LIBRARY_PATH=$(ls "$W"/shapely.libs/libgeos_c*.so* | head -1)" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$W/shapely.libs" >> "$GITHUB_ENV"
+      - name: Unit tests
+        run: pytest -q
+      - name: Search tests
+        run: pytest -q -m search
