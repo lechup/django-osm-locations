@@ -170,12 +170,15 @@ class Command(BaseCommand):
             body = []
             for hit in hits[start:start + NEAREST_BATCH]:
                 center = hit['_source'].get('center') or {'lon': 0, 'lat': 0}
-                place = last(hit['_source'].get('ancestry'), 'place')
+                # a place entry may have no slug -- 148 houses in Colorado's
+                # pack had one with no name either -- and is then no place:
+                # a null in the term would have the whole request refused
+                place = last(hit['_source'].get('ancestry'), 'place') or {}
                 body.append({'index': self.places})
                 body.append({'size': 1, '_source': ['name'], 'query': {'bool': {'filter': [
                     {'nested': {'path': 'ancestry', 'query': {'bool': {'filter': [
                         {'term': {'ancestry.level': 'place'}},
-                        {'term': {'ancestry.slug': place['slug'] if place else ''}}]}}}},
+                        {'term': {'ancestry.slug': place.get('slug') or ''}}]}}}},
                     {'geo_distance': {'distance': '{}m'.format(NEAREST_PLACE_METRES),
                                       'center': center}},
                 ]}}, 'sort': [{'_geo_distance': {'center': center, 'order': 'asc'}}]})

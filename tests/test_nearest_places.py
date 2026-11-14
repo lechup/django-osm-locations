@@ -32,6 +32,19 @@ def test_asks_in_batches_and_keeps_the_order():
     assert command.client.sizes == [locations_repair_slugs.NEAREST_BATCH] * 2 + [41]
 
 
+def test_a_place_with_no_slug_is_no_place():
+    command = Command()
+    command.client, command.places = Client(), 'places'
+    house = {'_source': {'center': {'lon': 1, 'lat': 0},
+                         'ancestry': [{'level': 'country', 'name': 'United States', 'slug': 'united-states'},
+                                      {'level': 'place', 'name': None, 'slug': None}]}}
+    seen = []
+    command.client.msearch = lambda body: seen.extend(body) or {'responses': [{'hits': {'hits': []}}]}
+    assert command.nearest_places([house]) == [None]
+    place_term = seen[1]['query']['bool']['filter'][0]['nested']['query']['bool']['filter'][1]
+    assert place_term == {'term': {'ancestry.slug': ''}}
+
+
 def test_no_houses_no_request():
     command = Command()
     command.client, command.places = Client(), 'places'
