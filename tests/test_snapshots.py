@@ -628,7 +628,7 @@ class MergeIndices:
         self.deleted = deleted
         self.calls = []
 
-    def stats(self, index, level=None, metric=None):
+    def stats(self, index, metric=None, params=None):
         if metric == 'docs':
             self.calls.append('docs')
             return {'_all': {'primaries': {'docs': {'count': 3, 'deleted': self.deleted}}}}
@@ -641,6 +641,8 @@ class MergeIndices:
 
     def forcemerge(self, index, params):
         self.calls.append(('forcemerge', index, params))
+        #: whether the client would have asked again on a timeout
+        self.retried_on_timeout = self.transport.retry_on_timeout
         return {'task': 'node:1'}
 
     def refresh(self, index):
@@ -648,20 +650,26 @@ class MergeIndices:
 
 
 class MergeTasks:
-    def __init__(self, indices, polls=1):
-        self.indices, self.polls, self.gets = indices, polls, 0
+    def __init__(self, indices, polls=1, lost=False):
+        self.indices, self.polls, self.gets, self.lost = indices, polls, 0, lost
 
     def get(self, task_id):
+        from opensearchpy.exceptions import NotFoundError
+
         self.gets += 1
+        if self.lost:
+            raise NotFoundError(404, 'resource_not_found_exception', 'task [node:1] isn\'t running')
         if self.gets < self.polls:
             return {'completed': False}
         return {'completed': True, 'response': {'_shards': self.indices.shards}}
 
 
 class MergeClient:
-    def __init__(self, polls=1, **kwargs):
+    def __init__(self, polls=1, lost=False, **kwargs):
+        self.transport = FakeTransport()
         self.indices = MergeIndices(**kwargs)
-        self.tasks = MergeTasks(self.indices, polls)
+        self.indices.transport = self.transport
+        self.tasks = MergeTasks(self.indices, polls, lost)
 
 
 class TestMergingBeforeTheSnapshot:
@@ -687,10 +695,25 @@ class TestMergingBeforeTheSnapshot:
         assert ('forcemerge', 'a,b', {'max_num_segments': 1, 'wait_for_completion': 'false'}) \
             in client.indices.calls
 
-    def test_leases_that_do_not_catch_up_do_not_hold_it_forever(self):
+    def test_leases_that_do_not_catch_up_stop_it_before_any_merge(self):
+        """Merged then, a country's addresses would take hours to keep what this is for."""
         client = MergeClient(behind=10 ** 6)
-        snapshots.merge(['i'], client=client, interval=0, lease_timeout=0)
-        assert any(call[0] == 'forcemerge' for call in client.indices.calls if isinstance(call, tuple))
+        with pytest.raises(RuntimeError, match='retention leases'):
+            snapshots.merge(['i'], client=client, interval=0, lease_timeout=0)
+        assert not any(isinstance(call, tuple) for call in client.indices.calls)
+
+    def test_the_merge_is_asked_for_once(self):
+        """A retry after a timeout would start a second merge beside the first."""
+        client = MergeClient()
+        snapshots.merge(['i'], client=client, interval=0)
+        assert client.indices.retried_on_timeout is False
+        assert client.transport.retry_on_timeout is True
+
+    def test_a_task_the_cluster_forgot_stops_it_as_an_error(self):
+        """Restarted under the merge, the cluster no longer knows the task."""
+        client = MergeClient(lost=True)
+        with pytest.raises(RuntimeError, match='followed to its end'):
+            snapshots.merge(['i'], client=client, interval=0)
 
     def test_a_shard_that_failed_to_merge_stops_it(self):
         """OpenSearch reports it inside an answer that is a success."""

@@ -153,7 +153,8 @@ def merge(indexes, client=None, interval=3, lease_timeout=LEASE_TIMEOUT):
     OpenSearch deletes softly: a merge keeps whatever a shard's retention
     lease still covers, and the lease catches up with the last write only
     about every 30 s, so a merge straight after the last write keeps it. The
-    leases are waited for first. The merge itself runs as a task and is
+    leases are waited for first, and when they do not catch up nothing is
+    merged at all. The merge itself runs as a task, asked for once and
     polled, as `create` polls a snapshot, since on a country's addresses it
     outlasts the client's timeout. A shard that failed to merge is reported
     inside a successful answer, so the answer is read, and what is left
@@ -161,19 +162,33 @@ def merge(indexes, client=None, interval=3, lease_timeout=LEASE_TIMEOUT):
     """
     import time
 
+    from opensearchpy.exceptions import OpenSearchException
+
     client = client or get_client()
     target = ','.join(indexes)
     deadline = time.monotonic() + lease_timeout
-    while _leases_behind(client, target) and time.monotonic() < deadline:
+    while _leases_behind(client, target):
+        # merged now, the result is known: hours on a country's addresses to
+        # keep the very documents this is for
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                "after {} s the shards' retention leases still cover their last "
+                'writes, and a merge would keep them'.format(lease_timeout))
         time.sleep(interval)
 
-    task = client.indices.forcemerge(
-        index=target, params={'max_num_segments': 1, 'wait_for_completion': 'false'})['task']
-    while True:
-        status = client.tasks.get(task_id=task)
-        if status.get('completed'):
-            break
-        time.sleep(interval)
+    try:
+        # a retried request would start a second merge beside the first
+        with _asked_once(client):
+            task = client.indices.forcemerge(index=target, params={
+                'max_num_segments': 1, 'wait_for_completion': 'false'})['task']
+        while True:
+            status = client.tasks.get(task_id=task)
+            if status.get('completed'):
+                break
+            time.sleep(interval)
+    except OpenSearchException as error:
+        # a cluster restarted under the merge forgets the task
+        raise RuntimeError('the merge could not be followed to its end: {}'.format(error))
     if status.get('error'):
         raise RuntimeError('the merge failed: {}'.format(status['error']))
     shards = (status.get('response') or {}).get('_shards') or {}
@@ -188,7 +203,10 @@ def merge(indexes, client=None, interval=3, lease_timeout=LEASE_TIMEOUT):
 
 def _leases_behind(client, target):
     """Whether a shard's retention lease still covers a write: what a merge would keep."""
-    stats = client.indices.stats(index=target, level='shards')
+    stats = client.indices.stats(index=target, params={
+        'level': 'shards',
+        'filter_path': 'indices.*.shards.*.seq_no.max_seq_no,'
+                       'indices.*.shards.*.retention_leases.leases.retaining_seq_no'})
     return any(
         lease['retaining_seq_no'] <= copy['seq_no']['max_seq_no']
         for index in stats.get('indices', {}).values()
