@@ -134,6 +134,69 @@ def _belongs_to(index, prefix, type_name, country_token):
 #: States a snapshot or restore stops in.
 FINISHED = ('SUCCESS', 'FAILED', 'PARTIAL')
 
+#: Seconds the shards' retention leases are given to pass their last write
+#: before the merge goes ahead anyway; they move about every 30.
+LEASE_TIMEOUT = 300
+
+
+def merge(indexes, client=None, interval=3, lease_timeout=LEASE_TIMEOUT):
+    """
+    Merge each index into one segment, with no deleted document left in it,
+    before it is snapshotted.
+
+    A document written again after indexing stays in its old segment, deleted,
+    until a merge drops it, and the deleted ones still count in the term
+    statistics every score is built from: Croatia's addresses kept 98,663
+    after their repairs, and enough moved for "Ulica 5 Karlovac" to fall from
+    first to fourth. Merged away, it was first again.
+
+    OpenSearch deletes softly: a merge keeps whatever a shard's retention
+    lease still covers, and the lease catches up with the last write only
+    about every 30 s, so a merge straight after the last write keeps it. The
+    leases are waited for first. The merge itself runs as a task and is
+    polled, as `create` polls a snapshot, since on a country's addresses it
+    outlasts the client's timeout. A shard that failed to merge is reported
+    inside a successful answer, so the answer is read, and what is left
+    deleted is counted.
+    """
+    import time
+
+    client = client or get_client()
+    target = ','.join(indexes)
+    deadline = time.monotonic() + lease_timeout
+    while _leases_behind(client, target) and time.monotonic() < deadline:
+        time.sleep(interval)
+
+    task = client.indices.forcemerge(
+        index=target, params={'max_num_segments': 1, 'wait_for_completion': 'false'})['task']
+    while True:
+        status = client.tasks.get(task_id=task)
+        if status.get('completed'):
+            break
+        time.sleep(interval)
+    if status.get('error'):
+        raise RuntimeError('the merge failed: {}'.format(status['error']))
+    shards = (status.get('response') or {}).get('_shards') or {}
+    if shards.get('failed') or not shards.get('total'):
+        raise RuntimeError('the merge did not reach every shard: {}'.format(shards))
+
+    client.indices.refresh(index=target)
+    docs = client.indices.stats(index=target, metric='docs')['_all']['primaries']['docs']
+    if docs.get('deleted'):
+        raise RuntimeError('{} deleted documents are left after the merge'.format(docs['deleted']))
+
+
+def _leases_behind(client, target):
+    """Whether a shard's retention lease still covers a write: what a merge would keep."""
+    stats = client.indices.stats(index=target, level='shards')
+    return any(
+        lease['retaining_seq_no'] <= copy['seq_no']['max_seq_no']
+        for index in stats.get('indices', {}).values()
+        for copies in index.get('shards', {}).values()
+        for copy in copies
+        for lease in copy['retention_leases']['leases']
+    )
+
 
 def create(name, indexes, client=None, repository=DEFAULT_REPOSITORY,
            on_progress=None, interval=3):

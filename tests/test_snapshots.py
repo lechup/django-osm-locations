@@ -435,6 +435,10 @@ class TestThePackageCommand:
 
         monkeypatch.setattr(command, 'get_client', lambda: client)
         monkeypatch.setattr(command, 'get_index_prefix', lambda: 'locations')
+        # what was merged, and how many snapshots had been taken by then
+        client.merged = []
+        monkeypatch.setattr(command, 'merge', lambda indexes, client: client.merged.append(
+            (indexes, len(client.snapshot.created))))
         return command
 
     def test_a_country_is_written_to_its_own_directory(self, monkeypatch):
@@ -450,6 +454,29 @@ class TestThePackageCommand:
         assert name == 'pl-2026-09-24'
         assert body['indices'] == (
             'locations-places-pl-20260101,locations-streets-pl-20260101')
+
+    def test_what_it_packages_is_merged_before_the_snapshot(self, monkeypatch):
+        from django.core.management import call_command
+
+        client = FakeClient(ALIASES)
+        self._patch(monkeypatch, client)
+        call_command('locations_export_snapshot', 'pl', '--name', 'pl-2026-09-24')
+        assert client.merged == [
+            (['locations-places-pl-20260101', 'locations-streets-pl-20260101'], 0)]
+
+    def test_a_merge_that_fails_is_not_published(self, monkeypatch):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        client = FakeClient(ALIASES)
+        command = self._patch(monkeypatch, client)
+
+        def fails(indexes, client):
+            raise RuntimeError('4 deleted documents are left after the merge')
+        monkeypatch.setattr(command, 'merge', fails)
+        with pytest.raises(CommandError, match='4 deleted documents'):
+            call_command('locations_export_snapshot', 'pl')
+        assert client.snapshot.created == []
 
     def test_it_refuses_a_country_that_is_not_indexed(self, monkeypatch):
         from django.core.management import call_command
@@ -590,3 +617,94 @@ class TestWhatAnUndatedNameLoads:
             (tmp_path / name).mkdir()
         assert Command.group_directories('pl', str(tmp_path)) == ['pl']
         assert Command.group_directories('us', str(tmp_path)) == ['us', 'us-ca', 'us-tx']
+
+
+class MergeIndices:
+    """A cluster whose retention leases lag ``behind`` look-ups before they catch up."""
+
+    def __init__(self, behind=0, shards=None, deleted=0):
+        self.behind = behind
+        self.shards = shards or {'total': 2, 'successful': 2, 'failed': 0}
+        self.deleted = deleted
+        self.calls = []
+
+    def stats(self, index, level=None, metric=None):
+        if metric == 'docs':
+            self.calls.append('docs')
+            return {'_all': {'primaries': {'docs': {'count': 3, 'deleted': self.deleted}}}}
+        self.calls.append('leases')
+        retaining = 2 if self.behind > 0 else 3
+        self.behind -= 1
+        return {'indices': {index: {'shards': {'0': [{
+            'seq_no': {'max_seq_no': 2},
+            'retention_leases': {'leases': [{'retaining_seq_no': retaining}]}}]}}}}
+
+    def forcemerge(self, index, params):
+        self.calls.append(('forcemerge', index, params))
+        return {'task': 'node:1'}
+
+    def refresh(self, index):
+        self.calls.append('refresh')
+
+
+class MergeTasks:
+    def __init__(self, indices, polls=1):
+        self.indices, self.polls, self.gets = indices, polls, 0
+
+    def get(self, task_id):
+        self.gets += 1
+        if self.gets < self.polls:
+            return {'completed': False}
+        return {'completed': True, 'response': {'_shards': self.indices.shards}}
+
+
+class MergeClient:
+    def __init__(self, polls=1, **kwargs):
+        self.indices = MergeIndices(**kwargs)
+        self.tasks = MergeTasks(self.indices, polls)
+
+
+class TestMergingBeforeTheSnapshot:
+    """
+    No document written again may linger, deleted, in the term statistics a
+    published index is scored by: Croatia's addresses kept 98,663 after their
+    repairs, and "Ulica 5 Karlovac" fell from first to fourth.
+    """
+
+    def test_it_waits_for_the_leases_first(self):
+        """A merge keeps what a lease still covers, and a lease lags the last write by ~30 s."""
+        client = MergeClient(behind=2)
+        snapshots.merge(['i'], client=client, interval=0)
+        assert client.indices.calls[:4] == ['leases', 'leases', 'leases',
+                                            ('forcemerge', 'i', {'max_num_segments': 1,
+                                                                 'wait_for_completion': 'false'})]
+
+    def test_it_merges_as_a_task_and_polls_it(self):
+        """A country's addresses take longer to merge than the client waits for an answer."""
+        client = MergeClient(polls=3)
+        snapshots.merge(['a', 'b'], client=client, interval=0)
+        assert client.tasks.gets == 3
+        assert ('forcemerge', 'a,b', {'max_num_segments': 1, 'wait_for_completion': 'false'}) \
+            in client.indices.calls
+
+    def test_leases_that_do_not_catch_up_do_not_hold_it_forever(self):
+        client = MergeClient(behind=10 ** 6)
+        snapshots.merge(['i'], client=client, interval=0, lease_timeout=0)
+        assert any(call[0] == 'forcemerge' for call in client.indices.calls if isinstance(call, tuple))
+
+    def test_a_shard_that_failed_to_merge_stops_it(self):
+        """OpenSearch reports it inside an answer that is a success."""
+        client = MergeClient(shards={'total': 2, 'successful': 1, 'failed': 1})
+        with pytest.raises(RuntimeError, match='every shard'):
+            snapshots.merge(['i'], client=client, interval=0)
+
+    def test_no_shard_at_all_stops_it(self):
+        client = MergeClient(shards={'total': 0, 'successful': 0, 'failed': 0})
+        with pytest.raises(RuntimeError, match='every shard'):
+            snapshots.merge(['i'], client=client, interval=0)
+
+    def test_a_deleted_document_left_stops_it(self):
+        client = MergeClient(deleted=4)
+        with pytest.raises(RuntimeError, match='4 deleted documents'):
+            snapshots.merge(['i'], client=client, interval=0)
+        assert client.indices.calls[-2:] == ['refresh', 'docs']
