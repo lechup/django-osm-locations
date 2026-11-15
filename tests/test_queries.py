@@ -262,6 +262,18 @@ class TestQuery:
         assert words['type'] == 'cross_fields'
         assert 'operator' not in words
 
+    def test_found_whole_it_counts_for_more_than_once(self):
+        """
+        A city typed whole as the start of another street's name counts in
+        two clauses: at 1.0 "Ulica 4 Karlovac" came out as Karlovačka 4 in
+        Pula. Measured on nine packs, 1.25 and 1.5 changed nothing else.
+        """
+        from django_osm_locations.api import queries
+
+        words = build_query(q='Ulica 4 Karlovac')['bool']['should'][1]['multi_match']
+        assert words['boost'] == queries.WHOLE_WORD_BOOST
+        assert 1.25 <= queries.WHOLE_WORD_BOOST <= 1.5
+
     def test_and_a_whole_translation_as_a_whole_name(self):
         fields = build_query(q='Warsaw')['bool']['should'][0]['multi_match']['fields']
         assert fields.index('names_all.exact^3') == 1
