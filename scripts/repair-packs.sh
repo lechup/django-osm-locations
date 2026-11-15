@@ -9,7 +9,8 @@
 # locations_repair_ancestry, locations_repair_search_fields,
 # locations_repair_addresses, locations_repair_slugs and
 # locations_repair_twins, each a no-op on a pack that has it already --
-# snapshot it again under the same name -- the data is as old as it was --
+# merge each index into one segment, snapshot it again under the same name --
+# the data is as old as it was --
 # pack that, verify the checksums, and only then let the old pack go. A failure stops the run with the old pack still in place, kept
 # under dist/snapshots/.replaced/ until the new one has verified.
 #
@@ -68,6 +69,12 @@ for name in "${packs[@]}"; do
     # after the streets, which move houses and give them their street's slug
     django locations_repair_slugs
     django locations_repair_twins
+    # One segment, nothing deleted left in it: the repairs rewrite documents
+    # after their own merges, which expunge only segments over 10% deleted,
+    # and the deleted ones still count in the term statistics -- Croatia's
+    # addresses kept 98,663, and enough moved for "Ulica 5 Karlovac" to fall
+    # from first to fourth.
+    os -XPOST "$OPENSEARCH/locations-*/_forcemerge?max_num_segments=1" >/dev/null
 
     # the same name again: drop the restored snapshot, then take the new one
     os -XDELETE "$OPENSEARCH/_snapshot/locations-$iso/$name" >/dev/null

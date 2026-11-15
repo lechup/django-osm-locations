@@ -266,7 +266,8 @@ the license asks for.
 A pack built before a fix to the recalculation or the mapping can be repaired
 without the database it came from: `scripts/repair-packs.sh` restores each
 pack into an empty cluster, runs the `locations_repair_*` commands on its live
-indexes, and packs it again under the same name. Each repair finds nothing to
+indexes, merges each into one segment so that no rewritten document lingers in
+the term statistics, and packs it again under the same name. Each repair finds nothing to
 do in a pack that has it already.
 
 Published indexes are derived from OpenStreetMap and carry ODbL's attribution
