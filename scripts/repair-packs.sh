@@ -74,7 +74,33 @@ for name in "${packs[@]}"; do
     # and the deleted ones still count in the term statistics -- Croatia's
     # addresses kept 98,663, and enough moved for "Ulica 5 Karlovac" to fall
     # from first to fourth.
-    os -XPOST "$OPENSEARCH/locations-*/_forcemerge?max_num_segments=1" >/dev/null
+    #
+    # A merge keeps what a shard's retention lease still covers, and the
+    # lease catches up with the last write only every 30 s or so: merged at
+    # once, the twins just written would stay. So first the leases.
+    for _ in $(seq 1 60); do
+        os "$OPENSEARCH/locations-*/_stats?level=shards&filter_path=indices.*.shards" \
+            | "$PYTHON" -c '
+import json, sys
+shards = [copy for index in json.load(sys.stdin).get("indices", {}).values()
+          for copies in index["shards"].values() for copy in copies]
+sys.exit(any(lease["retaining_seq_no"] <= copy["seq_no"]["max_seq_no"]
+             for copy in shards for lease in copy["retention_leases"]["leases"]))' && break
+        sleep 5
+    done
+    # OpenSearch answers 200 when a shard fails to merge, and when the
+    # pattern matches nothing: what it reports is checked instead
+    merged=$(os -XPOST "$OPENSEARCH/locations-*/_forcemerge?max_num_segments=1")
+    if ! grep -q '"failed":0' <<<"$merged" || grep -q '"total":0' <<<"$merged"; then
+        echo "forcemerge did not merge every index: $merged" >&2
+        exit 1
+    fi
+    os -XPOST "$OPENSEARCH/locations-*/_refresh" >/dev/null
+    deleted=$(os "$OPENSEARCH/_cat/indices/locations-*?h=docs.deleted" | awk '{ s += $1 } END { print s + 0 }')
+    if [ "$deleted" -ne 0 ]; then
+        echo "$deleted deleted documents left after the merge" >&2
+        exit 1
+    fi
 
     # the same name again: drop the restored snapshot, then take the new one
     os -XDELETE "$OPENSEARCH/_snapshot/locations-$iso/$name" >/dev/null
