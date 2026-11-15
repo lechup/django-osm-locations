@@ -207,12 +207,14 @@ def _leases_behind(client, target):
         'level': 'shards',
         'filter_path': 'indices.*.shards.*.seq_no.max_seq_no,'
                        'indices.*.shards.*.retention_leases.leases.retaining_seq_no'})
+    # filter_path drops what has nothing to show: a copy with no lease has no
+    # retention_leases at all, and then nothing is kept for it
     return any(
-        lease['retaining_seq_no'] <= copy['seq_no']['max_seq_no']
+        lease['retaining_seq_no'] <= copy.get('seq_no', {}).get('max_seq_no', -1)
         for index in stats.get('indices', {}).values()
         for copies in index.get('shards', {}).values()
         for copy in copies
-        for lease in copy['retention_leases']['leases']
+        for lease in copy.get('retention_leases', {}).get('leases', [])
     )
 
 

@@ -709,6 +709,15 @@ class TestMergingBeforeTheSnapshot:
         assert client.indices.retried_on_timeout is False
         assert client.transport.retry_on_timeout is True
 
+    def test_a_copy_with_no_lease_holds_nothing_back(self):
+        """filter_path leaves out retention_leases when a copy has none."""
+        client = MergeClient()
+        client.indices.stats = lambda index, metric=None, params=None: (
+            {'_all': {'primaries': {'docs': {'count': 3, 'deleted': 0}}}} if metric == 'docs'
+            else {'indices': {index: {'shards': {'0': [{'seq_no': {'max_seq_no': 2}}]}}}})
+        snapshots.merge(['i'], client=client, interval=0, lease_timeout=0)
+        assert any(isinstance(call, tuple) for call in client.indices.calls)
+
     def test_a_task_the_cluster_forgot_stops_it_as_an_error(self):
         """Restarted under the merge, the cluster no longer knows the task."""
         client = MergeClient(lost=True)
