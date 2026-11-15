@@ -238,12 +238,10 @@ def read_query(q):
 
 
 # What a word found whole adds, against the same word found as a prefix.
-# 1.5 rather than 1.0: "Ulica 4 Karlovac" was the street of that name in
-# Karlovac by 0.002 against Karlovačka 4 in Pula, whose name holds the city
-# typed as a prefix in two clauses, and lost it when Croatia's term
-# statistics moved. Measured on nine packs (8,119 checks), 1.25 and 1.5 gave
-# Karlovac its streets back and changed nothing else; 2.0 began to move
-# others both ways.
+# Above 1, because a prefix counts in two clauses: the city typed whole is
+# also the start of a street named after it elsewhere, and at 1.0 "Ulica 4
+# Karlovac" was Karlovačka 4 in Pula. Measured on nine packs, 1.25 to 1.5
+# changed nothing else; 2.0 began to move other results, both ways.
 WHOLE_WORD_BOOST = 1.5
 # A word found whole in the name of the place a location is in, against the
 # same word in the rest of its ancestry.
