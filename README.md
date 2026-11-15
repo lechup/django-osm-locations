@@ -257,6 +257,10 @@ make snapshot ISO=pl                  # package the live Polish indexes
 make pack pl-2026-09-24               # tar, split, checksum, and print the notes
 ```
 
+`snapshot` first merges each index into one segment, with no deleted document
+left in it: a document written again after indexing stays in its old segment,
+deleted, and still counts in the term statistics the scores are built from.
+
 `pack` splits at 1.9 GB because a GitHub release asset may not exceed 2 GB and
 a country is larger than that — three countries came to 4.3 GB. It refuses a
 directory holding more than one snapshot rather than quietly publishing both,
@@ -266,8 +270,7 @@ the license asks for.
 A pack built before a fix to the recalculation or the mapping can be repaired
 without the database it came from: `scripts/repair-packs.sh` restores each
 pack into an empty cluster, runs the `locations_repair_*` commands on its live
-indexes, merges each into one segment so that no rewritten document lingers in
-the term statistics, and packs it again under the same name. Each repair finds nothing to
+indexes, and packs it again under the same name. Each repair finds nothing to
 do in a pack that has it already.
 
 Published indexes are derived from OpenStreetMap and carry ODbL's attribution

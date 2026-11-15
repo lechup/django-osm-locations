@@ -13,6 +13,7 @@ from ...search.snapshots import (
     DEFAULT_REPOSITORY_PATH,
     create,
     indexes_for,
+    merge,
     register_repository,
     repository_for,
 )
@@ -73,6 +74,14 @@ class Command(BaseCommand):
         self.stdout.write('packaging {} index(es) as {}'.format(len(indexes), name))
         for index in indexes:
             self.stdout.write('  {}'.format(index))
+
+        # what is published is scored by its own term statistics: no
+        # document written again may linger in them, deleted
+        self.stdout.write('merging each into one segment')
+        try:
+            merge(indexes, client=client)
+        except RuntimeError as error:
+            raise CommandError(str(error))
 
         def report(state, done, total):
             self.stdout.write('  {} {}/{} shards'.format(state, done, total))
