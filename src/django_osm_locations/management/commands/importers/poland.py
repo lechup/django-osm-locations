@@ -18,6 +18,36 @@ class PolandImporter(BaseImporter):
     country_name = 'Polska'
     country_slug = 'polska'
     iso2, iso3, un = 'PL', 'POL', 616
+
+    #: What joins a name in two languages into one: "Wilamowice - Wymysoü".
+    TWO_LANGUAGE_SEPARATORS = (' - ', ' – ', ' / ', '/')
+
+    def before_import(self):
+        """Name each thing by its Polish name where its name is two languages at once."""
+        for store in (self.relations, self.ways, self.nodes):
+            for tags, _rest in store.values():
+                self._take_polish_name(tags)
+
+    @classmethod
+    def _take_polish_name(cls, tags):
+        """
+        "Wilamowice - Wymysoü" becomes Wilamowice, its name:pl.
+
+        The town's border carries both names, Polish and Wymysorys, in its
+        name, and the gmina's and every register's name for it is
+        Wilamowice. Under the double name the town was no Wilamowice at all:
+        streets that name their town went to the village of Wilamowice
+        31 km away. Only a name that is name:pl and something more after a
+        separator is taken apart; a name:pl that says something else
+        altogether -- "Suków Borki" for Borki -- is left for what it is.
+        The other language stays among the names, so it is still found.
+        """
+        polish, name = tags.get('name:pl'), tags.get('name')
+        if not polish or not name or name == polish:
+            return
+        if any(name.startswith(polish + separator) for separator in cls.TWO_LANGUAGE_SEPARATORS):
+            tags['name'] = polish
+
     def before_merge(self):
         """
         Collapse a county that is really just the city inside it.
@@ -29,11 +59,38 @@ class PolandImporter(BaseImporter):
         This used to be an override of do_merge that called super() at the end.
         It is the same work, at a named point, without the chaining.
         """
+        self._give_seats_the_border_of_their_name(self.country.subareas.exclude(border=None))
         subareas = self.country.subareas.exclude(border=None)
         for country_subarea in progress(
                 subareas.iterator(), total=subareas.count(),
                 desc='Doing merge of CountrySubareas...', leave=False):
             self._merge_country_subareas(country_subarea)
+
+    @classmethod
+    def _give_seats_the_border_of_their_name(cls, country_subareas):
+        """
+        A town that is only a point takes the border of the unit named after
+        it whose seat it is.
+
+        Głogów and Trzcianka have no level 8 boundary, only a level 7 one
+        under the town's own name: Głogów's is its gmina miejska, which is
+        the town; Trzcianka's is the town's border tagged a level too high.
+        Each came out twice and both halves wrong -- a town with no border
+        and a "gmina" named like a town. The smallest such unit is taken, so
+        a city-county that is also its gmina gets the gmina's border, not
+        the county's with a bay in it. A unit named "gmina Trzcianka" is the
+        gmina, and keeps its border to itself.
+        """
+        for subarea in country_subareas.exclude(seat_osm_node_id=None).order_by('area'):
+            place = Place.objects.filter(
+                name=subarea.name,
+                node_osm_id=subarea.seat_osm_node_id,
+                border=None,
+                is_merged=False,
+            ).first()
+            if place is not None:
+                place.border = subarea.border
+                place.save()
 
     @classmethod
     def _merge_country_subareas(cls, country_subarea):
