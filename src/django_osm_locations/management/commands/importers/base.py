@@ -1292,6 +1292,23 @@ class BaseImporter(object):
 
     @classmethod
     def _merge_places(cls):
+        """
+        Fold a place mapped twice into one: what lies inside a border of the
+        same name is that place.
+
+        Only a place with a border takes anything, and only what its border
+        contains. A point used to take every place of its name within 25 km,
+        a border included, so the town became the hamlet: Krosno (45,000
+        people) went into a hamlet 26 km away, and its streets with it;
+        Poręba, Łazy, Żabno and ten more seats of gminas went the same way,
+        and 929 places in Poland lost their border. Two points of one name
+        are almost never one place: of 21,000 such pairs in the Polish
+        extract within those 25 km, 8 had the same TERYT locality code, and
+        pairs 75 m apart had different ones.
+
+        The border, not its bounding box: the village of Lipno lies 216 m
+        outside the town of Lipno, inside the box.
+        """
         # count() first rather than list(): the query can return a very large
         # number of groups and materialising them all just to show a progress
         # bar held the whole result set in memory alongside the caches.
@@ -1307,35 +1324,25 @@ class BaseImporter(object):
                 for place_id in place_ids:
                     # make sure we have latest is_merged status
                     place = Place.objects.get(id=place_id)
+                    if place.is_merged or not place.border:
+                        continue
                     all_but_place_ids = list(place_ids)
                     all_but_place_ids.remove(place.id)
-                    if not place.is_merged:
-                        if place.border:
-                            duplicated_places = Place.objects.filter(
-                                id__in=all_but_place_ids,
-                                center__intersects=place.bbox_polygon,
-                                is_merged=False
-                            )
-                            if duplicated_places.count() > 0:
-                                # when center is automatically generated populate center from
-                                # merged place
-                                if place.border.point_on_surface == place.center:
-                                    duplicated_place = duplicated_places.first()
-                                    place.center = duplicated_place.center
-                                    place.save(update_fields=['center'])
+                    duplicated_places = Place.objects.filter(
+                        id__in=all_but_place_ids,
+                        center__intersects=place.border,
+                        is_merged=False
+                    )
+                    if duplicated_places.count() > 0:
+                        # when center is automatically generated populate center from
+                        # merged place
+                        if place.border.point_on_surface == place.center:
+                            duplicated_place = duplicated_places.first()
+                            place.center = duplicated_place.center
+                            place.save(update_fields=['center'])
 
-                                for duplicated_place in duplicated_places:
-                                    duplicated_place.mark_as_merged(into=place)
-                        else:
-                            duplicated_places = Place.objects.filter(
-                                id__in=all_but_place_ids,
-                                center__intersects=Place.get_polygon_from_bbox(
-                                    place.near_bbox(km=25)
-                                ),
-                                is_merged=False
-                            )
-                            for duplicated_place in duplicated_places:
-                                duplicated_place.mark_as_merged(into=place)
+                        for duplicated_place in duplicated_places:
+                            duplicated_place.mark_as_merged(into=place)
 
     def _import_countrysubarea_from_relation(self, osm_id, tags, members):
         if self._is_relation_countrysubarea(osm_id, tags, members) and self._are_all_members_cached(members):
