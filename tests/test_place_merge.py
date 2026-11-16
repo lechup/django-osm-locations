@@ -1,8 +1,9 @@
 """
 Which places of one name the import folds into one.
 
-Only a place with a border takes another, and only one inside that border:
-a place mapped twice. A point of the same name nearby is another place --
+A place with a border takes another inside it, or on the same spot just
+outside: a place mapped twice. A point takes only a point on its spot. A
+point of the same name nearby is another place --
 Poland alone has 21,000 such pairs within 25 km of each other, and 8 of them
 share a TERYT locality code.
 """
@@ -63,8 +64,27 @@ class TestATownAndAHamletOfItsName:
         assert fresh(village).is_merged is False
         assert fresh(stays).is_merged is False
 
+    def test_a_point_just_outside_the_border_is_the_town_mapped_twice(self):
+        """About 30 m beyond the edge -- a coastline, a simplified line: the same spot."""
+        stays = town()
+        twice = point(x=19.34, y=50.5303)
+
+        BaseImporter._merge_places()
+
+        assert fresh(twice).merged_into_id == stays.pk
+
 
 class TestPointsOfOneName:
+    def test_two_points_on_the_same_spot_are_one_place(self):
+        """Put down twice, 30 m apart: the one with people in it stays."""
+        smaller = point(osm_id=1)
+        larger = Place.objects.create(name='Poręba', center=Point(19.34, 50.4903), node_osm_id=2, population=120)
+
+        BaseImporter._merge_places()
+
+        assert fresh(smaller).merged_into_id == larger.pk
+        assert fresh(larger).is_merged is False
+
     def test_two_points_stay_two(self):
         """Two hamlets of one name 300 m apart, on either side of a gmina border, are two places."""
         first, second = point(osm_id=1), point(x=19.344, osm_id=2)

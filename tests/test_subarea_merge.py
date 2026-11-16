@@ -116,6 +116,27 @@ class TestATownThatIsOnlyAPoint:
         assert place.border is None
         assert gmina.is_merged is False
 
+    def test_a_seat_outside_the_unit_takes_nothing(self):
+        """A seat can govern a ring round it, as Kraków does powiat krakowski."""
+        place, ring = self.town(), self.unit(border=box(2, 2, 3, 3))
+
+        self.merge()
+
+        place.refresh_from_db()
+        assert place.border is None
+
+    def test_a_unit_holding_a_village_with_a_border_stays_a_gmina(self):
+        """A gmina tagged under its seat's bare name holds its villages' sołectwa; a town holds none."""
+        place, gmina = self.town(), self.unit(border=box(0, 0, 3, 3))
+        Place.objects.create(name='Serby', border=box(2, 2, 2.5, 2.5))
+
+        self.merge()
+
+        place.refresh_from_db()
+        gmina.refresh_from_db()
+        assert place.border is None
+        assert gmina.is_merged is False
+
     def test_a_point_of_the_name_that_is_not_the_seat_takes_nothing(self):
         place, unit = self.town(node=1), self.unit(seat=2)
 
@@ -129,6 +150,7 @@ class TestATownThatIsOnlyAPoint:
 
 class TestANameInTwoLanguages:
     def named(self, **tags):
+        tags.setdefault('place', 'town')
         PolandImporter._take_polish_name(tags)
         return tags['name']
 
@@ -138,14 +160,20 @@ class TestANameInTwoLanguages:
     def test_a_polish_name_that_says_something_else_is_left_alone(self):
         assert self.named(name='Borki', **{'name:pl': 'Suków Borki'}) == 'Borki'
 
+    def test_a_street_keeps_its_name(self):
+        """Its addresses say addr:street with the whole name, and are matched to it by that."""
+        tags = {'name': 'Ulica A - B', 'name:pl': 'Ulica A', 'highway': 'residential'}
+        PolandImporter._take_polish_name(tags)
+        assert tags['name'] == 'Ulica A - B'
+
     def test_no_polish_name_changes_nothing(self):
         assert self.named(name='Wilamowice - Wymysoü') == 'Wilamowice - Wymysoü'
 
     def test_the_import_renames_relations_ways_and_nodes(self):
         importer = PolandImporter.__new__(PolandImporter)
-        importer.relations = {1: ({'name': 'A - B', 'name:pl': 'A'}, [])}
-        importer.ways = {2: ({'name': 'C / D', 'name:pl': 'C'}, [])}
-        importer.nodes = {3: ({'name': 'E - F', 'name:pl': 'E'}, (0.0, 0.0))}
+        importer.relations = {1: ({'name': 'A - B', 'name:pl': 'A', 'boundary': 'administrative'}, [])}
+        importer.ways = {2: ({'name': 'C / D', 'name:pl': 'C', 'place': 'village'}, [])}
+        importer.nodes = {3: ({'name': 'E - F', 'name:pl': 'E', 'place': 'town'}, (0.0, 0.0))}
 
         importer.before_import()
 

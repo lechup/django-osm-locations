@@ -1287,24 +1287,31 @@ class BaseImporter(object):
             'name'
         ).annotate(
             name_count=Count('name'),
-            ids=array_agg_ordered('id', ['-area'])
+            ids=array_agg_ordered('id', ['-area', '-population'])
         ).filter(name_count__gt=1).values_list('name', 'ids').order_by()
+
+    #: How near a place of the same name must be, outside a border or to a
+    #: point, to be the same place mapped twice: about 50 m, in degrees.
+    #: Same-named hamlets in Poland stand 75 m apart and are two places;
+    #: the three pairs nearer than 50 m are one place each, put down twice.
+    SAME_SPOT = 0.0005
 
     @classmethod
     def _merge_places(cls):
         """
         Fold a place mapped twice into one: what lies inside a border of the
-        same name is that place.
+        same name, or on the same spot, is that place.
 
-        Only a place with a border takes anything, and only what its border
-        contains. A point used to take every place of its name within 25 km,
-        a border included, so the town became the hamlet: Krosno (45,000
-        people) went into a hamlet 26 km away, and its streets with it;
-        Poręba, Łazy, Żabno and ten more seats of gminas went the same way,
-        and 929 places in Poland lost their border. Two points of one name
-        are almost never one place: of 21,000 such pairs in the Polish
-        extract within those 25 km, 8 had the same TERYT locality code, and
-        pairs 75 m apart had different ones.
+        A place with a border takes the places of its name inside it or
+        within SAME_SPOT of it; a point takes only points within SAME_SPOT.
+        A point used to take every place of its name within 25 km, a border
+        included, so the town became the hamlet: Krosno (45,000 people) went
+        into a hamlet 26 km away, and its streets with it; Poręba, Łazy,
+        Żabno and ten more seats of gminas went the same way, and 929 places
+        in Poland lost their border. Two points of one name are almost never
+        one place: of 21,000 such pairs in the Polish extract within those
+        25 km, 8 had the same TERYT locality code, and pairs 75 m apart had
+        different ones.
 
         The border, not its bounding box: the village of Lipno lies 216 m
         outside the town of Lipno, inside the box.
@@ -1324,16 +1331,19 @@ class BaseImporter(object):
                 for place_id in place_ids:
                     # make sure we have latest is_merged status
                     place = Place.objects.get(id=place_id)
-                    if place.is_merged or not place.border:
+                    if place.is_merged or not (place.border or place.center):
                         continue
                     all_but_place_ids = list(place_ids)
                     all_but_place_ids.remove(place.id)
                     duplicated_places = Place.objects.filter(
                         id__in=all_but_place_ids,
-                        center__intersects=place.border,
+                        center__dwithin=(place.border or place.center, cls.SAME_SPOT),
                         is_merged=False
                     )
-                    if duplicated_places.count() > 0:
+                    if not place.border:
+                        # a border is never a point's double; it came first, larger
+                        duplicated_places = duplicated_places.filter(border=None)
+                    elif duplicated_places.count() > 0:
                         # when center is automatically generated populate center from
                         # merged place
                         if place.border.point_on_surface == place.center:
@@ -1341,8 +1351,8 @@ class BaseImporter(object):
                             place.center = duplicated_place.center
                             place.save(update_fields=['center'])
 
-                        for duplicated_place in duplicated_places:
-                            duplicated_place.mark_as_merged(into=place)
+                    for duplicated_place in duplicated_places:
+                        duplicated_place.mark_as_merged(into=place)
 
     def _import_countrysubarea_from_relation(self, osm_id, tags, members):
         if self._is_relation_countrysubarea(osm_id, tags, members) and self._are_all_members_cached(members):

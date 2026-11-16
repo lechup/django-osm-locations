@@ -23,7 +23,7 @@ class PolandImporter(BaseImporter):
     TWO_LANGUAGE_SEPARATORS = (' - ', ' – ', ' / ', '/')
 
     def before_import(self):
-        """Name each thing by its Polish name where its name is two languages at once."""
+        """Name each place by its Polish name where its name is two languages at once."""
         for store in (self.relations, self.ways, self.nodes):
             for tags, _rest in store.values():
                 self._take_polish_name(tags)
@@ -40,8 +40,15 @@ class PolandImporter(BaseImporter):
         31 km away. Only a name that is name:pl and something more after a
         separator is taken apart; a name:pl that says something else
         altogether -- "Suków Borki" for Borki -- is left for what it is.
-        The other language stays among the names, so it is still found.
+        The other language is still found where it has a name tag of its
+        own, as name:wym=Wymysoü does.
+
+        Places and boundaries only. A street's name is what its addresses
+        give as addr:street, read raw in a pass of their own, and a street
+        renamed here would lose them.
         """
+        if 'place' not in tags and 'boundary' not in tags:
+            return
         polish, name = tags.get('name:pl'), tags.get('name')
         if not polish or not name or name == polish:
             return
@@ -80,6 +87,12 @@ class PolandImporter(BaseImporter):
         a city-county that is also its gmina gets the gmina's border, not
         the county's with a bay in it. A unit named "gmina Trzcianka" is the
         gmina, and keeps its border to itself.
+
+        Two guards against a unit that is more than its town. The town must
+        lie inside: a seat can govern a ring around it, as Kraków does
+        powiat krakowski. And no other place with a border may lie inside:
+        a gmina holds its villages' sołectwa, a town holds none -- so a
+        gmina ever tagged under its seat's bare name stays a gmina.
         """
         for subarea in country_subareas.exclude(seat_osm_node_id=None).order_by('area'):
             place = Place.objects.filter(
@@ -87,10 +100,14 @@ class PolandImporter(BaseImporter):
                 node_osm_id=subarea.seat_osm_node_id,
                 border=None,
                 is_merged=False,
+                center__within=subarea.border,
             ).first()
-            if place is not None:
-                place.border = subarea.border
-                place.save()
+            if place is None:
+                continue
+            if Place.objects.filter(center__within=subarea.border, is_merged=False).exclude(border=None).exists():
+                continue
+            place.border = subarea.border
+            place.save()
 
     @classmethod
     def _merge_country_subareas(cls, country_subarea):
