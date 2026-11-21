@@ -1,10 +1,12 @@
 """
 Load a published index, and put it where the API can see it.
 
-The restore itself is one API call. What this adds is the three things that
+The restore itself is one API call. What this adds is the four things that
 call does not do, any of which leaves a consumer with a working index and an
-empty API: the repository has to be found first, aliases are not restored, and
-a second country must join the first rather than replace it.
+empty or failing API: the repository has to be found first, the restore has
+to be waited for -- the call returns long before the shards are back --
+aliases are not restored, and a second country must join the first rather
+than replace it.
 """
 import re
 
@@ -20,6 +22,7 @@ from ...search.snapshots import (
     repository_for,
     restore,
     retire_older,
+    wait_for_restore,
 )
 
 
@@ -169,12 +172,40 @@ class Command(BaseCommand):
 
         self.stdout.write('restoring {} index(es) from {}'.format(len(indexes), name))
         restore(name, client=client, repository=repository)
+        # Nothing goes under an alias, and nothing older is retired, until
+        # every primary is active: until then what is loaded keeps answering.
+        try:
+            wait_for_restore(indexes, client=client, on_progress=self._progress())
+        except RuntimeError as error:
+            raise CommandError(
+                '{} did not finish restoring, so nothing was put under the aliases and '
+                'whatever was loaded before still answers: {}. Delete {} and load it '
+                'again.'.format(name, error, ', '.join(indexes)))
         aliased = point_aliases(indexes, client=client, prefix=prefix)
         for index in indexes:
             self.stdout.write('  {}'.format(index))
         for index in retire_older(indexes, client=client, prefix=prefix):
             self.stdout.write('  replaces {}'.format(index))
         self.stdout.write('aliases now serving: {}'.format(', '.join(sorted(set(aliased)))))
+
+    #: Seconds between progress lines while a restore is copied back.
+    PROGRESS_EVERY = 60
+
+    def _progress(self):
+        """A reporter for wait_for_restore: a line a minute, not one a poll."""
+        import time
+
+        last = [None]
+
+        def report(active, total, recovered, size):
+            now = time.monotonic()
+            if last[0] is not None and now - last[0] < self.PROGRESS_EVERY:
+                return
+            last[0] = now
+            copied = ', {:.0%} of {:.1f} GB copied so far'.format(
+                recovered / size, size / 1e9) if size else ''
+            self.stdout.write('  {} of {} shard(s) active{}'.format(active, total, copied))
+        return report
 
     @staticmethod
     def _why_empty(directory, options):

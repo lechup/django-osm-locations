@@ -268,7 +268,9 @@ def wait_for(name, client=None, repository=DEFAULT_REPOSITORY, interval=3,
 
 def restore(name, client=None, repository=DEFAULT_REPOSITORY, rename_to=None):
     """
-    Restore a snapshot, waiting for it to finish.
+    Start restoring a snapshot. It returns once the cluster has taken the
+    restore on, not when the restore is done: `wait_for_restore` is what
+    waits for that, and nothing may be put under an alias before it returns.
 
     Aliases are deliberately not restored from the snapshot. What the alias
     should point at depends on what else is already loaded, and that is a
@@ -286,6 +288,85 @@ def restore(name, client=None, repository=DEFAULT_REPOSITORY, rename_to=None):
             params={'wait_for_completion': 'false',
                     'request_timeout': RESTORE_REQUEST_TIMEOUT},
         )
+
+
+#: Polls in a row with no shard recovering, and the indexes not yet
+#: searchable, before a restore is taken to have stalled. Shards waiting their
+#: turn behind the cluster's limit on concurrent recoveries are unassigned,
+#: but then another one is always initialising.
+RESTORE_STALL_POLLS = 12
+
+
+def wait_for_restore(indexes, client=None, interval=5, on_progress=None,
+                     stall_polls=RESTORE_STALL_POLLS):
+    """
+    Block until every restored index can answer a search.
+
+    The restore request returns as soon as the cluster accepts it; the shards
+    are copied back afterwards, Germany's for about half an hour. An index
+    under an alias before its primaries are active fails every search through
+    that alias -- the API answered 503 for as long -- and a replaced version
+    retired at the same moment leaves nothing else to answer. So this is
+    waited for before either.
+
+    Searchable is yellow: every primary active. Green would also wait for
+    replicas, which a single-node cluster never allocates.
+
+    A shard nobody is recovering does not come back by waiting -- a disk past
+    its watermark refuses it -- nor does an index the cluster never created,
+    so `stall_polls` polls in a row with nothing initialising stop it, with
+    the cluster's own explanation. `on_progress` is called after each poll
+    with the active and total shard counts and the bytes recovered so far of
+    those known.
+    """
+    import time
+
+    client = client or get_client()
+    target = ','.join(indexes)
+    stalled = 0
+    while True:
+        # an index the cluster has not created yet reads as red, not an error
+        health = client.cluster.health(index=target, params={'ignore': (404, 408)})
+        status = health.get('status')
+        if on_progress:
+            active = health.get('active_shards', 0)
+            total = active + health.get('initializing_shards', 0) + health.get('unassigned_shards', 0)
+            on_progress(active, total, *_recovered_bytes(client, target))
+        if status in ('green', 'yellow'):
+            return status
+        if not health.get('initializing_shards'):
+            stalled += 1
+            if stalled >= stall_polls:
+                raise RuntimeError('the restore stalled with {} shard(s) unassigned and none '
+                                   'recovering: {}'.format(health.get('unassigned_shards', 0),
+                                                           _why_unassigned(client)))
+        else:
+            stalled = 0
+        time.sleep(interval)
+
+
+def _recovered_bytes(client, target):
+    """(recovered, total) bytes over the shards the cluster has begun recovering."""
+    try:
+        found = client.indices.recovery(index=target)
+    except Exception:
+        return 0, 0
+    sizes = [shard.get('index', {}).get('size', {})
+             for index in found.values() for shard in index.get('shards', [])]
+    return (sum(s.get('recovered_in_bytes', 0) for s in sizes),
+            sum(s.get('total_in_bytes', 0) for s in sizes))
+
+
+def _why_unassigned(client):
+    """What the cluster says keeps a shard unassigned, as far as it says."""
+    try:
+        found = client.cluster.allocation_explain()
+    except Exception as error:
+        return 'no explanation from the cluster ({})'.format(error)
+    reasons = [found.get('allocate_explanation') or found.get('unassigned_info', {}).get('reason')]
+    for node in found.get('node_allocation_decisions') or []:
+        reasons.extend(d.get('explanation') for d in node.get('deciders') or [])
+    return '; '.join(r for r in reasons if r) or 'no explanation from the cluster'
 
 
 @contextlib.contextmanager

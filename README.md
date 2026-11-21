@@ -235,6 +235,13 @@ downloads: no subset of that directory restores either one alone. The
 directory name is where `load-snapshot` looks, taken from the snapshot name;
 `--in <directory>` overrides it if you unpacked somewhere else.
 
+Loading waits for every shard to be copied back before it touches an alias,
+printing its progress once a minute -- Germany takes about half an hour. A
+newer pack of a country already loaded replaces the older one only then, so
+the older one answers searches until the newer one can. A restore that stalls,
+on a disk past OpenSearch's watermark for instance, stops with the cluster's
+reason and leaves the aliases as they were.
+
 **Countries are published separately and merge by alias.** Load Poland, then
 Denmark, and both sit under the same aliases and are searched as one. That is
 an ordinary OpenSearch alias over several indexes, so nothing in the query

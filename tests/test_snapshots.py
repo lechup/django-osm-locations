@@ -19,6 +19,9 @@ class FakeIndices:
         self._aliases = aliases or {}
         self._existing = set(existing)
         self.alias_actions = []
+        self.deleted = []
+        #: shared with FakeCluster.log by a test that cares about the order
+        self.log = None
 
     def exists_alias(self, name):
         return name in self._aliases
@@ -31,6 +34,13 @@ class FakeIndices:
 
     def update_aliases(self, body):
         self.alias_actions.extend(body['actions'])
+        if self.log is not None:
+            self.log.append('alias')
+
+    def delete(self, index):
+        self.deleted.append(index)
+        if self.log is not None:
+            self.log.append('delete')
 
 
 class FakeSnapshot:
@@ -82,12 +92,41 @@ class FakeTransport:
     retry_on_timeout = True
 
 
+def health(status, active=0, initializing=0, unassigned=0):
+    return {'status': status, 'active_shards': active,
+            'initializing_shards': initializing, 'unassigned_shards': unassigned}
+
+
+class FakeCluster:
+    """Successive health answers, as a restore goes from red to green."""
+
+    def __init__(self, healths=None):
+        self.healths = list(healths or [health('green', active=1)])
+        self.polls = 0
+        self.log = None
+        self.explained = 0
+
+    def health(self, index, params):
+        self.polls += 1
+        if self.log is not None:
+            self.log.append('health')
+        return self.healths[min(self.polls - 1, len(self.healths) - 1)]
+
+    def allocation_explain(self):
+        self.explained += 1
+        return {'allocate_explanation': 'cannot allocate because allocation is not permitted',
+                'node_allocation_decisions': [{'deciders': [
+                    {'explanation': 'the node is above the high watermark'}]}]}
+
+
 class FakeClient:
-    def __init__(self, aliases=None, existing=()):
+    def __init__(self, aliases=None, existing=(), healths=None):
         self.indices = FakeIndices(aliases, existing)
+        self.indices.recovery = lambda index: {}
         self.transport = FakeTransport()
         self.snapshot = FakeSnapshot()
         self.snapshot.transport = self.transport
+        self.cluster = FakeCluster(healths)
 
 
 ALIASES = {
@@ -238,6 +277,58 @@ class TestRestoring:
         assert calls == [('POST', '/_snapshot/locations-fr/fr-2026-10-31/_restore',
                           snapshots.RESTORE_REQUEST_TIMEOUT)]
         assert client.transport.retry_on_timeout is True
+
+
+class TestWaitingForTheRestore:
+    """
+    The restore call returns once the cluster accepts it; the shards come back
+    afterwards, Germany's in about half an hour. Under an alias before then,
+    an index fails every search through it -- the API answered 503 for that
+    half hour.
+    """
+
+    def test_it_waits_until_every_primary_is_active(self):
+        client = FakeClient(healths=[
+            health('red', active=0, initializing=2, unassigned=4),
+            health('red', active=4, initializing=2),
+            health('green', active=6),
+        ])
+        assert snapshots.wait_for_restore(['i'], client=client, interval=0) == 'green'
+        assert client.cluster.polls == 3
+
+    def test_yellow_is_enough(self):
+        """Every primary active is searchable; a single node never allocates replicas."""
+        client = FakeClient(healths=[health('yellow', active=6, unassigned=6)])
+        assert snapshots.wait_for_restore(['i'], client=client, interval=0) == 'yellow'
+
+    def test_shards_waiting_their_turn_are_not_a_stall(self):
+        """Behind the limit on concurrent recoveries, the rest wait unassigned."""
+        waiting = [health('red', active=n, initializing=2, unassigned=40 - n) for n in range(30)]
+        client = FakeClient(healths=waiting + [health('green', active=42)])
+        assert snapshots.wait_for_restore(['i'], client=client, interval=0, stall_polls=3) == 'green'
+
+    def test_a_stall_stops_it_with_the_clusters_reason(self):
+        """A disk past its watermark refuses the shards; waiting does not bring them."""
+        client = FakeClient(healths=[health('red', active=2, unassigned=4)])
+        with pytest.raises(RuntimeError, match='high watermark'):
+            snapshots.wait_for_restore(['i'], client=client, interval=0, stall_polls=3)
+        assert client.cluster.polls == 3
+
+    def test_an_index_never_created_is_a_stall_too(self):
+        """The cluster answers red with no shard at all, and would forever."""
+        client = FakeClient(healths=[health('red')])
+        with pytest.raises(RuntimeError, match='stalled with 0 shard'):
+            snapshots.wait_for_restore(['i'], client=client, interval=0, stall_polls=3)
+
+    def test_progress_is_reported_with_the_bytes_copied(self):
+        client = FakeClient(healths=[health('red', active=1, initializing=1), health('green', active=2)])
+        client.indices.recovery = lambda index: {'i': {'shards': [
+            {'index': {'size': {'recovered_in_bytes': 30, 'total_in_bytes': 100}}},
+            {'index': {'size': {'recovered_in_bytes': 100, 'total_in_bytes': 100}}}]}}
+        seen = []
+        snapshots.wait_for_restore(['i'], client=client, interval=0,
+                                   on_progress=lambda *a: seen.append(a))
+        assert seen == [(1, 2, 130, 200), (2, 2, 130, 200)]
 
 
 class TestPointingTheAliases:
@@ -539,6 +630,54 @@ class TestLoadingNeedsNoDatabase:
         assert client.snapshot.restored, 'nothing was restored'
         assert {a['add']['alias'] for a in client.indices.alias_actions} == {
             '{}-streets'.format(prefix), '{}-addresses'.format(prefix)}
+
+
+class TestTheLoadWaitsForTheShards:
+    """
+    Loading a newer pack of a country already served must not leave a gap:
+    the old version answers until the new one can, and a restore that never
+    gets there changes nothing that answers.
+    """
+
+    NEW = ['locations-places-pl-20261120000000', 'locations-streets-pl-20261120000000']
+    OLDER = 'locations-streets-pl-20261017000000'
+
+    def _load(self, monkeypatch, client):
+        from io import StringIO
+
+        from django.core.management import call_command
+        from django_osm_locations.management.commands import locations_import_snapshot as command
+
+        monkeypatch.setattr(command, 'get_client', lambda: client)
+        monkeypatch.setattr(command, 'get_index_prefix', lambda: 'locations')
+        monkeypatch.setattr('time.sleep', lambda seconds: None)
+        new = self.NEW
+        client.snapshot.get = lambda repository, snapshot: {'snapshots': [{
+            'snapshot': snapshot, 'state': 'SUCCESS', 'indices': new,
+            'shards': {'successful': 2, 'total': 2}}]}
+        out = StringIO()
+        call_command('locations_import_snapshot', 'pl-2026-11-20', stdout=out)
+        return out.getvalue()
+
+    def test_nothing_is_aliased_or_retired_before_the_shards_are_back(self, monkeypatch):
+        client = FakeClient(aliases={'locations-streets': [self.OLDER]}, healths=[
+            health('red', initializing=2), health('red', active=1, initializing=1),
+            health('green', active=2)])
+        client.cluster.log = client.indices.log = log = []
+        out = self._load(monkeypatch, client)
+        assert log == ['health', 'health', 'health', 'alias', 'alias', 'delete']
+        assert client.indices.deleted == [self.OLDER]
+        assert 'of 2 shard(s) active' in out
+
+    def test_a_restore_that_stalls_changes_nothing_that_answers(self, monkeypatch):
+        from django.core.management.base import CommandError
+
+        client = FakeClient(aliases={'locations-streets': [self.OLDER]},
+                            healths=[health('red', active=1, unassigned=1)])
+        with pytest.raises(CommandError, match='still answers.*high watermark'):
+            self._load(monkeypatch, client)
+        assert client.indices.alias_actions == []
+        assert client.indices.deleted == []
 
 
 class TestADirectoryPerStateToo:
