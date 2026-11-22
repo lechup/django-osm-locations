@@ -879,3 +879,101 @@ class TestMergingBeforeTheSnapshot:
         with pytest.raises(RuntimeError, match='4 deleted documents'):
             snapshots.merge(['i'], client=client, interval=0)
         assert client.indices.calls[-2:] == ['refresh', 'docs']
+
+
+class TestWhatBuiltThePack:
+    """
+    A pack used to say only how old its data was: which version built it,
+    and which can load it, lived in the release notes beside the download.
+    Now the snapshot carries both, and the loader checks the second.
+    """
+
+    def test_the_export_stores_it_in_the_snapshot(self, monkeypatch):
+        from django.core.management import call_command
+
+        from django_osm_locations import PACKS_LOAD_WITH, __version__
+
+        client = FakeClient(ALIASES)
+        TestThePackageCommand._patch(monkeypatch, client)
+        call_command('locations_export_snapshot', 'pl', '--name', 'pl-2026-09-24')
+        _, body, _ = client.snapshot.created[0]
+        assert body['metadata']['package'] == 'django-osm-locations'
+        assert body['metadata']['version'] == __version__
+        assert body['metadata']['loads_with'] == PACKS_LOAD_WITH
+
+    def test_a_snapshot_without_metadata_asks_for_none(self):
+        client = FakeClient()
+        snapshots.create('x', ['i'], client=client, interval=0)
+        _, body, _ = client.snapshot.created[0]
+        assert 'metadata' not in body
+
+    def test_the_commit_is_named_when_there_is_one(self, monkeypatch):
+        import subprocess
+
+        answers = iter(['0123456789abcdef0123456789abcdef01234567\n', ' M src/x.py\n'])
+        monkeypatch.setattr(subprocess, 'run', lambda *a, **k: subprocess.CompletedProcess(
+            a, 0, stdout=next(answers), stderr=''))
+        assert snapshots._source_commit() == {
+            'commit': '0123456789abcdef0123456789abcdef01234567', 'modified': True}
+
+    def test_outside_a_checkout_there_is_no_commit(self, monkeypatch):
+        import subprocess
+
+        def no_git(*args, **kwargs):
+            raise subprocess.CalledProcessError(128, 'git')
+
+        monkeypatch.setattr(subprocess, 'run', no_git)
+        assert snapshots._source_commit() == {}
+
+    def test_versions_compare_as_numbers(self):
+        assert snapshots.version_tuple('0.2.10') > snapshots.version_tuple('0.2.9')
+        assert snapshots.version_tuple('0.3.0.dev1') == (0, 3, 0)
+        assert snapshots.version_tuple(None) == ()
+
+    def test_a_pack_from_before_says_so(self):
+        assert 'made before' in snapshots.describe({})
+        assert snapshots.describe({'version': '0.2.4', 'commit': 'abcdef0123', 'loads_with': '0.2.0'}) == (
+            'built with django-osm-locations 0.2.4 (abcdef0), loads with 0.2.0 or later')
+
+
+class TestTheLoaderChecksTheVersion:
+    NEW = ['locations-places-pl-20261120000000']
+
+    def _load(self, monkeypatch, metadata, *args):
+        from io import StringIO
+
+        from django.core.management import call_command
+        from django_osm_locations.management.commands import locations_import_snapshot as command
+
+        client = FakeClient()
+        monkeypatch.setattr(command, 'get_client', lambda: client)
+        monkeypatch.setattr(command, 'get_index_prefix', lambda: 'locations')
+        new = self.NEW
+        client.snapshot.get = lambda repository, snapshot: {'snapshots': [{
+            'snapshot': snapshot, 'state': 'SUCCESS', 'indices': new, 'metadata': metadata,
+            'shards': {'successful': 1, 'total': 1}}]}
+        out = StringIO()
+        call_command('locations_import_snapshot', 'pl-2026-11-20', *args, stdout=out)
+        return client, out.getvalue()
+
+    def test_it_says_what_built_the_pack(self, monkeypatch):
+        client, out = self._load(monkeypatch, {'version': '0.2.4', 'loads_with': '0.2.0'})
+        assert 'pl-2026-11-20: built with django-osm-locations 0.2.4, loads with 0.2.0 or later' in out
+        assert client.snapshot.restored
+
+    def test_a_pack_that_needs_a_newer_reader_is_refused(self, monkeypatch):
+        from django.core.management.base import CommandError
+
+        with pytest.raises(CommandError, match='needs django-osm-locations 9.0.0 or later'):
+            self._load(monkeypatch, {'version': '9.1.0', 'loads_with': '9.0.0'})
+
+    def test_it_can_be_loaded_regardless(self, monkeypatch):
+        client, out = self._load(monkeypatch, {'version': '9.1.0', 'loads_with': '9.0.0'},
+                                 '--ignore-version')
+        assert '--ignore-version' in out
+        assert client.snapshot.restored
+
+    def test_a_pack_from_before_loads_as_it_always_did(self, monkeypatch):
+        client, out = self._load(monkeypatch, None)
+        assert 'made before packs said what built them' in out
+        assert client.snapshot.restored

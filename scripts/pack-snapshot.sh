@@ -76,6 +76,10 @@ tar -C "$PARENT" -cf - "$NAME" \
 
 ( cd "$OUTPUT" && sha256sum "$SNAPSHOT".tar.gz.part* > SHA256SUMS )
 
+# What built it, for the notes: the same code that exported it, as the pack's
+# own metadata says (locations_import_snapshot --list shows that too).
+BUILT=$("${PYTHON:-python3}" -c 'import django_osm_locations as p; print("Built with django-osm-locations {}; needs {} or later to load.".format(p.__version__, p.PACKS_LOAD_WITH))' 2>/dev/null || true)
+
 echo
 du -ch "$OUTPUT/$SNAPSHOT".tar.gz.part* | tail -1
 echo "assets in $OUTPUT"
@@ -84,7 +88,9 @@ echo "--- release notes ---"
 cat <<NOTES
 OpenSearch snapshot of the $NAME index, ready to restore. No OSM extract, no
 import, no PostGIS.
-
+${BUILT:+
+$BUILT
+}
 Download every part, check them, and restore:
 
     sha256sum -c SHA256SUMS

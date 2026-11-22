@@ -12,16 +12,19 @@ import re
 
 from django.core.management.base import BaseCommand, CommandError
 
+from ... import __version__
 from ...search.client import get_client, get_index_prefix
 from ...search.snapshots import (
     DEFAULT_REPOSITORY,
     DEFAULT_REPOSITORY_PATH,
+    describe,
     forget_repository,
     point_aliases,
     register_repository,
     repository_for,
     restore,
     retire_older,
+    version_tuple,
     wait_for_restore,
 )
 
@@ -62,6 +65,12 @@ class Command(BaseCommand):
             help='Where those directories are on this machine, for --group: '
                  'the directory the cluster sees as --root. Default '
                  'local/snapshots, as docker-compose.local.yml mounts it.',
+        )
+        parser.add_argument(
+            '--ignore-version', action='store_true',
+            help='Load a pack even though it says it needs a newer version of '
+                 'this package than the one installed. What an older reader '
+                 'makes of a newer index is not known.',
         )
         parser.add_argument(
             '--list', action='store_true', dest='list_only',
@@ -159,9 +168,11 @@ class Command(BaseCommand):
                     location, self._why_empty(directory, options)))
                 return
             name = names[-1]
-        indexes = self._indexes_in(client, repository, location, name)
+        snapshot = self._snapshot(client, repository, location, name)
+        indexes = sorted(snapshot.get('indices') or [])
         if not indexes:
             raise CommandError('Snapshot {} holds no indexes.'.format(name))
+        self._check_version(name, snapshot.get('metadata') or {}, options)
         if all(client.indices.exists(index=i) for i in indexes):
             self.stdout.write('{}: already loaded'.format(name))
             return
@@ -252,21 +263,37 @@ class Command(BaseCommand):
             return self.stdout.write('{}: empty'.format(location or repository))
         self.stdout.write('{}:'.format(location or repository))
         for snapshot in snapshots:
-            self.stdout.write('  {}  {} index(es)  {}'.format(
+            self.stdout.write('  {}  {} index(es)  {}  {}'.format(
                 snapshot.get('snapshot'),
                 len(snapshot.get('indices') or []),
                 snapshot.get('state', ''),
+                describe(snapshot.get('metadata')),
             ))
 
     @staticmethod
-    def _indexes_in(client, repository, location, name):
+    def _snapshot(client, repository, location, name):
         try:
             found = client.snapshot.get(repository=repository, snapshot=name)
         except Exception as error:
             raise CommandError(
                 'No snapshot {} in {}: {}. If you unpacked it somewhere else, '
                 'pass --in <directory>.'.format(name, location, error))
-        snapshots = found.get('snapshots') or []
-        if not snapshots:
-            return []
-        return sorted(snapshots[0].get('indices') or [])
+        return (found.get('snapshots') or [{}])[0]
+
+    def _check_version(self, name, metadata, options):
+        """
+        Say what built the pack, and refuse one that needs a newer reader.
+
+        A pack made before packs carried this says nothing, and loads as it
+        always did: every one of them loads with 0.2.0 or later.
+        """
+        self.stdout.write('{}: {}'.format(name, describe(metadata)))
+        needs = metadata.get('loads_with')
+        if not needs or version_tuple(needs) <= version_tuple(__version__):
+            return
+        if options.get('ignore_version'):
+            self.stdout.write('  loading it anyway with {} (--ignore-version)'.format(__version__))
+            return
+        raise CommandError(
+            '{} needs django-osm-locations {} or later to load; this is {}. Upgrade, '
+            'or pass --ignore-version to load it regardless.'.format(name, needs, __version__))

@@ -12,8 +12,10 @@ from ...search.client import get_client, get_index_prefix
 from ...search.snapshots import (
     DEFAULT_REPOSITORY_PATH,
     create,
+    describe,
     indexes_for,
     merge,
+    pack_metadata,
     register_repository,
     repository_for,
 )
@@ -86,9 +88,12 @@ class Command(BaseCommand):
         def report(state, done, total):
             self.stdout.write('  {} {}/{} shards'.format(state, done, total))
 
+        # what built it travels inside it, for the loader to check
+        metadata = pack_metadata()
         state = create(
             name, indexes, client=client, repository=repository,
             on_progress=report if options.get('verbosity', 1) > 1 else None,
+            metadata=metadata,
         )
         if state == 'PARTIAL':
             raise CommandError(
@@ -96,6 +101,7 @@ class Command(BaseCommand):
                 'OpenSearch does not treat that as an error, so it would '
                 'publish as though it were whole.'.format(name))
 
+        self.stdout.write('  {}'.format(describe(metadata)))
         self.stdout.write(
             'written to {} on the cluster. That directory is the unit of '
             'publication: `make pack {}` tars it, splits it under '
