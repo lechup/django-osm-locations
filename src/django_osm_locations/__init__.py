@@ -1,4 +1,4 @@
-__version__ = '0.2.3'
+__version__ = '0.2.4'
 
 #: The oldest version of this package that can load a pack this one makes.
 #: Every pack carries it, and the loader refuses a pack that asks for a newer
