@@ -174,7 +174,7 @@ load-snapshot: local-up  ## Restore packs: make load-snapshot pl | us | us-ca-20
 
 pack:  ## Turn a snapshot into release assets: make pack pl-2026-09-24
 	@test -n "$(LOAD_ARGS)" || { echo "make pack <name>; make snapshots to list them"; exit 1; }
-	./scripts/pack-snapshot.sh $(LOAD_ARGS)
+	PYTHON=$(PYTHON) ./scripts/pack-snapshot.sh $(LOAD_ARGS)
 
 snapshots: local-up  ## List loadable snapshots: make snapshots [pl]
 	$(LOCAL_ENV) $(PYTHON) -m django locations_import_snapshot --list \

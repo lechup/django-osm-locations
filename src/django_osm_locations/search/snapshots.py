@@ -40,6 +40,68 @@ DEFAULT_REPOSITORY = 'locations'
 RESTORE_REQUEST_TIMEOUT = 600
 
 
+def pack_metadata():
+    """
+    What a pack says about the code that made it, stored in its snapshot.
+
+    Before this a pack's name gave its data's date and nothing else: which
+    version built it, and which can load it, lived only in the release notes
+    beside the download, and a pack already unpacked or loaded could not
+    tell. `loads_with` is what the loader checks; `commit` (and `modified`,
+    when the working tree differed from it) are for whoever has to find out
+    later exactly what built a pack, and are absent outside a git checkout.
+    """
+    from .. import PACKS_LOAD_WITH, __version__
+
+    found = {'package': 'django-osm-locations', 'version': __version__,
+             'loads_with': PACKS_LOAD_WITH}
+    found.update(_source_commit())
+    return found
+
+
+def _source_commit():
+    """The checkout this code runs from: its commit, and whether it was modified."""
+    import os
+    import subprocess
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    try:
+        commit = subprocess.run(['git', '-C', here, 'rev-parse', 'HEAD'], capture_output=True,
+                                text=True, timeout=10, check=True).stdout.strip()
+        changed = subprocess.run(['git', '-C', here, 'status', '--porcelain', '--untracked-files=no'],
+                                 capture_output=True, text=True, timeout=10, check=True).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    found = {'commit': commit} if commit else {}
+    if commit and changed:
+        found['modified'] = True
+    return found
+
+
+def version_tuple(text):
+    """'0.2.10' as (0, 2, 10), to compare as numbers; anything after a number's digits is dropped."""
+    parts = []
+    for part in str(text or '').split('.'):
+        digits = re.match(r'\d+', part)
+        if not digits:
+            break
+        parts.append(int(digits.group()))
+    return tuple(parts)
+
+
+def describe(metadata):
+    """One line on what built a pack, from its snapshot's metadata."""
+    if not metadata or not metadata.get('version'):
+        return 'made before packs said what built them (0.2.3 or earlier)'
+    line = 'built with {} {}'.format(metadata.get('package', 'django-osm-locations'),
+                                     metadata['version'])
+    if metadata.get('commit'):
+        line += ' ({}{})'.format(metadata['commit'][:7], ', modified' if metadata.get('modified') else '')
+    if metadata.get('loads_with'):
+        line += ', loads with {} or later'.format(metadata['loads_with'])
+    return line
+
+
 def repository_for(country_token, root=DEFAULT_REPOSITORY_PATH,
                    name=DEFAULT_REPOSITORY):
     """
@@ -219,7 +281,7 @@ def _leases_behind(client, target):
 
 
 def create(name, indexes, client=None, repository=DEFAULT_REPOSITORY,
-           on_progress=None, interval=3):
+           on_progress=None, interval=3, metadata=None):
     """
     Snapshot the given indexes and wait for them, by asking rather than
     holding the connection open.
@@ -230,12 +292,18 @@ def create(name, indexes, client=None, repository=DEFAULT_REPOSITORY,
     already running. Nothing says so -- the error reads as a naming conflict.
     Polling costs one request every few seconds and does not care how long the
     work takes.
+
+    `metadata` is stored in the snapshot itself, and so travels with the
+    pack: `pack_metadata()` is what the export puts there.
     """
     client = client or get_client()
+    body = {'indices': ','.join(indexes), 'include_global_state': False}
+    if metadata:
+        body['metadata'] = metadata
     client.snapshot.create(
         repository=repository,
         snapshot=name,
-        body={'indices': ','.join(indexes), 'include_global_state': False},
+        body=body,
         params={'wait_for_completion': 'false'},
     )
     return wait_for(name, client=client, repository=repository,

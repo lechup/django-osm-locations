@@ -242,6 +242,17 @@ the older one answers searches until the newer one can. A restore that stalls,
 on a disk past OpenSearch's watermark for instance, stops with the cluster's
 reason and leaves the aliases as they were.
 
+**Which packs exist, and what built them.** The
+[pack index](https://github.com/lechup/django-osm-locations/releases/tag/packs)
+lists every published pack: how old its data is, the version of this package
+that built it, the oldest version that can load it, and its size, with the
+current pack of each country apart from the ones it replaced. `packs.json` on
+the same release holds it as data. From 0.2.4 a pack also carries this inside
+it, in its snapshot: `make snapshots pl` shows it, and `load-snapshot` refuses
+a pack that needs a newer version than the one installed (`--ignore-version`
+loads it regardless). Packs made before 0.2.4 say nothing and load as before;
+every one of them loads with 0.2.0 or later.
+
 **Countries are published separately and merge by alias.** Load Poland, then
 Denmark, and both sit under the same aliases and are searched as one. That is
 an ordinary OpenSearch alias over several indexes, so nothing in the query
@@ -271,8 +282,15 @@ deleted, and still counts in the term statistics the scores are built from.
 `pack` splits at 1.9 GB because a GitHub release asset may not exceed 2 GB and
 a country is larger than that — three countries came to 4.3 GB. It refuses a
 directory holding more than one snapshot rather than quietly publishing both,
-and prints the release notes, including the commands above and the attribution
-the license asks for.
+and prints the release notes, including the commands above, the version that
+built the pack and the attribution the license asks for.
+
+`snapshot` records in the pack which version made it and the oldest that can
+load it, `PACKS_LOAD_WITH` in `django_osm_locations/__init__.py`. Raise that
+with any change an older reader would get wrong, a mapping or the pack's
+layout; the loader refuses a pack that asks for more than it is. After a pack
+is published, `scripts/pack_index.py --publish` rebuilds the pack index from
+the releases.
 
 A pack built before a fix to the recalculation or the mapping can be repaired
 without the database it came from: `scripts/repair-packs.sh` restores each
