@@ -245,9 +245,10 @@ reason and leaves the aliases as they were.
 **Which packs exist, and what built them.** The
 [pack index](https://github.com/lechup/django-osm-locations/releases/tag/packs)
 lists every published pack: how old its data is, the version of this package
-that built it, the oldest version that can load it, and its size, with the
-current pack of each country apart from the ones it replaced. `packs.json` on
-the same release holds it as data. From 0.2.4 a pack also carries this inside
+that built it, the oldest version that can load it, and its size. A pack is
+deleted, release and tag, once a newer one of its country is published, so
+the index is the current pack of each country; one still up beside its
+successor is listed apart. `packs.json` on the same release holds it as data. From 0.2.4 a pack also carries this inside
 it, in its snapshot: `make snapshots pl` shows it, and `load-snapshot` refuses
 a pack that needs a newer version than the one installed (`--ignore-version`
 loads it regardless). Packs made before 0.2.4 say nothing and load as before;
