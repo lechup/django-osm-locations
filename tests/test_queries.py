@@ -86,15 +86,16 @@ class TestWhatIsTyped:
     def test_only_as_a_word_of_its_own(self, q):
         assert read_query(q).required == q
 
-    @pytest.mark.parametrize('q,required,scored', [
+    @pytest.mark.parametrize('q,relaxed,scored', [
         ('al. 3 Maja 5', '3 Maja 5', 'aleja 3 Maja 5'),
         ('Al. Jerozolimskie 65', 'Jerozolimskie 65', 'aleja Jerozolimskie 65'),
         ('os. Tysiąclecia 12', 'Tysiąclecia 12', 'osiedle Tysiąclecia 12'),
         ('pl. Defilad 1', 'Defilad 1', 'plac Defilad 1'),
     ])
-    def test_al_os_pl_are_not_required_but_score(self, q, required, scored):
+    def test_al_os_pl_are_required_until_nothing_has_them(self, q, relaxed, scored):
+        """As typed they are the start of the word, so Aleja and Aleje are both found."""
         reading = read_query(q)
-        assert (reading.required, reading.scored) == (required, scored)
+        assert (reading.required, reading.relaxed, reading.scored) == (q, relaxed, scored)
 
     def test_a_postcode_is_not_a_word(self):
         reading = read_query('Floriańska 14, 31-019 Kraków')
@@ -106,6 +107,24 @@ class TestWhatIsTyped:
     def test_nor_is_anything_else_a_postcode(self, q):
         assert read_query(q).postcodes == []
 
+    @pytest.mark.parametrize('q,postcodes,required,numbers', [
+        ('Sierichstraße 183, 22299 Hamburg', ['22299'], 'Sierichstraße 183, Hamburg', ['183']),
+        ('22299 Hamburg, Sierichstraße 183', ['22299'], 'Hamburg, Sierichstraße 183', ['183']),
+        ('Via Roma 5, 00184 Roma', ['00184'], 'Via Roma 5, Roma', ['5']),
+        # every number has five digits: the last, as an American address ends
+        ('12345 Main Street, Springfield 62701', ['62701'], '12345 Main Street, Springfield',
+         ['12345']),
+    ])
+    def test_five_digits_beside_a_house_number_are_a_postcode(self, q, postcodes, required, numbers):
+        """Read as a second house number, nothing had every word."""
+        reading = read_query(q)
+        assert (reading.postcodes, reading.required, reading.numbers) == (postcodes, required, numbers)
+
+    @pytest.mark.parametrize('q', ['12345 Main Street', '22299 Hamburg', 'Hauptstraße 12345'])
+    def test_alone_five_digits_are_a_house_number(self, q):
+        reading = read_query(q)
+        assert reading.postcodes == [] and reading.required == q
+
     @pytest.mark.parametrize('q', ['Floriańska 14 m. 3', 'Floriańska 14 m 3', 'Floriańska 14 M.3',
                                    'Floriańska 14 lok. 3', 'Floriańska 14 lokal 3'])
     def test_a_flat_after_the_house_is_dropped(self, q):
@@ -113,14 +132,37 @@ class TestWhatIsTyped:
         assert (reading.required, reading.scored, reading.numbers) == (
             'Floriańska 14', 'Floriańska 14', ['14'])
 
-    @pytest.mark.parametrize('q', ['Aleja 3 Maja 5', 'Osiedle 1 Maja 2', 'Lipowa 3 Mielec'])
+    @pytest.mark.parametrize('q', ['Lipowa 3 Maja 5', 'Dolne 1 Maja 2', 'Lipowa 3 Mielec'])
     def test_a_word_after_a_number_is_no_flat(self, q):
         assert read_query(q).required == q
+
+    @pytest.mark.parametrize('q,relaxed', [
+        ('Osiedle Urocze 1 Kraków', 'Urocze 1 Kraków'),
+        ('Aleja 3 Maja 5', '3 Maja 5'),
+        ('Kraków, Plac Nowy', 'Kraków, Nowy'),
+    ])
+    def test_and_so_are_osiedle_aleja_plac_typed_whole(self, q, relaxed):
+        """A name leaves them out as often as it carries them, however they are typed."""
+        reading = read_query(q)
+        assert (reading.required, reading.relaxed, reading.scored) == (q, relaxed, q)
+
+    @pytest.mark.parametrize('q', ['Osiedle', 'Plac', 'aleja', 'os. 5', 'Floriańska 14', 'Abbey Rd'])
+    def test_nothing_to_relax(self, q):
+        """Alone, or with only a number, the word is the query; other words are not left out."""
+        assert read_query(q).relaxed is None
+
+    def test_relaxed_the_words_a_name_leaves_out_are_not_required(self):
+        strict = build_query(q='Osiedle Urocze 1')['bool']['must'][0]['multi_match']
+        relaxed = build_query(q='Osiedle Urocze 1', relaxed=True)['bool']
+        assert strict['query'] == 'Osiedle Urocze 1'
+        assert relaxed['must'][0]['multi_match']['query'] == 'Urocze 1'
+        # and it still scores
+        assert relaxed['should'][0]['multi_match']['query'] == 'Osiedle Urocze 1'
 
     @pytest.mark.parametrize('q,required', [
         ('Floriańska 14/3, Kraków', 'Floriańska 14, Kraków'),
         ('Floriańska 12a/3', 'Floriańska 12a'),
-        ('Aleja 1 Maja 31/33', 'Aleja 1 Maja 31'),
+        ('Lipowa 1 Maja 31/33', 'Lipowa 1 Maja 31'),
         ('3/5 Maja', '3 Maja'),
     ])
     def test_after_a_slash_it_scores_and_is_not_required(self, q, required):
@@ -146,6 +188,156 @@ class TestWhatIsTyped:
         reading = read_query('ul. Floriańska 14/3 m. 2, 31-019 Kraków')
         assert reading.required == 'Floriańska 14, Kraków'
         assert reading.postcodes == ['31-019']
+
+
+class TestStreetWordsOfOtherLanguages:
+    """Str., Rd, Ave, bd, v.le: written out for scoring, never required."""
+
+    @pytest.mark.parametrize('q,required,scored', [
+        # the start of its word: found as a prefix, so it stays required
+        ('Berliner Str. 5', 'Berliner Str. 5', 'Berliner straße 5'),
+        ('Berliner Str 5 Potsdam', 'Berliner Str 5 Potsdam', 'Berliner straße 5 Potsdam'),
+        ('Fifth Ave', 'Fifth Ave', 'Fifth avenue'),
+        # not the start of its word: "rd" finds no Road
+        ('Abbey Rd', 'Abbey', 'Abbey road'),
+        ('Sunset Blvd.', 'Sunset', 'Sunset boulevard'),
+        ('bd Haussmann', 'Haussmann', 'boulevard Haussmann'),
+        ('V.le Europa 3', 'Europa 3', 'viale Europa 3'),
+        ('P.zza Navona', 'Navona', 'piazza Navona'),
+        ('Avda. de América', 'de América', 'avenida de América'),
+    ])
+    def test_written_out(self, q, required, scored):
+        reading = read_query(q)
+        assert (reading.required, reading.scored) == (required, scored)
+
+    @pytest.mark.parametrize('q,scored', [
+        ('Hauptstr. 5', 'Hauptstraße 5'),
+        ('Hauptstr 5 Bonn', 'Hauptstraße 5 Bonn'),
+        ('Bahnhofstr.', 'Bahnhofstraße'),
+    ])
+    def test_glued_to_the_name_it_is_written_out_and_still_required(self, q, scored):
+        reading = read_query(q)
+        assert reading.scored == scored
+        assert reading.required == q
+
+    def test_an_abbreviation_of_several_words_is_tried_as_each(self):
+        """The query does not say its country: pl. is plac, Platz and Place."""
+        reading = read_query('Pariser Pl. 1')
+        assert reading.variants == ('Pariser plac 1', 'Pariser platz 1', 'Pariser place 1')
+        assert reading.also == ('platz', 'place')
+        assert (reading.required, reading.relaxed) == ('Pariser Pl. 1', 'Pariser 1')
+
+    def test_each_reading_is_tried_as_a_whole_name(self):
+        from django_osm_locations.api.queries import exact_name_functions
+
+        tried = [list(clause['match'].values())[0]
+                 for clause in exact_name_functions('Pariser Pl. Berlin')[0]['filter']['bool']['should']]
+        assert 'Pariser platz' in tried and 'Pariser plac' in tried
+
+    def test_without_a_dot_it_may_be_a_name_being_typed(self):
+        """"Kraków Rd" is on its way to Rdzawa as likely as it is a road."""
+        reading = read_query('Kraków Rd')
+        assert reading.required == 'Kraków'
+        assert reading.also == ('Rd',)
+        scored = build_query(q='Kraków Rd')['bool']['should'][0]['multi_match']['query']
+        assert scored == 'Kraków road Rd'
+
+    @pytest.mark.parametrize('q', ['Rd', 'Al', 'Os', 'Tr', 'Alabama', 'Trakt 5', 'Ostrów al'])
+    def test_what_is_not_an_abbreviation(self, q):
+        """Alone, or without the dot the language writes: the start of a name."""
+        reading = read_query(q)
+        assert (reading.required, reading.scored) == (q, q)
+
+    def test_st_is_left_as_typed(self):
+        """Street, saint, sankt and sint: and already the start of three of them."""
+        reading = read_query('St. Pauli 3')
+        assert (reading.required, reading.scored) == ('St. Pauli 3', 'St. Pauli 3')
+
+
+class TestTypos:
+    def test_every_word_as_typed_or_misspelt(self):
+        from django_osm_locations.api.queries import FUZZY_BOOST
+
+        either = build_query(q='Marszałkowska Warszwa', fuzzy=True)['bool']['must'][0]['bool']
+        as_typed, misspelt = either['should']
+        assert either['minimum_should_match'] == 1
+        assert as_typed == build_query(q='Marszałkowska Warszwa')
+        assert misspelt['bool']['boost'] == FUZZY_BOOST
+        words = [clause['bool']['should'][1]['multi_match'] for clause in misspelt['bool']['must']]
+        assert [w['query'] for w in words] == ['Marszałkowska', 'Warszwa']
+        assert all(w['fuzziness'] == 'AUTO' and w['prefix_length'] == 1 for w in words)
+
+    def test_a_word_may_also_be_the_start_of_one(self):
+        """The last word is often still being typed: "Warszwa Marsz"."""
+        misspelt = build_query(q='Warszwa Marsz', fuzzy=True)['bool']['must'][0]['bool']['should'][1]
+        prefix = misspelt['bool']['must'][1]['bool']['should'][0]['multi_match']
+        assert prefix['query'] == 'Marsz' and 'fuzziness' not in prefix
+
+    def test_no_address_is_found_misspelt(self):
+        misspelt = build_query(q='Warszwa', fuzzy=True)['bool']['must'][0]['bool']['should'][1]
+        assert misspelt['bool']['must_not'] == [{'term': {'type': 'addresses'}}]
+
+    def test_a_house_number_is_not_a_word_to_misspell(self):
+        from django_osm_locations.api.queries import fuzzy_words
+
+        assert fuzzy_words('ul. Marszałkowska 10, Warszwa') == ['Marszałkowska', 'Warszwa']
+        assert fuzzy_words('12') == []
+
+    @pytest.mark.parametrize('q,name,ancestry,found', [
+        ('Marszałkowska Warszawa', 'Marszałkowska', ['Polska', 'Warszawa'], True),
+        ('marszalkowska warszawa', 'Marszałkowska', ['Polska', 'Warszawa'], True),
+        ('Marszałkowska Warsz', 'Marszałkowska', ['Polska', 'Warszawa'], True),
+        ('Marszałkowska 10 Warszawa', 'Marszałkowska', ['Polska', 'Warszawa'], True),
+        ('Szczecno', 'Szczecno', ['Polska'], True),
+        # one word, and only the start of the name: how a typo finds a village
+        ('Szczecn', 'Szczecno', ['Polska'], False),
+        ('Hambrug', 'Hambrüggeweg', ['Deutschland', 'Metelen'], False),
+        ('Marszałk Warszawa', 'Marszałkowska', ['Polska', 'Warszawa'], False),
+    ])
+    def test_found_as_typed(self, q, name, ancestry, found):
+        from django_osm_locations.api.queries import found_as_typed
+
+        source = {'name': name, 'ancestry': [{'name': a} for a in ancestry]}
+        assert found_as_typed(q, source) is found
+
+    def test_a_translation_counts(self):
+        from django_osm_locations.api.queries import found_as_typed
+
+        assert found_as_typed('Warsaw', {'name': 'Warszawa', 'names': {'en': 'Warsaw'}})
+
+
+class TestAddressesTooEarly:
+    @pytest.mark.parametrize('q', ['M', 'Ma', 'Mü', 'k.'])
+    def test_one_or_two_letters_mean_no_address_yet(self, q):
+        from django_osm_locations.api.queries import without_addresses_too_early
+
+        assert without_addresses_too_early(['places', 'streets', 'addresses'], q) == [
+            'places', 'streets']
+
+    @pytest.mark.parametrize('q', ['Mar', 'M 1', '12', None, ''])
+    def test_three_letters_or_a_digit_do(self, q):
+        from django_osm_locations.api.queries import without_addresses_too_early
+
+        names = ['places', 'streets', 'addresses']
+        assert without_addresses_too_early(names, q) == names
+
+    def test_addresses_asked_for_alone_are_searched(self):
+        from django_osm_locations.api.queries import without_addresses_too_early
+
+        assert without_addresses_too_early(['addresses'], 'Ma') == ['addresses']
+
+
+class TestTimeout:
+    def test_a_search_is_given_two_seconds(self):
+        assert build_body({'q': 'krak'})[0]['timeout'] == '2s'
+
+    def test_or_what_the_settings_say(self, settings):
+        settings.LOCATIONS_SEARCH_TIMEOUT = '500ms'
+        assert build_body({'q': 'krak'})[0]['timeout'] == '500ms'
+
+    def test_or_no_limit(self, settings):
+        settings.LOCATIONS_SEARCH_TIMEOUT = None
+        assert 'timeout' not in build_body({'q': 'krak'})[0]
 
 
 class TestBbox:
@@ -296,8 +488,10 @@ class TestQuery:
 
     def test_what_is_required_and_what_scores(self):
         query = build_query(q='ul. al. Daszyńskiego 14/3, Kraków')['bool']
-        assert query['must'][0]['multi_match']['query'] == 'Daszyńskiego 14, Kraków'
+        assert query['must'][0]['multi_match']['query'] == 'al. Daszyńskiego 14, Kraków'
         assert query['should'][0]['multi_match']['query'] == 'aleja Daszyńskiego 14/3, Kraków'
+        without = build_query(q='ul. al. Daszyńskiego 14/3, Kraków', relaxed=True)['bool']
+        assert without['must'][0]['multi_match']['query'] == 'Daszyńskiego 14, Kraków'
 
     def test_relaxed_any_word_of_what_is_required(self):
         """A flat number would find every house 3 in the country."""

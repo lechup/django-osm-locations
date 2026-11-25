@@ -262,3 +262,90 @@ class TestEveryWordCounts:
         """A typo must not empty the answer: it falls back to any word."""
         results = client.get('/api/search/', {'q': 'Krakow Xqzw'}).json()['results']
         assert 'Kraków' in [h['name'] for h in results]
+
+
+class TestTypos:
+    """
+    "Warszwa" found nothing, and "Szczecn" the village Szczecno: a misspelt
+    name is the start of no name, or of some other.
+    """
+
+    @pytest.fixture(autouse=True)
+    def indexed(self, prefix, opensearch, settings, db):
+        settings.LOCATIONS_OPENSEARCH_INDEX_PREFIX = prefix
+        settings.ROOT_URL = 'testserver'
+        Place.objects.create(name='Warszawa', border=MultiPolygon(square(1, 2)), area=4.0,
+                             population=1800000)
+        Place.objects.create(name='Szczecin', border=MultiPolygon(square(4, 2)), area=4.0,
+                             population=400000)
+        Place.objects.create(name='Szczecno', border=MultiPolygon(square(7, 1)), area=0.1,
+                             population=700)
+        Street.objects.create(
+            name='Marszałkowska',
+            lines=MultiLineString(LineString((1.1, 2.1), (1.2, 2.2))),
+            place=[['Warszawa', 'warszawa']],
+        )
+        for name in ('places', 'streets'):
+            reindex(name, prefix, opensearch)
+
+    def names(self, client, q, **params):
+        found = client.get('/api/search/', dict(params, q=q)).json()
+        return [h['name'] for h in found['results']]
+
+    @pytest.mark.parametrize('q', ['Warszwa', 'Warzsawa', 'Warsawa', 'warszaw'])
+    def test_a_misspelt_name_is_found(self, client, q):
+        assert self.names(client, q)[0] == 'Warszawa'
+
+    def test_with_another_word_as_typed(self, client):
+        assert self.names(client, 'Marszałkowska Warszwa') == ['Marszałkowska']
+
+    def test_a_typo_that_is_the_start_of_another_name_finds_both(self, client):
+        assert set(self.names(client, 'Szczecn')) == {'Szczecno', 'Szczecin'}
+
+    def test_a_name_typed_right_is_not_joined_by_its_neighbours(self, client):
+        """Szczecno is a village, not Szczecin misspelt."""
+        assert self.names(client, 'Szczecno') == ['Szczecno']
+
+    def test_the_total_counts_them(self, client):
+        found = client.get('/api/search/', {'q': 'Szczecn'}).json()
+        assert found['total'] == 2
+
+    def test_on_every_page(self, client):
+        first = self.names(client, 'Szczecn', page_size=1)
+        second = self.names(client, 'Szczecn', page_size=1, page=2)
+        assert sorted(first + second) == ['Szczecin', 'Szczecno']
+
+
+class TestWordsANameLeavesOut:
+    """
+    Osiedle, Aleja, Plac: required while something has them, and not after.
+    Never required, "Plac Nowy, Kraków" was the village Nowy Kraków; always
+    required, "Osiedle Zgody" missed the street mapped as Zgody.
+    """
+
+    @pytest.fixture(autouse=True)
+    def indexed(self, prefix, opensearch, settings, db):
+        settings.LOCATIONS_OPENSEARCH_INDEX_PREFIX = prefix
+        settings.ROOT_URL = 'testserver'
+        Place.objects.create(name='Kraków', border=MultiPolygon(square(1, 2)), area=4.0,
+                             population=800000)
+        Place.objects.create(name='Nowy Kraków', border=MultiPolygon(square(7, 1)), area=0.1)
+        for name, x in (('Plac Nowy', 1.1), ('Zgody', 1.3)):
+            Street.objects.create(
+                name=name,
+                lines=MultiLineString(LineString((x, 2.1), (x + 0.1, 2.2))),
+                place=[['Kraków', 'krakow']],
+            )
+        for name in ('places', 'streets'):
+            reindex(name, prefix, opensearch)
+
+    def names(self, client, q):
+        return [h['name'] for h in client.get('/api/search/', {'q': q}).json()['results']]
+
+    @pytest.mark.parametrize('q', ['Plac Nowy Kraków', 'pl. Nowy Kraków'])
+    def test_what_has_the_word_comes_alone(self, client, q):
+        assert self.names(client, q) == ['Plac Nowy']
+
+    @pytest.mark.parametrize('q', ['Osiedle Zgody Kraków', 'os. Zgody Kraków'])
+    def test_and_what_leaves_it_out_is_found_when_nothing_has_it(self, client, q):
+        assert self.names(client, q) == ['Zgody']

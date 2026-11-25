@@ -208,6 +208,20 @@ of its ancestry, since a city is often called what its region is: `Calle de
 Granada 28, Madrid` is in Madrid, not in Leganés in the Comunidad de Madrid.
 Among addresses the number typed comes first: `14`, then `14a`, then `142`.
 
+A misspelt name is found too: `Warszwa` is Warszawa, and `Marszałkowska
+Warszwa` the street there. That is a stage of its own, asked only when few
+results have every word as typed and the best of them has one only as the
+start of another word — `Szczecn` is the start of the village Szczecno, and
+finds Szczecin beside it. A word may be one letter off, two from six letters
+up, and its first letter is taken as typed. Addresses are not found misspelt:
+the street is.
+
+With one or two letters and no digit, addresses are left out of a search
+across types: `Ma` is the start of some 400,000 house names in Poland and
+Germany, and nobody means one yet. A search is given two seconds
+(`LOCATIONS_SEARCH_TIMEOUT`); one that runs out answers with what it found
+and `"timed_out": true`.
+
 ## Published indexes
 
 Building a country from scratch costs about thirteen hours: downloading the
@@ -567,10 +581,20 @@ GET /api/addresses/?within=florianska-krakow&q=14          # that street's 14, 1
 ```
 
 What is typed around an address and is no word of a name is read for what it
-is: `ul.` is dropped, `al.`, `os.` and `pl.` are not required, a postcode
-(`31-019`) ranks the addresses that have it first, and a flat (`14/3`, `14 m. 3`)
-finds house 14 — or a house numbered `14/3`, ahead of it, where there is one. A
-letter after the slash is no flat: `15/a` is the house of that number.
+is: `ul.` is dropped, `al.`, `os.` and `pl.` are not required — nor are
+`Aleja`, `Osiedle` and `Plac` typed whole, which a name leaves out as often as
+it carries them — a postcode (`31-019`, or `22299` beside a house number) ranks
+the addresses that have it first, and a flat (`14/3`, `14 m. 3`) finds house
+14 — or a house numbered `14/3`, ahead of it, where there is one. A letter
+after the slash is no flat: `15/a` is the house of that number.
+
+The words of a street's kind are read abbreviated in other languages as well:
+`Berliner Str.` and `Hauptstr.` are Straße, `Abbey Rd` is Road, `bd
+Haussmann` boulevard, `V.le Europa` viale, `Avda. de América` avenida. A query
+does not say its country, so every language's abbreviations apply together
+and none is required of a result: what one stands for only ranks. `St` is
+left as typed, being street, saint and sankt. The table is in
+`api/street_words.py`.
 
 Addresses are read in a pass of their own rather than cached with everything
 else: 62.6% of them are building outlines, whose node references come to 43.9
@@ -837,6 +861,7 @@ of the index.
 | `LOCATIONS_WRITE_BATCH_SIZE` | `1000` | Rows per bulk insert/update during import |
 | `LOCATIONS_SHOW_PROGRESS` | auto | Force progress bars on or off |
 | `LOCATIONS_TYPE_BOOSTS` | places > subareas > streets | Relative search weight per location type |
+| `LOCATIONS_SEARCH_TIMEOUT` | `'2s'` | What a search may take before it answers with what it has; `None` for no limit |
 | `LOCATIONS_OPENSEARCH_HOSTS` | `['http://localhost:9200']` | Where OpenSearch lives |
 | `LOCATIONS_OPENSEARCH_INDEX_PREFIX` | `locations` | Prefix for every index and alias |
 | `LOCATIONS_OPENSEARCH_CLIENT_KWARGS` | `{}` | Extra client args: auth, TLS, timeouts |
