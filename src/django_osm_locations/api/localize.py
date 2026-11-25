@@ -15,6 +15,9 @@ down. Resolving them per response instead costs one lookup for the distinct
 ancestors on a page, which for twenty hits is a couple of dozen slugs, and
 they repeat heavily from page to page.
 """
+from django.core.cache import cache
+
+from ..conf import ancestor_names_cache_timeout
 from ..search.indexes import INDEXES
 
 
@@ -58,15 +61,30 @@ def fetch_ancestor_names(client, keys, language, prefix=None):
     One terms query per index rather than one per ancestor: a page of twenty
     street hits usually touches three or four indexes and a couple of dozen
     slugs.
+
+    And remembered, found or not. Only the names are asked for, but a
+    document is read whole to give them, and an ancestor's holds its border:
+    Poland's is megabytes, and it is an ancestor of every hit in the country.
+    Asked each time, ``lang=pl`` took the median suggestion from 10 ms to
+    190 ms. The same few ancestors come back page after page, so after the
+    first they cost nothing; a newer pack's names are seen once the entry
+    expires, ``LOCATIONS_ANCESTOR_NAMES_CACHE_TIMEOUT``.
     """
     if not keys or not language:
         return {}
 
-    by_index = {}
-    for index, slug in keys:
-        by_index.setdefault(index, []).append(slug)
+    timeout = ancestor_names_cache_timeout()
+    found, by_index = {}, {}
+    cache_keys = {key: _cache_key(prefix, language, *key) for key in keys} if timeout else {}
+    cached = cache.get_many(list(cache_keys.values())) if cache_keys else {}
+    for key in keys:
+        if cache_keys.get(key) in cached:
+            if cached[cache_keys[key]]:
+                found[key] = cached[cache_keys[key]]
+            continue
+        by_index.setdefault(key[0], []).append(key[1])
 
-    found = {}
+    fresh = {}
     for index, slugs in by_index.items():
         try:
             response = client.search(
@@ -80,14 +98,29 @@ def fetch_ancestor_names(client, keys, language, prefix=None):
             )
         except Exception:
             # a missing index must not take the whole response down; the
-            # caller falls back to the untranslated name
+            # caller falls back to the untranslated name -- and asks again
+            # next time, so nothing of this index is remembered
             continue
+        # an ancestor with no translation is remembered as that
+        fresh.update({(index, slug): '' for slug in slugs})
         for hit in response.get('hits', {}).get('hits', []):
             source = hit.get('_source', {})
             translated = (source.get('names') or {}).get(language)
             if translated:
-                found[(index, source.get('slug'))] = translated
+                fresh[(index, source.get('slug'))] = translated
+    if timeout and fresh:
+        cache.set_many({cache_keys[key]: name for key, name in fresh.items() if key in cache_keys},
+                       timeout)
+    found.update({key: name for key, name in fresh.items() if name})
     return found
+
+
+def _cache_key(prefix, language, index, slug):
+    """A cache key for one ancestor's name: no spaces, and short enough for memcached."""
+    import hashlib
+
+    raw = '{}|{}|{}|{}'.format(prefix or '', language, index, slug)
+    return 'locations-ancestor-name:' + hashlib.sha1(raw.encode('utf-8')).hexdigest()
 
 
 def apply_language(hits, language, ancestor_names):
@@ -95,7 +128,12 @@ def apply_language(hits, language, ancestor_names):
     if not language:
         return hits
     for hit in hits:
-        hit['name'] = localized_name(hit, language)
+        if hit.get('type') != 'addresses':
+            # An address is named for its street and number, and the
+            # translations it carries are those of whatever was mapped at
+            # it: with lang=pl "Marszałkowska 81" came back as "Żabka", the
+            # shop's name:pl, and "Floriańska 38" as "Hotel Floryan".
+            hit['name'] = localized_name(hit, language)
         entries = hit.get('ancestry') or []
         for entry in entries:
             index = LEVEL_TO_INDEX.get(entry.get('level'))
