@@ -158,8 +158,9 @@ class TestSizeFallback:
         functions = apply_scoring({'match_all': {}})['function_score']['functions']
         return [f for f in functions if 'field_value_factor' in f]
 
-    def test_population_and_area_are_both_offered(self, size_functions):
-        assert {f['field_value_factor']['field'] for f in size_functions} == {'population', 'area'}
+    def test_population_its_places_and_area_are_all_offered(self, size_functions):
+        assert {f['field_value_factor']['field'] for f in size_functions} == {
+            'population', 'place_population', 'area'}
 
     def test_each_size_function_is_filtered(self, size_functions):
         """An unfiltered one would apply to every hit and compound with the other."""
@@ -170,8 +171,20 @@ class TestSizeFallback:
         """Anything else and the two compound, which is the old bug."""
         by_field = {f['field_value_factor']['field']: f['filter'] for f in size_functions}
         has_population = {'range': {'population': {'gt': 0}}}
+        in_a_place = {'range': {'place_population': {'gt': 0}}}
         assert by_field['population'] == has_population
-        assert by_field['area'] == {'bool': {'must_not': has_population}}
+        assert by_field['place_population'] == {
+            'bool': {'filter': [in_a_place], 'must_not': [has_population]}}
+        assert by_field['area'] == {'bool': {'must_not': [has_population, in_a_place]}}
+
+    def test_a_street_and_a_district_rank_by_the_place_they_are_in(self, size_functions):
+        """
+        A street has no size and few districts have people of their own: every
+        Marszałkowska scored alike and Warszawa's came 13th, and Nowa Huta in
+        Kraków after eight villages of the name.
+        """
+        by_field = {f['field_value_factor']['field']: f for f in size_functions}
+        assert by_field['place_population']['field_value_factor']['modifier'] == 'log2p'
 
     def test_sizes_still_multiply_with_the_type_boost(self):
         assert apply_scoring({'match_all': {}})['function_score']['score_mode'] == 'multiply'

@@ -32,6 +32,14 @@ class TestMappings:
         assert 'area' in INDEXES['places'].properties
         assert 'population' in INDEXES['places'].properties
 
+    @pytest.mark.parametrize('name', ['streets', 'place-subareas', 'addresses'])
+    def test_streets_districts_and_addresses_carry_their_places_population(self, name):
+        assert INDEXES[name].properties['place_population'] == {'type': 'long'}
+
+    @pytest.mark.parametrize('name', ['countries', 'country-subareas', 'places'])
+    def test_and_nothing_else_does(self, name):
+        assert 'place_population' not in INDEXES[name].properties
+
     def test_streets_carry_length_not_area(self):
         assert 'length' in INDEXES['streets'].properties
         assert 'area' not in INDEXES['streets'].properties
@@ -118,3 +126,49 @@ class TestQueryset:
         from django_osm_locations.models import Country
         assert INDEXES['countries'].queryset().count() == Country.objects.count()
         assert INDEXES['countries'].queryset().filter(pk=country.pk).exists()
+
+
+class TestPlacePopulation:
+    """The size a street or a district ranks by is its place's."""
+
+    def street(self, place):
+        return Street(id=1, name='Marszałkowska', slug='marszalkowska', place=place, bbox=[])
+
+    def test_the_population_of_the_place_it_is_in(self):
+        doc = INDEXES['streets'].document(
+            self.street([['Warszawa', 'warszawa']]), populations={'warszawa': 1863845})
+        assert doc['place_population'] == 1863845
+
+    def test_the_largest_where_a_place_lies_within_another(self):
+        doc = INDEXES['streets'].document(
+            self.street([['Kraków', 'krakow'], ['Bieżanów', 'biezanow']]),
+            populations={'krakow': 800000, 'biezanow': 300})
+        assert doc['place_population'] == 800000
+
+    @pytest.mark.parametrize('place,populations', [
+        ([['Kowale', 'kowale']], {'kowale': None}),
+        ([['Kowale', 'kowale']], {}),
+        ([], {'kowale': 500}),
+        (None, None),
+    ])
+    def test_none_without_one(self, place, populations):
+        doc = INDEXES['streets'].document(self.street(place), populations=populations)
+        assert doc['place_population'] is None
+
+    def test_a_place_has_none_being_one(self, place):
+        assert 'place_population' not in INDEXES['places'].document(place)
+
+    @pytest.mark.django_db
+    def test_looked_up_once_for_a_batch_and_not_again(self, django_assert_num_queries):
+        Place.objects.create(name='Warszawa', slug='warszawa', population=1863845)
+        Place.objects.create(name='Kowale', slug='kowale')
+        batch = [self.street([['Warszawa', 'warszawa']]), self.street([['Kowale', 'kowale']])]
+        with django_assert_num_queries(1):
+            found = INDEXES['streets'].place_populations(batch)
+        assert (found['warszawa'], found['kowale']) == (1863845, None)
+        with django_assert_num_queries(0):
+            assert INDEXES['streets'].place_populations(batch, found) is found
+
+    def test_no_lookup_for_a_type_without_it(self, django_assert_num_queries):
+        with django_assert_num_queries(0):
+            assert INDEXES['places'].place_populations([]) == {}

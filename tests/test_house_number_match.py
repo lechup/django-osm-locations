@@ -346,10 +346,10 @@ class TestWhereTheyApply:
     def test_nor_does_scoring_without_a_query(self):
         """What test_scoring counts: one weight per type, and the two sizes."""
         functions = apply_scoring({'match_all': {}})['function_score']['functions']
-        assert len(functions) == len(DEFAULT_TYPE_BOOSTS) + 2
+        assert len(functions) == len(DEFAULT_TYPE_BOOSTS) + 3
 
     def test_the_type_weights_and_sizes_stay(self):
         functions = self.functions({'q': 'Floriańska 14'})
-        assert len([f for f in functions if 'field_value_factor' in f]) == 2
+        assert len([f for f in functions if 'field_value_factor' in f]) == 3
         assert {f['filter']['term']['type'] for f in functions
                 if 'type' in f['filter'].get('term', {})} == set(INDEXES)

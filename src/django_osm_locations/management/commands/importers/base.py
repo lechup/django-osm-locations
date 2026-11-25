@@ -1085,15 +1085,26 @@ class BaseImporter(object):
         """
         ``name`` is what somebody would type: "Lakowa 5".
 
+        Without a street it is what the number hangs on, ``addr:place``,
+        before the town: a house on an estate is tagged with both, and named
+        for the town "Osiedle Urocze 1" in Kraków was "Kraków 1" -- with 2,181
+        more in Kraków and 3,810 in Poznań, none of them found by what is
+        on the door. The town stays the settlement.
+
+        No ``names``: the ``name:*`` tags of what is mapped at an address are
+        those of the shop or the hotel, not of the address, and in another
+        language "Marszałkowska 81" was "Żabka".
+
         The slug is derived from it and the parent, never disambiguated --
         there are 8.5 million of these for Poland alone.
         """
         street = tags.get('addr:street') or ''
         settlement = tags.get('addr:city') or tags.get('addr:place') or ''
         number = cls._fit_house_number(tags.get('addr:housenumber'))
+        hung_on = street or tags.get('addr:place') or settlement
         return cls._fit_to_columns(Address, {
-            'name': '{} {}'.format(street or settlement, number).strip(),
-            'names': language_names(tags),
+            'name': '{} {}'.format(hung_on, number).strip(),
+            'names': {},
             'house_number': number,
             'house_number_sort': cls._house_number_sort_key(number),
             'street_name': street,

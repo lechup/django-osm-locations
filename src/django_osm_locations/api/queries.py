@@ -801,6 +801,10 @@ def apply_scoring(query, q=None, prefer=None):
     # Most places are nodes -- 97.9% of the imported UK ones have no border --
     # so this was the common case rather than an edge one.
     has_population = {'range': {'population': {'gt': 0}}}
+    # A street has neither, and few districts have people of their own, so
+    # they take their place's: see PLACE_POPULATION in the index definitions.
+    in_a_place_with_one = {'bool': {'filter': [{'range': {'place_population': {'gt': 0}}}],
+                                    'must_not': [has_population]}}
     functions.append({
         'filter': has_population,
         'field_value_factor': {
@@ -811,7 +815,16 @@ def apply_scoring(query, q=None, prefer=None):
         }
     })
     functions.append({
-        'filter': {'bool': {'must_not': has_population}},
+        'filter': in_a_place_with_one,
+        'field_value_factor': {
+            'field': 'place_population',
+            'modifier': 'log2p',
+            'factor': 1.0,
+            'missing': 0,
+        }
+    })
+    functions.append({
+        'filter': {'bool': {'must_not': [has_population, {'range': {'place_population': {'gt': 0}}}]}},
         'field_value_factor': {
             'field': 'area',
             'modifier': 'log2p',

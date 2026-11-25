@@ -153,6 +153,16 @@ BORDER_PROPERTIES = {
     'geometry': {'type': 'geo_shape'},
 }
 
+#: The population of the place a street, a district or an address is in.
+#: None has a size of its own to rank by -- a street has no people, and few
+#: districts are tagged with theirs -- so every Marszałkowska scored alike and
+#: the one in Warszawa came 13th, and Nowa Huta, a district of Kraków, came
+#: after eight villages of the name. Its place's size is what tells them
+#: apart. An address has it so that it keeps its footing beside its street:
+#: with the street alone lifted, "Köln, Henri-Dunant-Straße 26" was the
+#: street and five others before the house.
+PLACE_POPULATION = 'place_population'
+
 ADDRESS_PROPERTIES = {
     # A point, and no extent: an address carries no geometry beyond where it
     # is, which is what makes 8.5 million of them affordable next to 1.9
@@ -165,10 +175,15 @@ ADDRESS_PROPERTIES = {
     'street_name': {'type': 'keyword'},
     'settlement_name': {'type': 'keyword'},
     'postcode': {'type': 'keyword'},
+    PLACE_POPULATION: {'type': 'long'},
     # The slug the house shared with others, where it did: see
     # utils.shared_slugs. The detail endpoint names them all when asked for it.
     SHARED_SLUG: {'type': 'keyword'},
 }
+
+SUBAREA_PROPERTIES = dict(BORDER_PROPERTIES, **{
+    PLACE_POPULATION: {'type': 'long'},
+})
 
 PLACE_PROPERTIES = dict(BORDER_PROPERTIES, **{
     # The district a place drawn as a point is the twin of: see utils.twins.
@@ -177,6 +192,7 @@ PLACE_PROPERTIES = dict(BORDER_PROPERTIES, **{
 
 MULTILINE_PROPERTIES = {
     'length': {'type': 'double'},
+    PLACE_POPULATION: {'type': 'long'},
     'geometry': {'type': 'geo_shape'},
 }
 
@@ -309,6 +325,26 @@ class LocationIndex:
         return {into: {key: sorted(set(values)) for key, values in ids_.items()}
                 for into, ids_ in found.items()}
 
+    def place_populations(self, batch, known=None):
+        """
+        ``{slug: population}`` for the places the rows of ``batch`` are in:
+        one query for a batch of documents, and none for the places already
+        in ``known``, which is added to and returned -- a town's streets come
+        thousands to a batch and one after another. Empty for a type that
+        carries no ``place_population``.
+        """
+        known = {} if known is None else known
+        if PLACE_POPULATION not in self.properties:
+            return known
+        slugs = {pair[1] for obj in batch for pair in (getattr(obj, 'place', None) or [])
+                 if pair and len(pair) > 1 and pair[1]}
+        missing = slugs - set(known)
+        if missing:
+            known.update(dict.fromkeys(missing))
+            known.update(Place.objects.not_merged().filter(
+                slug__in=missing, population__gt=0).values_list('slug', 'population'))
+        return known
+
     def twin_fields(self, ids):
         """
         ``{id: fields}`` for the rows among ``ids`` that are, or have, a
@@ -316,12 +352,12 @@ class LocationIndex:
         """
         return twins_of(self.model.__name__.lower(), ids)
 
-    def document(self, obj, merged=None, twin=None):
+    def document(self, obj, merged=None, twin=None, populations=None):
         """
         Build the OpenSearch document for one model instance.
 
         ``merged``: what ``merged_osm_ids`` found for it; ``twin``: what
-        ``twin_fields`` did.
+        ``twin_fields`` did; ``populations``: what ``place_populations`` did.
         """
         entries, slugs, names = self._ancestry(obj)
         doc = {
@@ -366,6 +402,11 @@ class LocationIndex:
                 doc['population'] = twin['population']
         if 'length' in self.properties:
             doc['length'] = obj.length
+        if PLACE_POPULATION in self.properties:
+            # the largest, where a place lies within another
+            found = [(populations or {}).get(pair[1]) for pair in (getattr(obj, 'place', None) or [])
+                     if pair and len(pair) > 1]
+            doc[PLACE_POPULATION] = max([p for p in found if p], default=None)
         if 'house_number' in self.properties:
             doc['house_number'] = obj.house_number
             doc['house_number_sort'] = obj.house_number_sort
@@ -384,7 +425,7 @@ INDEXES = {
         LocationIndex('countries', Country, 'border', BORDER_PROPERTIES),
         LocationIndex('country-subareas', CountrySubarea, 'border', BORDER_PROPERTIES),
         LocationIndex('places', Place, 'border', PLACE_PROPERTIES),
-        LocationIndex('place-subareas', PlaceSubarea, 'border', BORDER_PROPERTIES),
+        LocationIndex('place-subareas', PlaceSubarea, 'border', SUBAREA_PROPERTIES),
         LocationIndex('streets', Street, 'lines', MULTILINE_PROPERTIES),
         # No geometry field: `center` is on every document already, and an
         # address has nothing else worth indexing.
