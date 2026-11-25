@@ -92,9 +92,21 @@ class FakeTransport:
     retry_on_timeout = True
 
 
-def health(status, active=0, initializing=0, unassigned=0):
+def health(status, active=0, initializing=0, unassigned=0, primaries=None):
+    """
+    A cluster health answer for the one index ``i``.
+
+    ``primaries`` is (active, of); left out, a green or yellow answer has its
+    one primary active and a red one does not, and ``()`` is an index the
+    cluster has not created.
+    """
+    if primaries is None:
+        primaries = (1, 1) if status in ('green', 'yellow') else (0, 1)
+    indices = {'i': {'active_primary_shards': primaries[0],
+                     'number_of_shards': primaries[1]}} if primaries else {}
     return {'status': status, 'active_shards': active,
-            'initializing_shards': initializing, 'unassigned_shards': unassigned}
+            'initializing_shards': initializing, 'unassigned_shards': unassigned,
+            'indices': indices}
 
 
 class FakeCluster:
@@ -110,7 +122,12 @@ class FakeCluster:
         self.polls += 1
         if self.log is not None:
             self.log.append('health')
-        return self.healths[min(self.polls - 1, len(self.healths) - 1)]
+        answer = dict(self.healths[min(self.polls - 1, len(self.healths) - 1)])
+        # what is said of `i` is said of whatever index was asked about
+        said = answer.get('indices') or {}
+        if 'i' in said:
+            answer['indices'] = dict({name: said['i'] for name in index.split(',')}, **said)
+        return answer
 
     def allocation_explain(self):
         self.explained += 1
@@ -301,6 +318,30 @@ class TestWaitingForTheRestore:
         client = FakeClient(healths=[health('yellow', active=6, unassigned=6)])
         assert snapshots.wait_for_restore(['i'], client=client, interval=0) == 'yellow'
 
+    def test_yellow_with_primaries_still_restoring_is_not_enough(self):
+        """
+        A primary being copied back from a snapshot counts as yellow, not red:
+        Poland's pack read yellow with three of its six indexes initialising,
+        and the API answered 503 from under the aliases.
+        """
+        client = FakeClient(healths=[
+            health('yellow', active=0, initializing=1, primaries=(0, 1)),
+            health('yellow', active=0, initializing=1, primaries=(0, 1)),
+            health('green', active=1),
+        ])
+        assert snapshots.wait_for_restore(['i'], client=client, interval=0) == 'green'
+        assert client.cluster.polls == 3
+
+    def test_every_index_is_counted_not_the_total(self):
+        """One index back and another not is not searchable through the aliases."""
+        partly = health('yellow', active=1, initializing=1)
+        partly['indices']['j'] = {'active_primary_shards': 0, 'number_of_shards': 1}
+        done = health('green', active=2)
+        done['indices']['j'] = {'active_primary_shards': 1, 'number_of_shards': 1}
+        client = FakeClient(healths=[partly, done])
+        snapshots.wait_for_restore(['i', 'j'], client=client, interval=0)
+        assert client.cluster.polls == 2
+
     def test_shards_waiting_their_turn_are_not_a_stall(self):
         """Behind the limit on concurrent recoveries, the rest wait unassigned."""
         waiting = [health('red', active=n, initializing=2, unassigned=40 - n) for n in range(30)]
@@ -316,7 +357,7 @@ class TestWaitingForTheRestore:
 
     def test_an_index_never_created_is_a_stall_too(self):
         """The cluster answers red with no shard at all, and would forever."""
-        client = FakeClient(healths=[health('red')])
+        client = FakeClient(healths=[health('red', primaries=())])
         with pytest.raises(RuntimeError, match='stalled with 0 shard'):
             snapshots.wait_for_restore(['i'], client=client, interval=0, stall_polls=3)
 

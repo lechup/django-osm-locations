@@ -377,8 +377,12 @@ def wait_for_restore(indexes, client=None, interval=5, on_progress=None,
     retired at the same moment leaves nothing else to answer. So this is
     waited for before either.
 
-    Searchable is yellow: every primary active. Green would also wait for
-    replicas, which a single-node cluster never allocates.
+    Searchable is every primary active, counted an index at a time. Replicas
+    are not waited for: a single-node cluster never allocates them. The
+    cluster's status does not say it: a primary still being copied back from
+    a snapshot, or waiting its turn to be, counts as yellow rather than red,
+    so a restore reads yellow from its first moment -- Poland's pack was put
+    under the aliases with three of six indexes still initialising.
 
     A shard nobody is recovering does not come back by waiting -- a disk past
     its watermark refuses it -- nor does an index the cluster never created,
@@ -394,13 +398,14 @@ def wait_for_restore(indexes, client=None, interval=5, on_progress=None,
     stalled = 0
     while True:
         # an index the cluster has not created yet reads as red, not an error
-        health = client.cluster.health(index=target, params={'ignore': (404, 408)})
+        health = client.cluster.health(
+            index=target, params={'level': 'indices', 'ignore': (404, 408)})
         status = health.get('status')
         if on_progress:
             active = health.get('active_shards', 0)
             total = active + health.get('initializing_shards', 0) + health.get('unassigned_shards', 0)
             on_progress(active, total, *_recovered_bytes(client, target))
-        if status in ('green', 'yellow'):
+        if _primaries_active(health, indexes):
             return status
         if not health.get('initializing_shards'):
             stalled += 1
@@ -411,6 +416,16 @@ def wait_for_restore(indexes, client=None, interval=5, on_progress=None,
         else:
             stalled = 0
         time.sleep(interval)
+
+
+def _primaries_active(health, indexes):
+    """Whether every one of ``indexes`` exists with all its primaries active."""
+    found = health.get('indices') or {}
+    return all(
+        index in found
+        and found[index].get('active_primary_shards', 0) >= found[index].get('number_of_shards', 1)
+        for index in indexes
+    )
 
 
 def _recovered_bytes(client, target):
