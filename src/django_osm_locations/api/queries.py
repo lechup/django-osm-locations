@@ -100,6 +100,86 @@ def parse_near(value, radius):
     }
 
 
+def parse_point(value, name):
+    """``lon,lat`` -> (lon, lat), or a QueryError naming the parameter."""
+    parts = [part.strip() for part in value.split(',')]
+    if len(parts) != 2:
+        raise QueryError('{} needs 2 comma-separated numbers: lon,lat'.format(name))
+    try:
+        lon, lat = (float(part) for part in parts)
+    except ValueError:
+        raise QueryError('{} values must be numbers'.format(name))
+    if not (-180 <= lon <= 180 and -90 <= lat <= 90):
+        raise QueryError('{} is lon,lat: longitude first, within 180 and 90'.format(name))
+    return lon, lat
+
+
+# How ``prefer`` weighs a result by how far it is from the point given.
+# Nothing within ``offset`` loses anything; at ``scale`` beyond it half of
+# what distance can take is gone; and however far, a result keeps ``floor``
+# of its score. So distance decides between results that are otherwise
+# alike -- the Floriańska of the city the person is in, among the hundred
+# there are -- and cannot bury one that is not: at 0.6 the most it gives is
+# two thirds more, and Warszawa typed in Kraków is still Warszawa, not the
+# hamlet of that name nearer by.
+PREFER = {'scale': '50km', 'offset': '5km', 'floor': 0.6}
+
+
+def prefer_function(value):
+    """``?prefer=lon,lat`` -> a scoring function, or None without it."""
+    if not value:
+        return None
+    lon, lat = parse_point(value, 'prefer')
+    return {'script_score': {'script': {
+        'source': (
+            "doc['center'].size() == 0 ? params.floor : params.floor + (1 - params.floor) * "
+            "decayGeoGauss(params.origin, params.scale, params.offset, 0.5, doc['center'].value)"
+        ),
+        'params': {'origin': '{},{}'.format(lat, lon), 'scale': PREFER['scale'],
+                   'offset': PREFER['offset'], 'floor': PREFER['floor']},
+    }}}
+
+
+#: What a suggestion needs of a result: enough to show it, tell it from its
+#: namesakes, put it on a map and ask for it again.
+SUGGEST_FIELDS = ('type', 'slug', 'name', 'path', 'country', 'center', 'bbox', 'score')
+#: Fields made for the response from others, and what each is made from.
+MADE_FROM = {'path': ('ancestry', 'name'), 'country': ('ancestry', 'slug', 'type'), 'score': ()}
+
+
+def parse_fields(value):
+    """
+    ``?fields=suggest`` or ``?fields=name,slug,center`` -> the fields to answer with.
+
+    None for all of them, as before. A result is a kilobyte and more, most of
+    it what a list of suggestions never shows: the ancestry three times over,
+    every translation, the OSM ids.
+    """
+    names = [part.strip() for part in (value or '').split(',') if part.strip()]
+    if not names:
+        return None
+    if names == ['suggest']:
+        return list(SUGGEST_FIELDS)
+    if 'suggest' in names:
+        raise QueryError('fields is suggest, or a list of field names, not both')
+    return names
+
+
+def source_fields(fields):
+    """
+    What to ask the index for, so that ``fields`` can be answered.
+
+    More than is answered with: the names and the ancestry are what a
+    language is applied to, and what the typo stage reads the first hit by
+    (``found_as_typed``), so the same query finds the same whatever fields
+    are asked for.
+    """
+    wanted = {'name', 'type', 'ancestry', 'names'}
+    for name in fields:
+        wanted.update(MADE_FROM.get(name, (name,)))
+    return sorted(wanted)
+
+
 def parse_page(page, page_size):
     """
     ``?page=`` / ``?page_size=`` -> offset and size.
@@ -686,7 +766,7 @@ def exact_name_functions(q):
     }]
 
 
-def apply_scoring(query, q=None):
+def apply_scoring(query, q=None, prefer=None):
     """
     Scale each hit's score by what kind of location it is, and by its size.
 
@@ -704,6 +784,8 @@ def apply_scoring(query, q=None):
 
     Addresses have no size to tell them apart, and ``q``'s house number does
     it instead: see ``house_number_functions``.
+
+    ``prefer`` is a point the results nearer to are worth more: see ``PREFER``.
     """
     functions = [
         {'filter': {'term': {'type': name}}, 'weight': weight}
@@ -742,6 +824,9 @@ def apply_scoring(query, q=None):
     postcodes = read_query(q).postcodes if q else []
     if postcodes:
         functions.append({'filter': {'terms': {'postcode': postcodes}}, 'weight': POSTCODE_WEIGHT})
+    nearer = prefer_function(prefer)
+    if nearer:
+        functions.append(nearer)
     return {
         'function_score': {
             'query': query,
@@ -847,7 +932,10 @@ def build_body(params, types=None, strict=True, fuzzy=False, relaxed=False):
     if q:
         # only meaningful when something is being scored; without a query the
         # results are sorted by size anyway
-        query = apply_scoring(query, q)
+        query = apply_scoring(query, q, params.get('prefer'))
+    else:
+        # read all the same, so that a mistake in it is reported
+        prefer_function(params.get('prefer'))
 
     body = {
         'query': query,
@@ -858,6 +946,12 @@ def build_body(params, types=None, strict=True, fuzzy=False, relaxed=False):
     }
     if search_timeout():
         body['timeout'] = search_timeout()
-    if not include_geometry:
+    fields = parse_fields(params.get('fields'))
+    if fields is not None:
+        includes = source_fields(fields)
+        if not include_geometry:
+            includes = [name for name in includes if name != 'geometry']
+        body['_source'] = {'includes': includes}
+    elif not include_geometry:
         body['_source'] = {'excludes': LIST_EXCLUDES}
     return body, page, page_size

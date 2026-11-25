@@ -14,8 +14,8 @@ from ..search.indexes import INDEXES
 from ..utils.shared_slugs import SHARED_SLUG
 from .localize import ancestor_keys, apply_language, fetch_ancestor_names
 from .queries import (
-    QueryError, build_body, exclude_types, found_as_typed, fuzzy_words, parse_types, parse_within,
-    read_query, without_addresses_too_early,
+    QueryError, build_body, exclude_types, found_as_typed, fuzzy_words, parse_fields, parse_types,
+    parse_within, read_query, without_addresses_too_early,
 )
 
 
@@ -52,6 +52,26 @@ def format_hit(hit):
     source.pop('id', None)
     source['score'] = hit.get('_score')
     return source
+
+
+def add_country(hit):
+    """
+    The slug of the country a hit is in: with its type and slug, what names it.
+
+    Its own slug for a country. Asked for with ``fields``, where the ancestry
+    it is read from is usually left out.
+    """
+    if hit.get('type') == 'countries':
+        hit['country'] = hit.get('slug')
+        return hit
+    hit['country'] = next((entry.get('slug') for entry in hit.get('ancestry') or []
+                           if entry.get('level') == 'country'), None)
+    return hit
+
+
+def only_fields(hit, fields):
+    """``hit`` with the fields asked for, in that order."""
+    return {name: hit.get(name) for name in fields}
 
 
 def total_of(result):
@@ -104,6 +124,13 @@ class SearchView(APIView):
       has the same slug
     * ``bbox`` -- ``minlon,minlat,maxlon,maxlat``
     * ``near`` + ``radius`` -- ``near=-4.48,54.15&radius=5km``
+    * ``prefer`` -- ``prefer=19.94,50.06``: a point, lon,lat, the results
+      nearer to which rank higher. Nothing is left out for being far, as
+      ``near`` leaves it: of two streets of one name the nearer comes first,
+      and a city typed from the other end of the country is still the city.
+    * ``fields`` -- ``fields=suggest`` answers with type, slug, name, path,
+      country, center, bbox and score, an eighth of a whole result; or a
+      list of the fields wanted, ``fields=name,slug,center``
     * ``order`` -- ``relevance`` (default with ``q``), ``name``, ``size``, or
       ``number`` -- house numbers in walking order, 1, 2, 3, 3 B, 10, 12a;
       the default for a request that is only addresses
@@ -181,6 +208,10 @@ class SearchView(APIView):
         # after the language, so the path is in it too
         for hit in payload.get('results', []):
             add_path(hit)
+        fields = parse_fields(params.get('fields'))
+        if fields is not None:
+            payload['results'] = [only_fields(add_country(hit), fields)
+                                  for hit in payload['results']]
         return Response(payload)
 
 

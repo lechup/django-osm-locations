@@ -131,6 +131,8 @@ Types are `countries`, `country-subareas`, `places`, `place-subareas`,
 | `within` | `?within=douglas` | only inside that ancestor slug; `places:antwerpen` for an ancestor of that type alone |
 | `bbox` | `?bbox=-5,54,-4,55` | `minlon,minlat,maxlon,maxlat` |
 | `near` + `radius` | `?near=-4.4,54.1&radius=5km` | within a distance of a point |
+| `prefer` | `?prefer=19.94,50.06` | rank what is nearer this point (`lon,lat`) higher; nothing is left out |
+| `fields` | `?fields=suggest` | answer with these fields only: `suggest`, or a list such as `name,slug,center` |
 | `admin_level` | `?admin_level=4,6` | only these OSM admin levels |
 | `order` | `?order=name` | `relevance` (default with `q`), `name`, `size`, `number` |
 | `lang` | `?lang=pl` | names in that language where OSM has one, ancestry included |
@@ -207,6 +209,19 @@ typed whole. And the name of the place something is in counts above the rest
 of its ancestry, since a city is often called what its region is: `Calle de
 Granada 28, Madrid` is in Madrid, not in Leganés in the Comunidad de Madrid.
 Among addresses the number typed comes first: `14`, then `14a`, then `142`.
+
+`prefer=lon,lat` is where the person asking is. Of the hundred streets called
+Floriańska the one in their city comes first, which no text can decide.
+Distance takes at most 40% of a score — nothing within 5 km, half of that
+40% at 55 km — so it decides between results otherwise alike and does not bury
+one that is not: `Warszawa` typed in Kraków is still the capital. Unlike
+`near`, it leaves nothing out.
+
+`fields=suggest` answers with `type`, `slug`, `name`, `path`, `country`,
+`center`, `bbox` and `score` — about 320 bytes a result against 1,150, the
+rest being the ancestry three times over, the translations and the OSM ids.
+`country` is the slug of the country the result is in, which with the type and
+slug names it. Any other list of fields can be asked for by name.
 
 A misspelt name is found too: `Warszwa` is Warszawa, and `Marszałkowska
 Warszwa` the street there. That is a stage of its own, asked only when few
