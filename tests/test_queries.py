@@ -557,3 +557,99 @@ class TestBody:
     def test_total_hits_are_tracked(self):
         body, _, _ = build_body({})
         assert body['track_total_hits'] is True
+
+
+class TestPrefer:
+    """A point the nearer results are worth more: a preference, not a filter."""
+
+    def functions(self, **params):
+        return build_body(dict(params, q='florianska'))[0]['query']['function_score']['functions']
+
+    def nearer(self, **params):
+        return [f for f in self.functions(**params) if 'script_score' in f]
+
+    def test_nothing_without_it(self):
+        assert self.nearer() == []
+
+    def test_a_function_and_no_filter(self):
+        body = build_body({'q': 'florianska', 'prefer': '19.94,50.06'})[0]
+        assert len(self.nearer(prefer='19.94,50.06')) == 1
+        assert 'filter' not in body['query']['function_score']['query']['bool']
+
+    def test_the_point_is_given_as_lat_lon(self):
+        params = self.nearer(prefer='19.94, 50.06')[0]['script_score']['script']['params']
+        assert params['origin'] == '50.06,19.94'
+
+    def test_a_far_result_keeps_most_of_its_score(self):
+        from django_osm_locations.api.queries import PREFER
+
+        script = self.nearer(prefer='19.94,50.06')[0]['script_score']['script']
+        assert script['params']['floor'] == PREFER['floor'] >= 0.5
+        assert 'params.floor + (1 - params.floor) * decayGeoGauss' in script['source']
+
+    def test_beside_near_which_still_filters(self):
+        body = build_body({'q': 'florianska', 'prefer': '19.94,50.06',
+                           'near': '19.94,50.06', 'radius': '5km'})[0]
+        inner = body['query']['function_score']['query']['bool']
+        assert 'geo_distance' in inner['filter'][0]
+
+    @pytest.mark.parametrize('value', ['19.94', 'a,b', '19.94,50.06,3', '50.06,190', '19.94,95'])
+    def test_rejects_malformed(self, value):
+        with pytest.raises(QueryError, match='prefer'):
+            build_body({'q': 'florianska', 'prefer': value})
+
+    def test_a_mistake_is_reported_without_a_query_too(self):
+        with pytest.raises(QueryError, match='prefer'):
+            build_body({'prefer': 'here'})
+
+
+class TestFields:
+    def test_everything_but_geometry_by_default(self):
+        assert build_body({'q': 'krak'})[0]['_source'] == {'excludes': ['geometry']}
+
+    def test_suggest_is_a_named_list(self):
+        from django_osm_locations.api.queries import SUGGEST_FIELDS, parse_fields
+
+        assert parse_fields('suggest') == list(SUGGEST_FIELDS)
+        assert parse_fields('name, slug ,center') == ['name', 'slug', 'center']
+        assert parse_fields(None) is None and parse_fields('') is None
+
+    def test_suggest_among_other_names_is_a_mistake(self):
+        with pytest.raises(QueryError, match='fields'):
+            build_body({'q': 'krak', 'fields': 'suggest,osm'})
+
+    def test_the_index_is_asked_for_what_they_are_made_from(self):
+        """And for the names and ancestry, which the language and the typo stage read."""
+        includes = build_body({'q': 'krak', 'fields': 'suggest'})[0]['_source']['includes']
+        assert includes == ['ancestry', 'bbox', 'center', 'name', 'names', 'slug', 'type']
+
+    def test_geometry_only_when_asked_for_twice(self):
+        without = build_body({'fields': 'name,geometry'})[0]['_source']['includes']
+        with_it = build_body({'fields': 'name,geometry', 'geometry': 'true'})[0]['_source']['includes']
+        assert 'geometry' not in without and 'geometry' in with_it
+
+
+class TestFieldsOfAHit:
+    def hit(self):
+        return {'type': 'streets', 'slug': 'florianska-krakow', 'name': 'Floriańska',
+                'names': None, 'score': 3.5,
+                'ancestry': [{'level': 'country', 'slug': 'polska', 'name': 'Polska'},
+                             {'level': 'place', 'slug': 'krakow', 'name': 'Kraków'}]}
+
+    def test_only_those_asked_for_in_that_order(self):
+        from django_osm_locations.api.views import add_country, add_path, only_fields
+
+        hit = only_fields(add_country(add_path(self.hit())), ['name', 'path', 'country', 'score'])
+        assert list(hit.items()) == [
+            ('name', 'Floriańska'), ('path', ['Polska', 'Kraków', 'Floriańska']),
+            ('country', 'polska'), ('score', 3.5)]
+
+    def test_a_country_is_its_own(self):
+        from django_osm_locations.api.views import add_country
+
+        assert add_country({'type': 'countries', 'slug': 'polska'})['country'] == 'polska'
+
+    def test_a_field_the_hit_has_not_is_null(self):
+        from django_osm_locations.api.views import only_fields
+
+        assert only_fields({'name': 'x'}, ['name', 'postcode']) == {'name': 'x', 'postcode': None}

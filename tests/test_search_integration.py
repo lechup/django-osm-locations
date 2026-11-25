@@ -349,3 +349,64 @@ class TestWordsANameLeavesOut:
     @pytest.mark.parametrize('q', ['Osiedle Zgody Kraków', 'os. Zgody Kraków'])
     def test_and_what_leaves_it_out_is_found_when_nothing_has_it(self, client, q):
         assert self.names(client, q) == ['Zgody']
+
+
+class TestPreferAndFields:
+    """Two streets of one name, and where the person asking is."""
+
+    @pytest.fixture(autouse=True)
+    def indexed(self, prefix, opensearch, settings, db):
+        settings.LOCATIONS_OPENSEARCH_INDEX_PREFIX = prefix
+        settings.ROOT_URL = 'testserver'
+        poland, _ = Country.objects.get_or_create(
+            iso2='PL', iso3='POL', un=616, defaults={'name': 'Polska', 'slug': 'polska'})
+        poland.border = MultiPolygon(square(0, 0, 10))
+        poland.save()
+        Place.objects.create(name='Kraków', border=MultiPolygon(square(1, 1)), area=4.0,
+                             population=800000)
+        Place.objects.create(name='Gdańsk', border=MultiPolygon(square(8, 8)), area=4.0,
+                             population=480000)
+        Place.objects.create(name='Gdańsk Mały', border=MultiPolygon(square(1, 3)), area=0.1,
+                             population=90)
+        for town, slug, at in (('Kraków', 'krakow', 1.1), ('Gdańsk', 'gdansk', 8.1)):
+            Street.objects.create(
+                name='Długa',
+                lines=MultiLineString(LineString((at, at), (at + 0.1, at + 0.1))),
+                place=[[town, slug]],
+            )
+        for name in ('countries', 'places', 'streets'):
+            reindex(name, prefix, opensearch)
+
+    def found(self, client, **params):
+        return client.get('/api/search/', params).json()['results']
+
+    @pytest.mark.parametrize('at,town', [('1.15,1.15', 'Kraków'), ('8.15,8.15', 'Gdańsk')])
+    def test_the_nearer_of_two_streets_comes_first(self, client, at, town):
+        streets = self.found(client, q='Długa', type='streets', prefer=at)
+        assert [s['path'][-2] for s in streets] == [town] + [t for t in ('Kraków', 'Gdańsk') if t != town]
+
+    def test_the_far_one_is_still_found(self, client):
+        assert len(self.found(client, q='Długa', type='streets', prefer='1.15,1.15')) == 2
+
+    def test_a_city_typed_far_from_it_is_still_the_city(self, client):
+        """Asked from beside Gdańsk Mały, Gdańsk is the city of 480,000."""
+        assert self.found(client, q='Gdańsk', prefer='1.2,3.2')[0]['name'] == 'Gdańsk'
+
+    def test_a_mistake_in_it_is_a_400(self, client):
+        assert client.get('/api/search/', {'q': 'Długa', 'prefer': 'here'}).status_code == 400
+
+    def test_suggest_fields(self, client):
+        street = self.found(client, q='Długa Kraków', type='streets', fields='suggest')[0]
+        assert list(street) == ['type', 'slug', 'name', 'path', 'country', 'center', 'bbox', 'score']
+        assert street['path'][-2:] == ['Kraków', 'Długa']
+        whole = self.found(client, q='Długa Kraków', type='streets')[0]
+        assert all(street[name] == whole[name] for name in ('type', 'slug', 'name', 'path', 'center'))
+
+    def test_fields_named(self, client):
+        whole = self.found(client, q='Długa Kraków', type='streets')[0]
+        assert self.found(client, q='Długa Kraków', type='streets', fields='name,slug') == [
+            {'name': 'Długa', 'slug': whole['slug']}]
+
+    def test_a_typo_is_found_with_fewer_fields_as_with_all(self, client):
+        assert [h['name'] for h in self.found(client, q='Gdansk Maly', fields='name')] == \
+               [h['name'] for h in self.found(client, q='Gdansk Maly')]
