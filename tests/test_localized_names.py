@@ -12,6 +12,7 @@ from django_osm_locations.api.localize import (
     LEVEL_TO_INDEX,
     ancestor_keys,
     apply_language,
+    fetch_ancestor_names,
     localized_name,
 )
 from django_osm_locations.management.commands.importers.base import (
@@ -180,3 +181,108 @@ class TestAncestry:
         before = hits[0]['ancestry_names'][:]
         apply_language(hits, None, {})
         assert hits[0]['ancestry_names'] == before
+
+
+class TestAnAddressKeepsItsName:
+    """
+    With lang=pl "Marszałkowska 81" came back as "Żabka": an address carries
+    the translations of whatever was mapped at it, and they are not its name.
+    """
+
+    def _address(self):
+        return {'type': 'addresses', 'name': 'Marszałkowska 81', 'names': {'pl': 'Żabka'},
+                'ancestry': [{'level': 'country', 'slug': 'polska', 'name': 'Polska'}]}
+
+    def test_it_is_not_renamed(self):
+        hit = self._address()
+        apply_language([hit], 'pl', {})
+        assert hit['name'] == 'Marszałkowska 81'
+
+    def test_its_ancestry_is_still_translated(self):
+        hit = self._address()
+        apply_language([hit], 'en', {('countries', 'polska'): 'Poland'})
+        assert hit['name'] == 'Marszałkowska 81'
+        assert hit['ancestry_names'] == ['Poland']
+
+    def test_anything_else_is(self):
+        hit = {'type': 'streets', 'name': 'Marszałkowska', 'names': {'en': 'Marshal Street'}}
+        apply_language([hit], 'en', {})
+        assert hit['name'] == 'Marshal Street'
+
+
+class FakeSearch:
+    """Answers a slug query with the names it was given, and counts the asking."""
+
+    def __init__(self, names, fail=False):
+        self.names, self.fail, self.asked = names, fail, []
+
+    def search(self, index, body, ignore_unavailable):
+        slugs = body['query']['terms']['slug']
+        self.asked.append((index, sorted(slugs)))
+        if self.fail:
+            raise RuntimeError('no such index')
+        return {'hits': {'hits': [
+            {'_source': {'slug': slug, 'names': self.names[slug]}}
+            for slug in slugs if slug in self.names]}}
+
+
+class TestAncestorNamesAreRemembered:
+    """
+    An ancestor's document is read whole to give its names, border and all,
+    and Poland is an ancestor of every hit in Poland: lang=pl took the median
+    suggestion from 10 ms to 190 ms.
+    """
+
+    KEYS = {('countries', 'polska'), ('places', 'krakow')}
+    NAMES = {'polska': {'en': 'Poland', 'de': 'Polen'}, 'krakow': {'de': 'Krakau'}}
+
+    @pytest.fixture(autouse=True)
+    def empty_cache(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        yield
+        cache.clear()
+
+    def test_asked_once(self):
+        client = FakeSearch(self.NAMES)
+        first = fetch_ancestor_names(client, self.KEYS, 'en', 'p')
+        second = fetch_ancestor_names(client, self.KEYS, 'en', 'p')
+        assert first == second == {('countries', 'polska'): 'Poland'}
+        assert len(client.asked) == 2    # an index each, the first time only
+
+    def test_an_ancestor_without_a_translation_is_remembered_as_that(self):
+        client = FakeSearch(self.NAMES)
+        fetch_ancestor_names(client, {('places', 'krakow')}, 'en', 'p')
+        assert fetch_ancestor_names(client, {('places', 'krakow')}, 'en', 'p') == {}
+        assert len(client.asked) == 1
+
+    def test_only_what_is_not_known_is_asked(self):
+        client = FakeSearch(self.NAMES)
+        fetch_ancestor_names(client, {('countries', 'polska')}, 'de', 'p')
+        found = fetch_ancestor_names(client, self.KEYS, 'de', 'p')
+        assert found == {('countries', 'polska'): 'Polen', ('places', 'krakow'): 'Krakau'}
+        assert client.asked == [('p-countries', ['polska']), ('p-places', ['krakow'])]
+
+    def test_each_language_and_each_prefix_on_its_own(self):
+        client = FakeSearch(self.NAMES)
+        assert fetch_ancestor_names(client, {('countries', 'polska')}, 'en', 'p') == {
+            ('countries', 'polska'): 'Poland'}
+        assert fetch_ancestor_names(client, {('countries', 'polska')}, 'de', 'p') == {
+            ('countries', 'polska'): 'Polen'}
+        fetch_ancestor_names(client, {('countries', 'polska')}, 'de', 'other')
+        assert len(client.asked) == 3
+
+    def test_a_failure_is_not_remembered(self):
+        broken = FakeSearch(self.NAMES, fail=True)
+        assert fetch_ancestor_names(broken, {('countries', 'polska')}, 'en', 'p') == {}
+        working = FakeSearch(self.NAMES)
+        assert fetch_ancestor_names(working, {('countries', 'polska')}, 'en', 'p') == {
+            ('countries', 'polska'): 'Poland'}
+
+    def test_no_timeout_asks_each_time(self, settings):
+        settings.LOCATIONS_ANCESTOR_NAMES_CACHE_TIMEOUT = 0
+        client = FakeSearch(self.NAMES)
+        fetch_ancestor_names(client, {('countries', 'polska')}, 'en', 'p')
+        fetch_ancestor_names(client, {('countries', 'polska')}, 'en', 'p')
+        assert len(client.asked) == 2

@@ -70,3 +70,13 @@ def get_reserved_subdomains():
     if reserved is None:
         reserved = {'www', 'api', 'admin', 'static', 'media', 'mail'}
     return {str(name).lower() for name in reserved}
+
+
+def ancestor_names_cache_timeout():
+    """
+    Seconds a translated ancestor name is remembered by the API.
+
+    Set ``LOCATIONS_ANCESTOR_NAMES_CACHE_TIMEOUT``. An hour by default: the
+    names change only when a newer pack is loaded. 0 asks the index each time.
+    """
+    return int(getattr(settings, 'LOCATIONS_ANCESTOR_NAMES_CACHE_TIMEOUT', 3600))

@@ -581,9 +581,9 @@ GET /api/addresses/?within=florianska-krakow&q=14          # that street's 14, 1
 ```
 
 What is typed around an address and is no word of a name is read for what it
-is: `ul.` is dropped, `al.`, `os.` and `pl.` are not required — nor are
-`Aleja`, `Osiedle` and `Plac` typed whole, which a name leaves out as often as
-it carries them — a postcode (`31-019`, or `22299` beside a house number) ranks
+is: `ul.` is dropped; `al.`, `os.` and `pl.`, and `Aleja`, `Osiedle` and `Plac`
+typed whole, are required only while something has them, since a name leaves
+them out as often as it carries them; a postcode (`31-019`, or `22299` beside a house number) ranks
 the addresses that have it first, and a flat (`14/3`, `14 m. 3`) finds house
 14 — or a house numbered `14/3`, ahead of it, where there is one. A letter
 after the slash is no flat: `15/a` is the house of that number.
@@ -621,6 +621,15 @@ that carry translations.
 Polish extract at 49,118 occurrences, ahead of every real one, and
 `name:prefix`, `name:adjective` and `name:etymology` sit in the same
 namespace; they are filtered out before anything is stored.
+
+An address keeps its name in every language: it is named for its street and
+number, and the translations on it are those of the shop or hotel mapped
+there. Its ancestry is translated like any other.
+
+The ancestors' names are looked up once and remembered for
+`LOCATIONS_ANCESTOR_NAMES_CACHE_TIMEOUT` seconds in Django's default cache: an
+ancestor's document is read whole to give them, border included, and asked on
+every request that took a suggestion from 10 ms to 190 ms.
 
 Translations are stored but not indexed field-by-field — a mapping field per
 language would be 375 of them — and one `names_all` field makes them all
@@ -861,6 +870,7 @@ of the index.
 | `LOCATIONS_WRITE_BATCH_SIZE` | `1000` | Rows per bulk insert/update during import |
 | `LOCATIONS_SHOW_PROGRESS` | auto | Force progress bars on or off |
 | `LOCATIONS_TYPE_BOOSTS` | places > subareas > streets | Relative search weight per location type |
+| `LOCATIONS_ANCESTOR_NAMES_CACHE_TIMEOUT` | `3600` | Seconds a translated ancestor name is remembered; `0` asks the index each time |
 | `LOCATIONS_SEARCH_TIMEOUT` | `'2s'` | What a search may take before it answers with what it has; `None` for no limit |
 | `LOCATIONS_OPENSEARCH_HOSTS` | `['http://localhost:9200']` | Where OpenSearch lives |
 | `LOCATIONS_OPENSEARCH_INDEX_PREFIX` | `locations` | Prefix for every index and alias |
