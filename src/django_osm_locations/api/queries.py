@@ -10,6 +10,7 @@ from django.conf import settings
 
 from ..search.indexes import INDEXES
 from ..utils.twins import TWIN_OF
+from .street_words import fold, read_street_words
 
 MAX_PAGE_SIZE = 200
 DEFAULT_PAGE_SIZE = 20
@@ -192,13 +193,16 @@ HOUSE_NUMBER_LEADING_DIGITS = re.compile(r'\d+')
 #
 # "ul." is never part of a name: OSM has Floriańska, not ul. Floriańska.
 STREET_WORD = re.compile(r'(?<!\w)(?:ul\.|ulica(?!\w)|ul(?=\s))\s*', re.IGNORECASE)
-# These stand for a word the name may carry -- Aleja Ignacego Daszyńskiego,
-# Osiedle Tysiąclecia, Plac Defilad -- or may leave out, so they are written
-# out for scoring and not required.
-ABBREVIATION = re.compile(r'(?<!\w)(al|os|pl)\.\s*', re.IGNORECASE)
-ABBREVIATIONS = {'al': 'aleja', 'os': 'osiedle', 'pl': 'plac'}
-# 31-019, the Polish form. Five digits alone are left to be house numbers.
+# The words of a street's kind that are abbreviated -- al., os., pl., and
+# Str., Rd, Ave, bd, v.le in other languages -- are read by
+# street_words.read_street_words: written out for scoring, and not required
+# where the name may leave the word out or the abbreviation is not its start.
+# 31-019, the Polish form.
 POSTCODE = re.compile(r'(?<!\w)\d{2}-\d{3}(?!\w)')
+# 22299, the form of Germany, France, Italy, Spain and the United States --
+# and a house number there as well, so five digits are a postcode only
+# beside another number: see five_digit_postcodes.
+FIVE_DIGITS = re.compile(r'(?<![\w/-])\d{5}(?![\w/-])')
 # The flat after the house, "14 m. 3", "14 m 3", "14 lok. 3": dropped, since
 # no address goes down to the flat.
 FLAT = re.compile(r'(?<!\w)(\d[\w/-]*)\s+(?:m|lok|lokal|mieszk)\.?\s*\d[\w/-]*(?!\w)', re.IGNORECASE)
@@ -214,11 +218,37 @@ HOUSE_PART = re.compile(r'(?<!\w)(\d+[^\W\d_]?)/\d[\w/-]*')
 #: ``scored`` -- what ranks: the abbreviations written out, the number whole
 #: ``numbers`` -- the house numbers, as typed
 #: ``postcodes`` -- 31-019
-QueryReading = namedtuple('QueryReading', 'required scored numbers postcodes')
+#: ``variants`` -- ``scored`` and the other ways its abbreviations read:
+#:     "Pariser Pl." is Pariser plac, Pariser Platz and Pariser Place
+#: ``also`` -- words that score beside ``scored``: those of the other
+#:     variants, and an abbreviation typed without a dot, which may be the
+#:     start of a name instead -- "Rd" of Rdzawa
+#: ``relaxed`` -- ``required`` without the words a name may leave out,
+#:     Osiedle, Aleja and Plac, abbreviated or whole; None where it has none
+QueryReading = namedtuple('QueryReading',
+                          'required scored numbers postcodes variants also relaxed',
+                          defaults=((), (), None))
 
 
 def _squash(text):
     return re.sub(r'\s+,', ',', ' '.join(text.split())).strip(' ,')
+
+
+def five_digit_postcodes(text):
+    """
+    The five-digit numbers of ``text`` that are postcodes, as matches.
+
+    "Sierichstraße 183, 22299 Hamburg" has a house and a postcode, and read
+    as two house numbers it required a house numbered 22299: nothing had
+    every word, and the answer was whatever had any. Alone, five digits stay
+    a house number -- "12345 Main Street" -- and where every number has five,
+    the last is the postcode, as an American address ends.
+    """
+    numbers = list(HOUSE_NUMBER.finditer(text))
+    five = list(FIVE_DIGITS.finditer(text))
+    if len(numbers) < 2 or not five:
+        return []
+    return five if len(five) < len(numbers) else five[-1:]
 
 
 def read_query(q):
@@ -226,15 +256,35 @@ def read_query(q):
     text = q or ''
     postcodes = POSTCODE.findall(text)
     text = POSTCODE.sub(' ', text)
+    for match in reversed(five_digit_postcodes(text)):
+        postcodes.append(match.group())
+        text = text[:match.start()] + ' ' + text[match.end():]
     text = FLAT.sub(r'\1', text)
     text = STREET_WORD.sub(' ', text)
-    scored = _squash(ABBREVIATION.sub(lambda m: ABBREVIATIONS[m.group(1).lower()] + ' ', text))
-    required = _squash(HOUSE_PART.sub(r'\1', ABBREVIATION.sub(' ', text)))
+    kept, relaxed, variants, typed = read_street_words(text)
+    variants = [_squash(variant) for variant in variants]
+    scored = variants[0]
+    required = _squash(HOUSE_PART.sub(r'\1', kept))
+    relaxed = _squash(HOUSE_PART.sub(r'\1', relaxed))
     if not required:
         # "ul." or a postcode alone: nothing of a name is left to require,
         # and the query as typed is a better answer than none
         required = scored = _squash(q or '')
-    return QueryReading(required, scored, HOUSE_NUMBER.findall(scored), postcodes)
+        variants, typed = [scored], []
+    if not relaxed or relaxed == required or not any(c.isalpha() for c in relaxed):
+        relaxed = None
+    known = set(_words(scored))
+    also = []
+    for word in [w for variant in variants[1:] for w in _words(variant)] + typed:
+        if word not in known:
+            known.add(word)
+            also.append(word)
+    return QueryReading(required, scored, HOUSE_NUMBER.findall(scored), postcodes,
+                        tuple(variants), tuple(also), relaxed)
+
+
+def _words(text):
+    return [word for word in re.split(r'[\s,]+', text or '') if word]
 
 
 # What a word found whole adds, against the same word found as a prefix.
@@ -267,8 +317,78 @@ def word_runs(text, longest=EXACT_RUN_WORDS):
     return runs
 
 
+# How far a word may be from the one meant, in the stage for typos: one
+# letter in a word of three to five, two in a longer one, none in a shorter.
+# The first letter is taken as typed, which is what keeps the stage quick --
+# without it every word of the index is a candidate -- and people get it
+# right.
+FUZZINESS = 'AUTO'
+FUZZY_PREFIX_LENGTH = 1
+# What a misspelt match is worth against one as typed, both in one query.
+FUZZY_BOOST = 0.5
+
+
+def fuzzy_words(q):
+    """The words of ``q`` the typo stage looks for: all but the house numbers."""
+    reading = read_query(q)
+    return [word for word in _words(reading.relaxed or reading.required)
+            if not HOUSE_NUMBER.fullmatch(word)]
+
+
+def fuzzy_clause(word):
+    """``word`` as the start of a word, as every stage finds it, or misspelt whole."""
+    return {'bool': {'minimum_should_match': 1, 'should': [
+        {'multi_match': {
+            'query': word,
+            'fields': ['name', 'ancestry_names', 'names_all'],
+            'type': 'best_fields',
+        }},
+        {'multi_match': {
+            'query': word,
+            'fields': ['name.words^2', 'ancestry_names.words', 'names_all.words^0.5'],
+            'type': 'best_fields',
+            'fuzziness': FUZZINESS,
+            'prefix_length': FUZZY_PREFIX_LENGTH,
+        }},
+    ]}}
+
+
+def found_as_typed(q, source):
+    """
+    Whether ``source``, a hit, has the words of ``q`` whole, so none is a typo.
+
+    The last of several words may be the start of one, still being typed. A
+    single word may not: "Szczecn" is the start of Szczecno, and that is how
+    a misspelt Szczecin found a village.
+    """
+    words = [fold(word) for word in fuzzy_words(q)]
+    if not words:
+        return True
+    texts = [source.get('name')] + [entry.get('name') for entry in source.get('ancestry') or []]
+    texts.extend((source.get('names') or {}).values())
+    have = {word for text in texts if text for word in re.findall(r'\w+', fold(text))}
+    whole, last = (words[:-1], words[-1]) if len(words) > 1 else (words, None)
+    if any(word not in have for part in whole for word in re.findall(r'\w+', part)):
+        return False
+    return last is None or any(word.startswith(last) for word in have)
+
+
+def strict_clause(reading):
+    """Every word required, each in whichever of the name fields holds it."""
+    return {
+        'multi_match': {
+            'query': reading.required,
+            # one analyzer across the three, so each word may be found in
+            # whichever of them holds it
+            'fields': ['name', 'ancestry_names', 'names_all'],
+            'type': 'cross_fields',
+            'operator': 'and',
+        }
+    }
+
+
 def build_query(q=None, within=None, bbox=None, near=None, radius=None,
-                admin_level=None, strict=True):
+                admin_level=None, strict=True, fuzzy=False, relaxed=False):
     """
     Assemble the bool query.
 
@@ -285,28 +405,37 @@ def build_query(q=None, within=None, bbox=None, near=None, radius=None,
 
     What is required and what scores are read from ``q`` by ``read_query``:
     "ul. Floriańska 14/3, 31-019 Kraków" requires Floriańska, 14 and Kraków.
+
+    ``relaxed``: a strict stage without the words a name may leave out. "os.
+    Urocze 5" is first asked as Osiedle Urocze, found as the start of the
+    word, and only when nothing has that as Urocze: required from the start
+    it was not, and "Plac Nowy, Kraków" found the village Nowy Kraków.
+
+    ``fuzzy``: the stage for typos, between the two. Every word still has to
+    be found, but misspelt will do -- "Warszwa", "Marszałkowska Warszwa".
+    What the strict stage finds is found here too and scored as there, with
+    the misspelt matches among it at half their score, so one answer is
+    ranked rather than two put end to end: "Hambrug" is Hamburg before the
+    street Hambrüggeweg. Not for addresses: a misspelt street is found as a
+    street, and its houses would be a hundred more of the same. See
+    ``SearchView``.
     """
     must, should, filters = [], [], []
     reading = read_query(q) if q else None
+    if reading and relaxed and reading.relaxed:
+        # Osiedle, Aleja and Plac, however typed, are no longer required:
+        # nothing had them, and the name is as often written without
+        reading = reading._replace(required=reading.relaxed)
 
     if q and strict:
-        must.append({
-            'multi_match': {
-                'query': reading.required,
-                # one analyzer across the three, so each word may be found in
-                # whichever of them holds it
-                'fields': ['name', 'ancestry_names', 'names_all'],
-                'type': 'cross_fields',
-                'operator': 'and',
-            }
-        })
+        must.append(strict_clause(reading))
 
     if q:
         (should if strict else must).append({
             'multi_match': {
                 # relaxed, any word of what is required will do: a flat
                 # number would find every house numbered 3
-                'query': reading.scored if strict else reading.required,
+                'query': ' '.join((reading.scored,) + reading.also) if strict else reading.required,
                 # the name matters most, its unfolded form more than the
                 # n-grammed one, and ancestry lets "krakow florianska" work.
                 # names_all sits below both so a native-name match still wins:
@@ -333,6 +462,16 @@ def build_query(q=None, within=None, bbox=None, near=None, radius=None,
                 'boost': WHOLE_WORD_BOOST,
             }
         })
+
+    if q and fuzzy and fuzzy_words(q):
+        as_typed = {'bool': {'must': must, 'should': should}}
+        misspelt = {'bool': {
+            'must': [fuzzy_clause(word) for word in fuzzy_words(q)],
+            'must_not': [{'term': {'type': 'addresses'}}],
+            'boost': FUZZY_BOOST,
+        }}
+        must = [{'bool': {'should': [as_typed, misspelt], 'minimum_should_match': 1}}]
+        should = []
 
     filters.extend(parse_within(within))
 
@@ -531,8 +670,12 @@ def exact_name_functions(q):
     whole query, which name.exact weighs already: typed whole, "Vila" is as
     likely the start of Vila Nova de Gaia as the village called Vila.
     """
-    runs = word_runs(read_query(q).scored) if q else []
-    runs = [run for run in runs if run != whole_run(q)]
+    runs = []
+    for variant in (read_query(q).variants if q else ()):
+        # "Berliner Str. Potsdam" is tried as Berliner Straße, and "Pariser
+        # Pl." as Pariser plac, Platz and Place
+        whole = ' '.join(_words(variant))
+        runs.extend(run for run in word_runs(variant) if run != whole and run not in runs)
     if not runs:
         return []
     return [{
@@ -643,7 +786,38 @@ def build_sort(order, has_query, types=None):
     return list(SIZE_SORT)
 
 
-def build_body(params, types=None, strict=True):
+# Below this many letters, and with no digit, a query is the start of a
+# name and no address is meant yet: "Ma" is the first two letters of some
+# 400,000 house names in Poland and Germany, and finding five of them took a
+# second -- the median with addresses was 990 ms, against 65 ms without.
+ADDRESS_MIN_LETTERS = 3
+
+
+def without_addresses_too_early(names, q):
+    """
+    ``names`` without addresses while ``q`` is too short to mean one.
+
+    Only where something else is searched as well: a request for addresses
+    alone is answered, whatever it costs.
+    """
+    if not q or 'addresses' not in names or len(names) == 1:
+        return list(names)
+    if any(c.isdigit() for c in q) or sum(c.isalpha() for c in q) >= ADDRESS_MIN_LETTERS:
+        return list(names)
+    return [name for name in names if name != 'addresses']
+
+
+# What a search may take before OpenSearch answers with what it has. A
+# suggestion that arrives after the next letter was typed is of no use.
+# Override with LOCATIONS_SEARCH_TIMEOUT; None for no limit.
+DEFAULT_SEARCH_TIMEOUT = '2s'
+
+
+def search_timeout():
+    return getattr(settings, 'LOCATIONS_SEARCH_TIMEOUT', DEFAULT_SEARCH_TIMEOUT)
+
+
+def build_body(params, types=None, strict=True, fuzzy=False, relaxed=False):
     """
     Turn a request's query parameters into a full search body.
 
@@ -663,6 +837,8 @@ def build_body(params, types=None, strict=True):
         radius=params.get('radius'),
         admin_level=params.get('admin_level'),
         strict=strict,
+        fuzzy=fuzzy,
+        relaxed=relaxed,
     )
     if q and (types is None or 'place-subareas' in types):
         # a place drawn as a point inside the district of its name is that
@@ -680,6 +856,8 @@ def build_body(params, types=None, strict=True):
         'size': page_size,
         'track_total_hits': True,
     }
+    if search_timeout():
+        body['timeout'] = search_timeout()
     if not include_geometry:
         body['_source'] = {'excludes': LIST_EXCLUDES}
     return body, page, page_size

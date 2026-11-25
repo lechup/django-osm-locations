@@ -13,7 +13,10 @@ from ..search.client import get_client, get_index_prefix
 from ..search.indexes import INDEXES
 from ..utils.shared_slugs import SHARED_SLUG
 from .localize import ancestor_keys, apply_language, fetch_ancestor_names
-from .queries import QueryError, build_body, exclude_types, parse_types, parse_within
+from .queries import (
+    QueryError, build_body, exclude_types, found_as_typed, fuzzy_words, parse_types, parse_within,
+    read_query, without_addresses_too_early,
+)
 
 
 def add_path(hit):
@@ -51,16 +54,31 @@ def format_hit(hit):
     return source
 
 
-def format_response(result, page, page_size):
+def total_of(result):
     total = result.get('hits', {}).get('total', {})
-    total = total.get('value', 0) if isinstance(total, dict) else int(total or 0)
+    return total.get('value', 0) if isinstance(total, dict) else int(total or 0)
+
+
+def format_response(result, page, page_size):
     hits = result.get('hits', {}).get('hits', [])
-    return {
-        'total': total,
+    payload = {
+        'total': total_of(result),
         'page': page,
         'page_size': page_size,
         'results': [format_hit(hit) for hit in hits],
     }
+    if result.get('timed_out'):
+        # what was found in the time allowed, and not all there is
+        payload['timed_out'] = True
+    return payload
+
+
+#: With this many hits or fewer, the strict stage is followed by the one for
+#: typos. None is the plain case -- "Warszwa" is the start of nothing -- but a
+#: misspelt name is often the start of some other: "Szczecn" of the village
+#: Szczecno and so of the eleven things in it, "Hambrug" of a street called
+#: Hambrüggeweg, and that was all the answer there was.
+FEW_HITS = 20
 
 
 class SearchView(APIView):
@@ -69,7 +87,12 @@ class SearchView(APIView):
 
     Parameters:
 
-    * ``q`` -- free text, prefix matched against the name and ancestry
+    * ``q`` -- free text, prefix matched against the name and ancestry. When
+      few results have every word as typed, and the best of them only as
+      the start of another word, those that have a word misspelt are ranked
+      among them -- "Warszwa" finds Warszawa -- addresses aside. With
+      one or two letters and no digit, addresses are not searched unless
+      they are all that is asked for.
     * ``type`` -- comma separated: countries, country-subareas, places,
       place-subareas, streets, addresses
     * ``exclude_type`` -- comma separated, the types to leave out:
@@ -98,6 +121,7 @@ class SearchView(APIView):
         try:
             names = exclude_types(self.location_types or parse_types(params.get('type')),
                                   params.get('exclude_type'))
+            names = without_addresses_too_early(names, params.get('q'))
             body, page, page_size = build_body(params, names)
         except QueryError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -122,6 +146,19 @@ class SearchView(APIView):
             ignore_unavailable=True,
             **search_kwargs
         )
+        relaxed = False
+        if params.get('q') and not total_of(result) and read_query(params['q']).relaxed:
+            # nothing has Osiedle, Aleja or Plac with the rest: without it
+            relaxed = True
+            body, page, page_size = build_body(params, names, relaxed=True)
+            result = client.search(
+                index=','.join(aliases),
+                body=body,
+                ignore_unavailable=True,
+                **search_kwargs
+            )
+        result = self.with_typos(client, result, params, names, aliases, page, page_size,
+                                 search_kwargs, relaxed)
         if params.get('q') and not result.get('hits', {}).get('hits') and page == 1:
             # nothing has every word: a typo, or a word the data does not
             # know -- answer with what has any of them, as before
@@ -145,6 +182,35 @@ class SearchView(APIView):
         for hit in payload.get('results', []):
             add_path(hit)
         return Response(payload)
+
+
+    @staticmethod
+    def with_typos(client, result, params, names, aliases, page, page_size, search_kwargs,
+                   relaxed=False):
+        """
+        ``result``, or the answer of the typo stage where that has more.
+
+        Asked only when few have every word as typed, and the first of those
+        does not have them whole: "Marszałkowska Warszawa" is one street and
+        no typo, and is not searched twice.
+        """
+        q = params.get('q')
+        if not q or total_of(result) > FEW_HITS or names == ['addresses'] or not fuzzy_words(q):
+            return result
+        first = result
+        if page > 1 and total_of(result):
+            # the same decision on every page: by the first hit of the first
+            body, _, _ = build_body(dict(params.items(), page=1, page_size=1), names,
+                                    relaxed=relaxed)
+            first = client.search(index=','.join(aliases), body=body,
+                                  ignore_unavailable=True, **search_kwargs)
+        top = first.get('hits', {}).get('hits') or []
+        if top and found_as_typed(q, top[0].get('_source') or {}):
+            return result
+        body, _, _ = build_body(params, names, fuzzy=True, relaxed=True)
+        found = client.search(index=','.join(aliases), body=body,
+                              ignore_unavailable=True, **search_kwargs)
+        return found if total_of(found) > total_of(result) else result
 
 
 def type_view(name):
