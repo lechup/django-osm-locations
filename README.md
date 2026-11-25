@@ -196,7 +196,11 @@ Krakuszowice. Two multiplicative factors fix that:
   sharing its name (Poland has both a city and a county called Gdańsk).
   Override with `LOCATIONS_TYPE_BOOSTS`.
 - **size** — population where OSM provides it, area otherwise, both damped by a
-  logarithm so size nudges the order rather than dictating it.
+  logarithm so size nudges the order rather than dictating it. A street has
+  neither and few districts have a population, so they rank by that of the
+  place they are in (`place_population` in the index): `Marszałkowska` is
+  Warszawa's first, and `Nowa Huta` the district of Kraków before the villages
+  of the name.
 
 Both apply only when there is a `q`; without one, results are sorted by size
 anyway.
@@ -566,6 +570,12 @@ their settlement, against 0.6% of roads carrying `addr:city` themselves.
 GET /api/addresses/?within=lakowa-gdansk        # a street, in walking order
 GET /api/search/?q=Łąkowa 5
 ```
+
+An address is named for what its number hangs on: the street, or without one
+the `addr:place` — a village, or an estate numbered without streets, as much
+of Nowa Huta is: `Osiedle Urocze 1`. The town in `addr:city` is its
+settlement, not its name. It carries no translations: the `name:*` tags of
+what is mapped at an address belong to the shop or the hotel.
 
 Ordering is by house number by default for an addresses-only request, because
 an address has no size worth sorting by. `?order=number` asks for it anywhere.

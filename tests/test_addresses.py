@@ -49,6 +49,28 @@ class TestWhatIsStored:
         assert d['name'] == 'Kowale 12'
         assert d['settlement_name'] == 'Kowale'
 
+    def test_on_an_estate_it_is_named_by_the_estate_and_not_the_town(self):
+        """Tagged with both, "Osiedle Urocze 1" in Kraków was "Kraków 1"."""
+        d = BaseImporter._address_defaults(
+            {'addr:housenumber': '1', 'addr:place': 'Osiedle Urocze', 'addr:city': 'Kraków'})
+        assert d['name'] == 'Osiedle Urocze 1'
+        assert d['street_name'] == ''
+        assert d['settlement_name'] == 'Kraków'
+
+    def test_a_street_still_comes_before_either(self):
+        d = BaseImporter._address_defaults(
+            {'addr:housenumber': '1', 'addr:street': 'Łąkowa', 'addr:place': 'Osiedle Urocze',
+             'addr:city': 'Kraków'})
+        assert d['name'] == 'Łąkowa 1'
+
+    def test_the_names_of_what_is_mapped_there_are_not_the_addresss(self):
+        """A shop's name:pl made "Marszałkowska 81" read "Żabka" in Polish."""
+        d = BaseImporter._address_defaults(
+            {'addr:housenumber': '81', 'addr:street': 'Marszałkowska', 'name': 'Żabka',
+             'name:pl': 'Żabka', 'name:en': 'Zabka'})
+        assert d['name'] == 'Marszałkowska 81'
+        assert d['names'] == {}
+
     def test_addr_place_is_a_settlement_too(self):
         d = BaseImporter._address_defaults(
             {'addr:housenumber': '1', 'addr:street': 'X', 'addr:place': 'Kowale'})

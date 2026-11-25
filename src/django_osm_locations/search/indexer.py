@@ -164,14 +164,17 @@ class Reindexer:
         ))
         # a batch at a time, so the OSM ids of what was merged into each row
         # are one query per batch rather than one per row
+        populations = {}
         for batch in iter(lambda: list(itertools.islice(rows, self.batch_size)), []):
             merged = self.index.merged_osm_ids([obj.id for obj in batch])
             twins = self.index.twin_fields([obj.id for obj in batch])
+            populations = self.index.place_populations(batch, populations)
             for obj in batch:
                 yield {
                     '_index': self.index_name,
                     '_id': obj.id,
-                    '_source': self.index.document(obj, merged.get(obj.id), twins.get(obj.id)),
+                    '_source': self.index.document(obj, merged.get(obj.id), twins.get(obj.id),
+                                                   populations),
                 }
 
     def populate(self, total=None):
@@ -234,8 +237,10 @@ class Reindexer:
         indexed = []
         merged = self.index.merged_osm_ids(list(reasons))
         twins = self.index.twin_fields(list(reasons))
-        for obj in self.queryset().filter(pk__in=list(reasons)):
-            document = self.index.document(obj, merged.get(obj.id), twins.get(obj.id))
+        refused_rows = list(self.queryset().filter(pk__in=list(reasons)))
+        populations = self.index.place_populations(refused_rows)
+        for obj in refused_rows:
+            document = self.index.document(obj, merged.get(obj.id), twins.get(obj.id), populations)
             document['geometry'] = None
             self.client.index(index=self.index_name, id=obj.id, body=document)
             indexed.append((obj.id, obj.name, reasons[obj.id]))

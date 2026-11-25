@@ -410,3 +410,49 @@ class TestPreferAndFields:
     def test_a_typo_is_found_with_fewer_fields_as_with_all(self, client):
         assert [h['name'] for h in self.found(client, q='Gdansk Maly', fields='name')] == \
                [h['name'] for h in self.found(client, q='Gdansk Maly')]
+
+
+class TestTheSizeOfThePlaceItIsIn:
+    """
+    "Marszałkowska" was Warszawa's 13th, behind twelve of the name that
+    scored the same, and "Nowa Huta" the district of Kraków 9th, behind
+    villages: a street and a district rank by their place's people.
+    """
+
+    @pytest.fixture(autouse=True)
+    def indexed(self, prefix, opensearch, settings, db):
+        from django_osm_locations.models import PlaceSubarea
+
+        settings.LOCATIONS_OPENSEARCH_INDEX_PREFIX = prefix
+        settings.ROOT_URL = 'testserver'
+        towns = [('Zawiercie', 49000, 1), ('Warszawa', 1863845, 3), ('Pcim', None, 5), ('Kraków', 800000, 7)]
+        for town, people, at in towns:
+            place = Place.objects.create(name=town, border=MultiPolygon(square(at, at)), area=4.0,
+                                         population=people)
+            Street.objects.create(
+                name='Marszałkowska',
+                lines=MultiLineString(LineString((at + 0.1, at + 0.1), (at + 0.2, at + 0.2))),
+                place=[[town, place.slug]],
+            )
+        Place.objects.create(name='Nowa Huta', border=MultiPolygon(square(5, 1)), area=0.5,
+                             population=300)
+        PlaceSubarea.objects.create(name='Nowa Huta', border=MultiPolygon(square(7.2, 7.2, 0.5)),
+                                    area=0.25, place=[['Kraków', 'krakow']])
+        for name in ('places', 'place-subareas', 'streets'):
+            reindex(name, prefix, opensearch)
+
+    def found(self, client, **params):
+        return client.get('/api/search/', params).json()['results']
+
+    def test_the_street_of_the_largest_town_comes_first(self, client):
+        streets = self.found(client, q='Marszałkowska', type='streets')
+        assert [s['path'][-2] for s in streets] == ['Warszawa', 'Kraków', 'Zawiercie', 'Pcim']
+
+    def test_it_is_in_the_document(self, client):
+        streets = self.found(client, q='Marszałkowska Warszawa', type='streets')
+        assert streets[0]['place_population'] == 1863845
+
+    def test_the_district_of_a_city_before_the_village_of_its_name(self, client):
+        found = self.found(client, q='Nowa Huta')
+        assert (found[0]['type'], found[0]['path'][-2:]) == ('place-subareas', ['Kraków', 'Nowa Huta'])
+        assert found[1]['type'] == 'places'
