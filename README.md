@@ -79,7 +79,7 @@ python manage.py migrate
 | `Country` | `MultiPolygon` | ISO alpha-2/alpha-3 and UN codes |
 | `CountrySubarea` | `MultiPolygon` | regions, voivodeships, counties |
 | `Place` | `MultiPolygon` | cities, towns, villages, hamlets |
-| `PlaceSubarea` | `MultiPolygon` | districts and neighbourhoods |
+| `PlaceSubarea` | `MultiPolygon` or a point | districts, with a border or drawn as a `place=suburb` / `quarter` node |
 | `Street` | `MultiLineString` | ordered by length |
 | `Address` | `Point` | house number, its street and its settlement |
 
@@ -92,6 +92,15 @@ Ancestry is denormalised onto each row (`country`, `countrysubarea`, `place`,
 `placesubarea`, and `street` for addresses) as arrays of `[slug, name]` pairs,
 so a street row knows its city and region without a join — and an address can
 print its whole parent path, `Polska › pomorskie › Gdańsk › Łąkowa › Łąkowa 5`.
+
+A district need not have a border. Dortmund's Dorstfeld, Dresden's Löbtau and
+Łódź's Bałuty are `place=suburb` nodes -- Bałuty's border is named
+"Łódź-Bałuty" -- and a district people name that the data lacks is worse than
+one without an outline. `place=suburb` and `place=quarter` nodes are place
+subareas with a centre and no geometry, as a village mapped as a node is a
+place. One that lies inside a district border of its own name is that
+district mapped twice and is merged into it; `place=neighbourhood` is left
+out, being estates, many to a district.
 
 Every row also carries `names`, OSM's translations of its name keyed by
 language. See [Localized names](#localized-names).

@@ -93,10 +93,11 @@ class TestMergeHooks:
         importer.before_merge = lambda: order.append('before')
         importer.after_merge = lambda: order.append('after')
         importer._merge_places = lambda: order.append('merge')
+        importer._merge_district_points = lambda: order.append('districts')
 
         importer.do_merge()
 
-        assert order == ['before', 'merge', 'after']
+        assert order == ['before', 'merge', 'districts', 'after']
 
 
 class TestPoland:
