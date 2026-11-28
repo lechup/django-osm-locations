@@ -353,3 +353,40 @@ class TestWhereTheyApply:
         assert len([f for f in functions if 'field_value_factor' in f]) == 3
         assert {f['filter']['term']['type'] for f in functions
                 if 'type' in f['filter'].get('term', {})} == set(INDEXES)
+
+
+class TestANumberThatIsTheDistricts:
+    """
+    Düsseldorf's districts are Stadtbezirk 1 to 10: "Hagener Straße 7,
+    Düsseldorf" had every word in the street, which lies in Stadtbezirk 7,
+    and the street came before house 7.
+    """
+
+    def test_a_street_not_named_with_the_number_is_worth_less(self):
+        from django_osm_locations.api.queries import (
+            NUMBER_NOT_THE_STREETS_WEIGHT, number_not_the_streets_functions)
+
+        function, = number_not_the_streets_functions('Hagener Straße 7, Düsseldorf')
+        assert function['weight'] == NUMBER_NOT_THE_STREETS_WEIGHT < 1
+        assert function['filter']['bool']['filter'] == [{'term': {'type': 'streets'}}]
+        assert function['filter']['bool']['must_not'] == [
+            {'regexp': {'name.keyword': '(.*[^0-9])?7([^0-9].*)?'}}]
+
+    def test_a_street_named_with_any_of_them_is_left(self):
+        from django_osm_locations.api.queries import number_not_the_streets_functions
+
+        function, = number_not_the_streets_functions('3 Maja 12 Kraków')
+        assert [list(c['regexp'].values())[0] for c in function['filter']['bool']['must_not']] == [
+            '(.*[^0-9])?3([^0-9].*)?', '(.*[^0-9])?12([^0-9].*)?']
+
+    def test_no_number_no_function(self):
+        from django_osm_locations.api.queries import number_not_the_streets_functions
+
+        assert number_not_the_streets_functions('Hagener Straße Düsseldorf') == []
+        assert number_not_the_streets_functions(None) == []
+
+    def test_it_is_among_the_scoring_functions(self):
+        from django_osm_locations.api.queries import apply_scoring, number_not_the_streets_functions
+
+        scored = apply_scoring({'match_all': {}}, q='Hagener Straße 7')
+        assert number_not_the_streets_functions('Hagener Straße 7')[0] in scored['function_score']['functions']

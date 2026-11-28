@@ -646,6 +646,14 @@ HOUSE_NUMBER_WEIGHTS = {
     'whole_number': 1.3,
 }
 
+# What a street is worth when a number was typed and its name has none of
+# them: it matched the number in its ancestry. Düsseldorf's districts are
+# Stadtbezirk 1 to 10, so "Hagener Straße 7, Düsseldorf" found the street, in
+# Stadtbezirk 7, with every word of the query, and before house 7 -- as
+# 3 Maja is found before 3 Maja 3, which is meant for a number the street is
+# named with. Half is below what a street has over an address.
+NUMBER_NOT_THE_STREETS_WEIGHT = 0.5
+
 
 # What a location is worth when its whole name is some of the words typed,
 # one after another. Multiplied in, as the type weights are, which an amount
@@ -736,6 +744,25 @@ def house_number_functions(q):
             'weight': HOUSE_NUMBER_WEIGHTS['house_number_sort'],
         })
     return functions
+
+
+def number_not_the_streets_functions(q):
+    """
+    A scoring function for the streets a typed number found by their ancestry.
+
+    Every word typed has to be found, in the name or above it, and a district
+    can be numbered: see ``NUMBER_NOT_THE_STREETS_WEIGHT``. A street named
+    with one of the numbers -- 3 Maja, 11 Listopada -- is left as it was.
+    """
+    found = read_query(q).numbers if q else []
+    if not found:
+        return []
+    leads = sorted({HOUSE_NUMBER_LEADING_DIGITS.match(number).group() for number in found}, key=int)
+    named_with_one = [{'regexp': {'name.keyword': '(.*[^0-9])?{}([^0-9].*)?'.format(lead)}} for lead in leads]
+    return [{
+        'filter': {'bool': {'filter': [{'term': {'type': 'streets'}}], 'must_not': named_with_one}},
+        'weight': NUMBER_NOT_THE_STREETS_WEIGHT,
+    }]
 
 
 def exact_name_functions(q):
@@ -834,6 +861,7 @@ def apply_scoring(query, q=None, prefer=None):
     })
     functions.extend(exact_name_functions(q))
     functions.extend(house_number_functions(q))
+    functions.extend(number_not_the_streets_functions(q))
     postcodes = read_query(q).postcodes if q else []
     if postcodes:
         functions.append({'filter': {'terms': {'postcode': postcodes}}, 'weight': POSTCODE_WEIGHT})

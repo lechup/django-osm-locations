@@ -613,6 +613,12 @@ the addresses that have it first, and a flat (`14/3`, `14 m. 3`) finds house
 14 — or a house numbered `14/3`, ahead of it, where there is one. A letter
 after the slash is no flat: `15/a` is the house of that number.
 
+A number can be a district's as well: Düsseldorf has Stadtbezirk 1 to 10, and
+"Hagener Straße 7, Düsseldorf" found the street, which lies in Stadtbezirk 7,
+with every word typed and before house 7. A street not named with any of the
+numbers typed is worth half when one was, so the house comes first; 3 Maja,
+named with its number, is still found before 3 Maja 3.
+
 The words of a street's kind are read abbreviated in other languages as well:
 `Berliner Str.` and `Hauptstr.` are Straße, `Abbey Rd` is Road, `bd
 Haussmann` boulevard, `V.le Europa` viale, `Avda. de América` avenida. A query
