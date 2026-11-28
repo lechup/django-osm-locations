@@ -15,26 +15,51 @@ from ..utils.twins import TWIN_OF, twins_of
 # Prefix matching without a wildcard query: index the name as edge n-grams at
 # write time so "krak" hits "krakow" through an ordinary term lookup. This is
 # what replaces the Postgres search_vector columns.
+#
+# A dot between two letters ends a word. To the standard tokenizer it does
+# not -- it keeps "a.d.Saale" whole, as it does a domain name -- and Bavaria
+# writes its towns so: Schwarzenbach a.d.Saale, Weidhausen b.Coburg. "Saale"
+# then found neither, nor did "Schwarzenbach a.d. Saale" typed with a space.
+#
+# A saint is written short or in full, and the data has both: Hamburg's
+# St. Pauli is typed Sankt Pauli, Sankt Peter-Ording St. Peter-Ording, St
+# Albans Saint Albans. The words of a query are read as any of them, and so
+# are a name's whole words; "st" after a name stays a street -- it just also
+# finds a saint, which costs nothing where there is none.
 ANALYSIS = {
+    'char_filter': {
+        'dot_between_letters': {
+            'type': 'pattern_replace',
+            'pattern': '(?<=\\p{L})\\.(?=\\p{L})',
+            'replacement': '. ',
+        },
+    },
     'analyzer': {
         'location_prefix': {
             'type': 'custom',
+            'char_filter': ['dot_between_letters'],
             'tokenizer': 'standard',
             'filter': ['lowercase', 'asciifolding', 'location_edge_ngram'],
         },
         # queries must not be n-grammed, only the indexed side
         'location_prefix_search': {
             'type': 'custom',
+            'char_filter': ['dot_between_letters'],
             'tokenizer': 'standard',
-            'filter': ['lowercase', 'asciifolding'],
+            'filter': ['lowercase', 'asciifolding', 'location_saints'],
         },
         'location_exact': {
             'type': 'custom',
+            'char_filter': ['dot_between_letters'],
             'tokenizer': 'keyword',
             'filter': ['lowercase', 'asciifolding'],
         },
     },
     'filter': {
+        'location_saints': {
+            'type': 'synonym',
+            'synonyms': ['st, sankt, saint, sint'],
+        },
         'location_edge_ngram': {
             'type': 'edge_ngram',
             'min_gram': 1,

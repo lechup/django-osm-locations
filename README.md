@@ -624,7 +624,8 @@ The words of a street's kind are read abbreviated in other languages as well:
 Haussmann` boulevard, `V.le Europa` viale, `Avda. de América` avenida. A query
 does not say its country, so every language's abbreviations apply together
 and none is required of a result: what one stands for only ranks. `St` is
-left as typed, being street, saint and sankt. The table is in
+not in the table, being street and saint both; the index reads it as either
+(see [Localized names](#localized-names)). The table is in
 `api/street_words.py`.
 
 Addresses are read in a pass of their own rather than cached with everything
@@ -661,6 +662,21 @@ The ancestors' names are looked up once and remembered for
 `LOCATIONS_ANCESTOR_NAMES_CACHE_TIMEOUT` seconds in Django's default cache: an
 ancestor's document is read whole to give them, border included, and asked on
 every request that took a suggestion from 10 ms to 190 ms.
+
+A town's border often names a node as its label or seat, and for a town that
+node is the town, with the names mappers gave it: München's point has 95, its
+border 28, and `name:pl` only on the point. The border takes the translations
+it lacks, so "Monachium" finds München. Where the point's own name is written
+otherwise -- "Schwarzenbach an der Saale" on the border "Schwarzenbach
+a.d.Saale" -- it is kept as `names['und']`: a name and no translation, found
+like the others and never shown for a language. A node that is another place
+-- Raisdorf, the seat of Schwentinental -- is not folded in at all; it stays a
+place of its own (`utils/same_place.py`).
+
+Names are read the way they are written. A dot between two letters ends a
+word, so "a.d.Saale" is found by "Saale" and by "a.d. Saale"; and a saint is
+St, Sankt, Saint or Sint whichever the data has: "Sankt Pauli" finds
+Hamburg's St. Pauli and "St. Peter-Ording" Sankt Peter-Ording.
 
 Translations are stored but not indexed field-by-field — a mapping field per
 language would be 375 of them — and one `names_all` field makes them all
