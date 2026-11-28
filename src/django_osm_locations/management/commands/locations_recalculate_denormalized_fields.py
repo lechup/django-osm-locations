@@ -829,6 +829,21 @@ class Command(BaseCommand):
                    unlinked=cls.UNLINKED.replace('a2.', 'a.'),
                    restrict=RecalcScope.sql('address', 'a2'))
 
+    #: What the query above is planned with. It groups every address by its
+    #: slug and joins the groups back: on Germany's 20 million that is several
+    #: hashes and sorts, each allowed work_mem times hash_mem_multiplier, in
+    #: the leader and in every parallel worker. At the 256MB of a tuned server
+    #: it took a 14 GB machine to 84% and 92% memory pressure -- the import
+    #: guard stopped one run there and systemd-oomd killed another, both
+    #: eight minutes into this step. Without workers and at 64MB the step ran
+    #: under 2% pressure, and in 7h17 where it had taken 9h: its time is the
+    #: per-house lookups that follow, not this query. SET LOCAL ends with the
+    #: transaction.
+    SHARED_SLUGS_SETTINGS = (
+        'SET LOCAL max_parallel_workers_per_gather = 0',
+        "SET LOCAL work_mem = '64MB'",
+    )
+
     #: The nearest place within a house's own, as utils.shared_slugs names it.
     SQL_FOR_NEAREST_PLACE_WITHIN = """
         SELECT p.name FROM "locations_place" p
@@ -858,6 +873,8 @@ class Command(BaseCommand):
         print("Address - telling apart the houses that share a slug...")
         written, shared = [], 0
         with connection.cursor() as cursor:
+            for setting in cls.SHARED_SLUGS_SETTINGS:
+                cursor.execute(setting)
             cursor.execute(cls.get_sql_for_shared_address_slugs())
             rows = cursor.fetchall()
             for (scope, base), group in groupby(rows, key=lambda row: (row[0], row[1])):
