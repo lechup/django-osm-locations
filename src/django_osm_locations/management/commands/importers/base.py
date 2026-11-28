@@ -480,6 +480,8 @@ class BaseImporter(object):
             self._merge_place_subareas(place)
             self._merge_place_streets(place)
 
+        self._merge_district_points()
+
         self.after_merge()
 
     def do_update_country_border(self):
@@ -1012,6 +1014,26 @@ class BaseImporter(object):
     def _is_node_place(cls, osm_id, tags, coords):
         return False
 
+    #: The ``place`` values of a district mapped as a point. Not
+    #: ``neighbourhood``: an estate or a few streets, many to a district, and
+    #: of the three the one whose name people type least.
+    DISTRICT_NODES = frozenset({'suburb', 'quarter'})
+
+    @classmethod
+    def _is_node_placesubarea(cls, osm_id, tags, coords):
+        """
+        A district drawn as a point.
+
+        Districts were taken from borders alone, and many have none: Dortmund's
+        Dorstfeld, Dresden's Löbtau, München's Giesing are ``place=suburb``
+        nodes, and where a border exists it is often named otherwise -- Bałuty
+        is a point, its border "Łódź-Bałuty". Germany has 13,649 such nodes
+        and Poland 12,349; the ones that repeat a border are folded into it
+        (``_merge_district_points``). The same in every country, so it is here
+        and not in each importer.
+        """
+        return tags.get('place') in cls.DISTRICT_NODES and bool(tags.get('name'))
+
     @classmethod
     def _is_relation_street(cls, osm_id, tags, members):
         if 'type' in tags and tags['type'] == 'associatedStreet' and 'name' in tags \
@@ -1212,12 +1234,15 @@ class BaseImporter(object):
 
     def _is_node_to_cache(self, osm_id, tags, coords):
         return any([
-            self._is_node_place(osm_id, tags, coords)
+            self._is_node_place(osm_id, tags, coords),
+            self._is_node_placesubarea(osm_id, tags, coords),
         ])
 
     @classmethod
     def _get_duplicated_placesubarea_names(cls, place):
-        return place.subareas.values('name').annotate(Count('name')).filter(name__count__gt=1).values_list(
+        # borders only: a district drawn as a point has none to join, and is
+        # folded into the border it repeats by _merge_district_points
+        return place.subareas.exclude(border=None).values('name').annotate(Count('name')).filter(name__count__gt=1).values_list(
             'name',
             flat=True
         ).order_by()
@@ -1231,7 +1256,8 @@ class BaseImporter(object):
         )
         for duplicated_subarea_name in duplicated_subarea_names:
             with transaction.atomic():
-                duplicated_subareas = place.subareas.filter(name=duplicated_subarea_name).order_by('id').iterator()
+                duplicated_subareas = place.subareas.exclude(border=None).filter(
+                    name=duplicated_subarea_name).order_by('id').iterator()
                 # next(it), not it.next(): the Python 2 spelling survived here
                 # because no extract in the test set had duplicate place
                 # subareas to merge
@@ -1262,6 +1288,53 @@ class BaseImporter(object):
             ids_array=ArrayAgg('id'),
             merged_lines=MergeMultiline('lines')
         ).filter(name_count__gt=1).values_list('name', 'id_min', 'ids_array', 'merged_lines').order_by()
+
+    #: A name as two spellings of it are told to be one: case, spaces, hyphens
+    #: and dots aside. Luxembourg's Ville Haute is a point, its border
+    #: Ville-Haute.
+    SAME_NAME = "regexp_replace(lower({}), '[[:space:].''’–-]+', '', 'g')"
+
+    #: A district point inside a district border of its name is that district,
+    #: mapped twice; the smallest such border where a level 9 and a level 10
+    #: share the name.
+    SQL_FOR_DISTRICT_POINTS_OF_A_BORDER = """
+        UPDATE "locations_placesubarea" AS p SET is_merged = true, merged_into_id = m.district
+        FROM (
+            SELECT DISTINCT ON (p.id) p.id AS point, d.id AS district
+            FROM "locations_placesubarea" p
+            JOIN "locations_placesubarea" d
+              ON d.border IS NOT NULL AND NOT d.is_merged AND {d_name} = {p_name}
+             AND d.border && p.center AND ST_Intersects(d.border, p.center)
+            WHERE p.border IS NULL AND p.center IS NOT NULL AND NOT p.is_merged
+            ORDER BY p.id, d.area, d.id
+        ) AS m
+        WHERE p.id = m.point
+    """.format(d_name=SAME_NAME.format('d.name'), p_name=SAME_NAME.format('p.name'))
+
+    #: A district point named as the place around it adds nothing to the place.
+    SQL_FOR_DISTRICT_POINTS_OF_THEIR_PLACE = """
+        UPDATE "locations_placesubarea" AS p SET is_merged = true
+        FROM "locations_place" c
+        WHERE p.border IS NULL AND p.center IS NOT NULL AND NOT p.is_merged
+          AND c.border IS NOT NULL AND NOT c.is_merged AND {c_name} = {p_name}
+          AND c.border && p.center AND ST_Intersects(c.border, p.center)
+    """.format(c_name=SAME_NAME.format('c.name'), p_name=SAME_NAME.format('p.name'))
+
+    @classmethod
+    def _merge_district_points(cls):
+        """
+        Fold the districts drawn as points into the borders they repeat.
+
+        Dortmund's Huckarde is a border and a point inside it; the point's
+        ids go to the border as any merged row's do. A point whose name no
+        border has -- Dorstfeld -- stays, a district without a border.
+        """
+        with connection.cursor() as cursor:
+            cursor.execute(cls.SQL_FOR_DISTRICT_POINTS_OF_A_BORDER)
+            into_borders = cursor.rowcount
+            cursor.execute(cls.SQL_FOR_DISTRICT_POINTS_OF_THEIR_PLACE)
+            into_places = cursor.rowcount
+        return into_borders, into_places
 
     @classmethod
     def _merge_place_streets(cls, place):
@@ -1496,6 +1569,17 @@ class BaseImporter(object):
                 'population': tags.get('population')
             })
 
+    def _import_placesubarea_from_node(self, osm_id, tags, coords):
+        if self._is_node_placesubarea(osm_id, tags, coords):
+            if not self._within_country(Point(coords)):
+                return
+            self._upsert(PlaceSubarea, 'node_osm_id', osm_id, {
+                'name': tags.get('name'),
+                'names': language_names(tags),
+                'center': Point(coords),
+                'population': tags.get('population')
+            })
+
     def _import_placesubarea_from_relation(self, osm_id, tags, members):
         if self._is_relation_placesubarea(osm_id, tags, members) and self._are_all_members_cached(members):
             border = self._get_border_from_members(members)
@@ -1617,3 +1701,4 @@ class BaseImporter(object):
 
     def _import_node(self, osm_id, tags, coords):
         self._import_place_from_node(osm_id, tags, coords)
+        self._import_placesubarea_from_node(osm_id, tags, coords)
