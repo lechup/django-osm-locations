@@ -456,3 +456,51 @@ class TestTheSizeOfThePlaceItIsIn:
         found = self.found(client, q='Nowa Huta')
         assert (found[0]['type'], found[0]['path'][-2:]) == ('place-subareas', ['Kraków', 'Nowa Huta'])
         assert found[1]['type'] == 'places'
+
+
+class TestNamesWrittenTwoWays:
+    """
+    St. Pauli and Sankt Pauli, Schwarzenbach a.d.Saale and an der Saale,
+    München and the Monachium only its point is tagged with: one place each,
+    found however it is typed.
+    """
+
+    @pytest.fixture(autouse=True)
+    def indexed(self, prefix, opensearch, settings, db):
+        settings.LOCATIONS_OPENSEARCH_INDEX_PREFIX = prefix
+        settings.ROOT_URL = 'testserver'
+        Place.objects.create(name='St. Pauli', border=MultiPolygon(square(1, 2)), area=1.0, population=22000)
+        Place.objects.create(name='Sankt Peter-Ording', border=MultiPolygon(square(3, 2)), area=1.0,
+                             population=4000)
+        Place.objects.create(name='Schwarzenbach a.d.Saale', border=MultiPolygon(square(5, 2)), area=1.0,
+                             population=7000, names={'und': 'Schwarzenbach an der Saale'})
+        Place.objects.create(name='Schwarzenbach am Wald', border=MultiPolygon(square(7, 2)), area=1.0,
+                             population=4500)
+        Place.objects.create(name='München', border=MultiPolygon(square(1, 5)), area=4.0, population=1500000,
+                             names={'en': 'Munich', 'pl': 'Monachium'})
+        Street.objects.create(name='Sankt-Pauli-Straße', lines=MultiLineString(LineString((3.1, 2.1), (3.2, 2.2))),
+                              place=[['Sankt Peter-Ording', 'sankt-peter-ording']])
+        for name in ('places', 'streets'):
+            reindex(name, prefix, opensearch)
+
+    def first(self, client, q):
+        found = client.get('/api/search/', {'q': q}).json()['results']
+        return found[0]['name'] if found else None
+
+    @pytest.mark.parametrize('q', ['St. Pauli', 'St Pauli', 'Sankt Pauli', 'sankt pauli'])
+    def test_a_saint_abbreviated_in_the_data(self, client, q):
+        assert self.first(client, q) == 'St. Pauli'
+
+    @pytest.mark.parametrize('q', ['Sankt Peter-Ording', 'St. Peter-Ording', 'St Peter Ording'])
+    def test_a_saint_written_out_in_the_data(self, client, q):
+        assert self.first(client, q) == 'Sankt Peter-Ording'
+
+    @pytest.mark.parametrize('q', [
+        'Schwarzenbach a.d.Saale', 'Schwarzenbach a.d. Saale', 'Schwarzenbach an der Saale',
+        'Schwarzenbach Saale', 'schwarzenbach saale',
+    ])
+    def test_where_a_town_lies_abbreviated_or_not(self, client, q):
+        assert self.first(client, q) == 'Schwarzenbach a.d.Saale'
+
+    def test_the_translation_only_the_point_had(self, client):
+        assert self.first(client, 'Monachium') == 'München'

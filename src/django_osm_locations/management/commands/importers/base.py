@@ -18,6 +18,7 @@ from .. import Address, Country, CountrySubarea, Place, PlaceSubarea, Street, \
     MergeMultiline, array_agg_ordered
 from ....conf import get_cache_dir
 from ....utils.progress import progress, show_progress_default  # noqa: F401
+from ....utils.same_place import differently_written, same_place
 from ....utils.settlements import streets_of
 
 
@@ -1396,6 +1397,26 @@ class BaseImporter(object):
                         "{} http://openstreetmap.org/relation/{}".format(tags.get('name'), osm_id)
                     )
 
+    #: The key a place's other name is kept under in ``names``: ISO 639's
+    #: "undetermined", since it is a name and no translation.
+    OTHER_NAME = 'und'
+
+    @classmethod
+    def _names_with_the_nodes(cls, tags, names, node_tags):
+        """
+        The border's names and those only its node has.
+
+        Mappers translate the point: München's has ``name:pl``, its border
+        does not, and without the point "Monachium" found nothing. Where both
+        have a language the border's stands. The node's own name is kept too
+        when it is written otherwise -- "Schwarzenbach an der Saale" on the
+        point of "Schwarzenbach a.d.Saale" -- as people type either.
+        """
+        names = dict(language_names(node_tags), **names)
+        if differently_written(tags.get('name'), node_tags.get('name')):
+            names.setdefault(cls.OTHER_NAME, node_tags['name'])
+        return names
+
     def _import_place_from_relation(self, osm_id, tags, members):
         if self._is_relation_place(osm_id, tags, members) and self._are_all_members_cached(members):
             border = self._get_border_from_members(members)
@@ -1403,16 +1424,24 @@ class BaseImporter(object):
                 return
             if border:
                 population = tags.get('population', None)
+                names = language_names(tags)
                 center_node_id = self._get_center_node_id_from_members(members)
                 center_node_coords = None
+                is_this_place = False
                 if center_node_id is not None:
                     center_node_tags, center_node_coords = self.nodes[center_node_id]
-                    center_node_population = center_node_tags.get('population', None)
-                    if center_node_population:
-                        population = center_node_population
+                    node_name = center_node_tags.get('name')
+                    # The node is this place unless it has a name of its own
+                    # that says otherwise: see utils.same_place.
+                    is_this_place = not node_name or same_place(tags.get('name'), node_name)
+                    if is_this_place:
+                        center_node_population = center_node_tags.get('population', None)
+                        if center_node_population:
+                            population = center_node_population
+                        names = self._names_with_the_nodes(tags, names, center_node_tags)
                 place_defaults = {
                     'name': tags.get('name'),
-                    'names': language_names(tags),
+                    'names': names,
                     'border': border,
                     'admin_level': self._admin_level(tags),
                     'population': population
@@ -1424,7 +1453,10 @@ class BaseImporter(object):
                     # sits inside; where it does not, _presave_center takes over
                     if border.contains(candidate):
                         place_defaults['center'] = candidate
-                    self.already_imported_places_node_ids.add(center_node_id)
+                    if is_this_place:
+                        # the border stands for it; another place -- the
+                        # village a municipality sits in -- is imported as one
+                        self.already_imported_places_node_ids.add(center_node_id)
                 self._upsert(Place, 'relation_osm_id', osm_id, place_defaults)
             else:
                 if self._get_multiline_from_members(members):
